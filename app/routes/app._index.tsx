@@ -86,11 +86,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 export default function Index() {
   const fetcher = useFetcher<typeof action>();
+  const syncFetcher = useFetcher();
 
   const shopify = useAppBridge();
   const isLoading =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
+
+  // Force sync token on load
+  useEffect(() => {
+    if (syncFetcher.state === "idle" && !syncFetcher.data) {
+      console.log("👉 Triggering token sync check...");
+      syncFetcher.submit(null, { method: "POST", action: "/api/sync-token" });
+    }
+  }, [syncFetcher]);
 
   useEffect(() => {
     if (fetcher.data?.product?.id) {
