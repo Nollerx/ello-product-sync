@@ -1,16 +1,8 @@
-import { PrismaClient } from "@prisma/client";
+// app/db.server.ts
+import { SQLiteSessionStorage } from "@shopify/shopify-app-session-storage-sqlite";
 
-declare global {
-  // eslint-disable-next-line no-var
-  var prismaGlobal: PrismaClient;
-}
-
-if (process.env.NODE_ENV !== "production") {
-  if (!global.prismaGlobal) {
-    global.prismaGlobal = new PrismaClient();
-  }
-}
-
-const prisma = global.prismaGlobal ?? new PrismaClient();
-
-export default prisma;
+// Keep this module because the template imports it.
+// We are NOT using Prisma in this app.
+export const sessionStorage = new SQLiteSessionStorage(
+  process.env.SESSION_DB_PATH || "./shopify_sessions.sqlite",
+);
