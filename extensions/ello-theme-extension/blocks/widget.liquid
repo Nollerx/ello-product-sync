@@ -1,0 +1,18 @@
+{% schema %}
+{
+  "name": "Ello Virtual Try-On",
+  "target": "body",
+  "settings": []
+}
+{% endschema %}
+
+<!-- Ello Virtual Try-On Widget (Injected via Theme Extension) -->
+<script 
+  src="https://ello-shopify-app-13593516897.us-central1.run.app/widget-loader.js"
+  data-shop="{{ shop.permanent_domain }}"
+  defer
+></script>
+
+<script>
+  console.log("Ello Widget Loaded via Extension for: {{ shop.permanent_domain }}");
+</script>

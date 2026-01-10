@@ -1,0 +1,9 @@
+api_version = "2024-10"
+
+[[extensions]]
+name = "ello-theme-extension"
+handle = "ello-theme-extension"
+type = "theme"
+
+[extensions.capabilities]
+network_access = true
