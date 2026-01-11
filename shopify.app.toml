@@ -2,7 +2,7 @@
 
 client_id = "20a8055ba37a83237daf1f9332b7c8ce"
 name = "Ello-Product-Sync"
-application_url = "https://ello-shopify-app-13593516897.us-central1.run.app"
+application_url = "https://ello-shopify-app-u5htiuxfrq-uc.a.run.app"
 embedded = true
 
 [build]
@@ -24,4 +24,4 @@ api_version = "2026-04"
 scopes = "unauthenticated_read_product_listings,unauthenticated_read_product_tags"
 
 [auth]
-redirect_urls = [ "https://ello-shopify-app-13593516897.us-central1.run.app/auth/callback" ]
+redirect_urls = [ "https://ello-shopify-app-u5htiuxfrq-uc.a.run.app/auth/callback" ]
