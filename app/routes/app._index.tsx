@@ -10,7 +10,6 @@ import {
   BlockStack,
   Box,
   List,
-  ListItem,
   InlineStack,
   Banner,
 } from "@shopify/polaris";
@@ -127,12 +126,12 @@ export default function Index() {
                   Support
                 </Text>
                 <List>
-                  <ListItem>
+                  <List.Item>
                     Documentation
-                  </ListItem>
-                  <ListItem>
+                  </List.Item>
+                  <List.Item>
                     Contact Support
-                  </ListItem>
+                  </List.Item>
                 </List>
               </BlockStack>
             </Card>

@@ -3,6 +3,7 @@ api_version = "2024-10"
 [[extensions]]
 name = "ello-theme-extension"
 handle = "ello-theme-extension"
+uid = "61f21382-430d-3b16-2199-f47c0f1cc412f896dbdf"
 type = "theme"
 
 [extensions.capabilities]
