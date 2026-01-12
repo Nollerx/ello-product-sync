@@ -2,7 +2,7 @@
 
 client_id = "bf99e755a15b78cc0dc496d45f1cd75e"
 name = "Ello VTO Public"
-application_url = "https://ello-shopify-app-public-13593516897.us-central1.run.app"
+application_url = "https://ello-vto-public-13593516897.us-central1.run.app"
 embedded = true
 
 [webhooks]
@@ -16,5 +16,10 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://ello-shopify-app-public-13593516897.us-central1.run.app/auth/callback"
+  "https://ello-vto-public-13593516897.us-central1.run.app/auth/callback"
 ]
+
+[webhooks.privacy_compliance]
+customer_data_request_url = "https://ello-vto-public-13593516897.us-central1.run.app/webhooks/privacy"
+customer_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/webhooks/privacy"
+shop_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/webhooks/privacy"

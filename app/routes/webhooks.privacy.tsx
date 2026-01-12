@@ -2,9 +2,18 @@ import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-    const { topic, shop, session, admin, payload } = await authenticate.webhook(
-        request
-    );
+    let topic, shop, session, admin, payload;
+    try {
+        const result = await authenticate.webhook(request);
+        topic = result.topic;
+        shop = result.shop;
+        session = result.session;
+        admin = result.admin;
+        payload = result.payload;
+    } catch (error) {
+        console.error("Webhook authentication failed:", error);
+        return new Response("Unauthorized", { status: 401 });
+    }
 
     if (!topic) {
         return new Response("No topic header", { status: 404 });
