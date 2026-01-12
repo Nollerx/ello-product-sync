@@ -20,6 +20,6 @@ redirect_urls = [
 ]
 
 [webhooks.privacy_compliance]
-customer_data_request_url = "https://ello-vto-public-13593516897.us-central1.run.app/webhooks/privacy"
-customer_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/webhooks/privacy"
-shop_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/webhooks/privacy"
+customer_data_request_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
+customer_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
+shop_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
