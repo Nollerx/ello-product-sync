@@ -19,7 +19,19 @@ redirect_urls = [
   "https://ello-vto-public-13593516897.us-central1.run.app/auth/callback"
 ]
 
-[webhooks.privacy_compliance]
-customer_data_request_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
-customer_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
-shop_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
+# [webhooks.privacy_compliance]
+# customer_data_request_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
+# customer_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
+# shop_redaction_url = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"
+
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "https://ello-vto-public-13593516897.us-central1.run.app/webhooks/app/uninstalled"
+
+[[webhooks.subscriptions]]
+topics = ["app/scopes_update"]
+uri = "https://ello-vto-public-13593516897.us-central1.run.app/webhooks/app/scopes_update"
+
+[[webhooks.subscriptions]]
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "https://ello-vto-public-13593516897.us-central1.run.app/api/privacy"

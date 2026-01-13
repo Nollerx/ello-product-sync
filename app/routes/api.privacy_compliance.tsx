@@ -1,5 +1,9 @@
-import type { ActionFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import crypto from "crypto";
+
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+    return new Response("Privacy Webhook Endpoint Active", { status: 200 });
+};
 
 export const action = async ({ request }: ActionFunctionArgs) => {
     try {
