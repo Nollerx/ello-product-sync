@@ -4088,13 +4088,13 @@ async function validateImageQuality(imageSrc) {
         }
     }
 
-    // Check brightness
-    if (analysis.brightness < 0.15) {
+    // Check brightness (Relaxed)
+    if (analysis.brightness < 0.05) {
+        // Only block if extremely dark
         errors.push('Image is too dark. Please use a photo with better lighting.');
-    } else if (analysis.brightness > 0.9) {
-        errors.push('Image is too bright. Please use a photo with more balanced lighting.');
-    } else if (analysis.brightness < 0.25 || analysis.brightness > 0.8) {
-        warnings.push('Lighting could be improved for better results.');
+    } else if (analysis.brightness < 0.15 || analysis.brightness > 0.95) {
+        // Warn for other cases
+        warnings.push('Lighting could be improved for best results.');
     }
 
     // Check contrast
