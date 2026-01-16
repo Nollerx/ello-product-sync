@@ -6911,6 +6911,10 @@ function resetPreviewTimers() {
     if (delaySeconds < 1) delaySeconds = 1;
     if (delaySeconds > 60) delaySeconds = 60;
 
+    // Define activity flag variable locally if not global, or ensure it is accessible.
+    // In this scope, we need to make sure the listener callback can reach it.
+    let hasUserActivity = false;
+
     console.log(`[Ello VTO] Starting Preview Timer (${delaySeconds}s delay)...`);
 
     // Setup User Activity Listeners (One-time)
