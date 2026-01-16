@@ -2163,6 +2163,9 @@ function openWidget() {
     widget.classList.remove('widget-minimized');
     widgetOpen = true;
 
+    // Check for First-Run Overlay
+    checkOnboarding();
+
     // Lock body scroll on mobile
     lockBodyScroll();
 
@@ -2690,8 +2693,9 @@ async function populateFeaturedAndQuickPicks() {
 
     currentFeaturedItem = featuredItem;
 
-    // Auto-select the featured item to prevent "Select garment first" error
-    if (currentFeaturedItem) {
+    // Auto-select the featured item ONLY if no item is currently selected
+    // This prevents overwriting a user's selection from the "Browse Collection" modal
+    if (currentFeaturedItem && !selectedClothing) {
         selectFeaturedClothing();
     }
 }
@@ -7287,3 +7291,123 @@ window.handlePreviewTryOn = async function () {
     }
 }
 
+
+// ============================================================================
+// FIRST-RUN OVERLAY LOGIC
+// ============================================================================
+
+function checkOnboarding() {
+    const overlay = document.getElementById('firstRunOverlay');
+    if (!overlay) return;
+
+    // Check if user has already onboarded
+    const onboardingComplete = localStorage.getItem('ello_onboarding_complete') === 'true';
+
+    // If NOT complete, show overlay
+    if (!onboardingComplete) {
+        // Make sure it's visible
+        overlay.style.display = 'flex';
+        // Small delay to allow display:flex to apply before adding active class for opacity transition
+        setTimeout(() => {
+            overlay.classList.add('active');
+        }, 10);
+
+        // Bind events if not already bound (checking a flag or removing/adding to be safe)
+        const demoBtn = document.getElementById('froDemoBtn');
+        const realBtn = document.getElementById('froRealBtn');
+
+        // Remove old listeners to prevent duplicates (using cloneNode trick or just fresh listeners if simple)
+        if (demoBtn) demoBtn.onclick = startDemoFlow;
+        if (realBtn) realBtn.onclick = useMyPhotoFlow;
+    } else {
+        // Ensure it's hidden if complete
+        overlay.style.display = 'none';
+        overlay.classList.remove('active');
+    }
+}
+
+function useMyPhotoFlow() {
+    // 1. Mark complete
+    completeOnboarding();
+
+    // 2. Hide overlay
+    dismissOverlay();
+
+    // 3. Highlight inputs (Spotlight effect)
+    setTimeout(() => {
+        highlightInputs();
+    }, 500);
+}
+
+function startDemoFlow() {
+    // 1. Mark complete
+    completeOnboarding();
+
+    // 2. Hide overlay
+    dismissOverlay();
+
+    // 3. Simulate "Generating..." state
+    showProcessingState();
+
+    // 4. Auto-populate inputs with placeholders (simulated)
+    // We don't actually upload files, we just assume the 'demo' state.
+
+    // 5. After delay, show result
+    setTimeout(() => {
+        // Show a fake result or just the standard 'result ready' state if we had a real result.
+        // Since we don't have real assets yet, we will rely on the verify plan's "placeholders".
+        // For now, let's trigger the 'rendering' UI and then show a placeholder result.
+
+        // Use a placeholder image from a public source or generated asset
+        const demoResultUrl = 'https://placehold.co/600x800/png?text=Demo+Result'; // Temporary
+
+        showSuccessNotification('Demo Complete', 'Here is how it works!');
+
+        // In a real scenario, we would populate the 'generatedImage' and show the result modal.
+        // For now, let's just show a notification to prove the flow worked.
+
+    }, 2500);
+}
+
+function dismissOverlay() {
+    const overlay = document.getElementById('firstRunOverlay');
+    if (overlay) {
+        overlay.classList.remove('active');
+        setTimeout(() => {
+            overlay.style.display = 'none';
+        }, 400); // Match CSS transition
+    }
+}
+
+function completeOnboarding() {
+    localStorage.setItem('ello_onboarding_complete', 'true');
+}
+
+function highlightInputs() {
+    const dropZone = document.getElementById('imageUploadDropZone');
+    const featured = document.getElementById('featuredItem');
+
+    if (dropZone) dropZone.classList.add('highlight-pulse');
+    if (featured) featured.classList.add('highlight-pulse');
+
+    // Remove pulse after animation
+    setTimeout(() => {
+        if (dropZone) dropZone.classList.remove('highlight-pulse');
+        if (featured) featured.classList.remove('highlight-pulse');
+    }, 2000);
+}
+
+function showProcessingState() {
+    // Trigger the existing loading state logic if possible, or visually simulate it
+    const button = document.getElementById('tryOnBtn');
+    if (button) {
+        const originalText = button.innerHTML;
+        button.innerHTML = '<span class="spinner"></span> Generating...';
+        button.disabled = true;
+
+        setTimeout(() => {
+            button.innerHTML = originalText;
+            button.disabled = false;
+        }, 2500);
+    }
+}
