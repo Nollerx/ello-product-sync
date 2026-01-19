@@ -6169,6 +6169,13 @@
                                 photo</div>
                         </div>
 
+                        <!-- Model Selector Link (Secondary Action) -->
+                        <div id="modelSelectorLink" class="model-selector-link"
+                            style="margin-top: 8px; text-align: center; font-size: 13px; color: #6b7280;">
+                            Don't have a photo? <a href="#" id="openModelBrowserBtn"
+                                style="color: #4f46e5; text-decoration: none; font-weight: 500;">Choose a Model</a>
+                        </div>
+
                         <!-- Selected Clothing Preview (shown when item is selected) -->
                         <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
                             <div class="selected-clothing-content">
@@ -6269,6 +6276,29 @@
             <div id="browserPagination" class="browser-pagination">
                 <!-- Pagination controls will be populated here -->
             </div>
+        </div>
+    </div>
+
+    <!-- Model Browser Modal (Cloned from Clothing Browser) -->
+    <div id="modelBrowserModal" class="clothing-browser-modal">
+        <div class="clothing-browser-content">
+            <div class="browser-header">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <h2 class="browser-title">Choose a Model</h2>
+                    <a href="#" id="switchToUploadBtn"
+                        style="font-size: 13px; color: #6b7280; text-decoration: underline;">Upload instead</a>
+                </div>
+                <!-- Note: using id for JS listener attachment -->
+                <button class="browser-close" id="closeModelBrowserBtn">&times;</button>
+            </div>
+            <div class="browser-body">
+                <!-- Filters could go here later -->
+
+                <div id="modelBrowserGrid" class="browser-grid">
+                    <!-- Models will be populated here via JS -->
+                </div>
+            </div>
+            <!-- Pagination not needed for small model list yet -->
         </div>
     </div>
 
