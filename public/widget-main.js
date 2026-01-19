@@ -14,18 +14,6 @@ window.initializeWidget = function () {
     // Use a small timeout to ensure DOM is ready if script loads fast
     setTimeout(initializeModelEvents, 500);
 
-    // Model Catalogue Feature - Init Event Listeners
-    // Use a small timeout to ensure DOM is ready if script loads fast
-    setTimeout(initializeModelEvents, 500);
-
-    // Model Catalogue Feature - Init Event Listeners
-    // Use a small timeout to ensure DOM is ready if script loads fast
-    setTimeout(initializeModelEvents, 500);
-
-    // Model Catalogue Feature - Init Event Listeners
-    // Use a small timeout to ensure DOM is ready if script loads fast
-    setTimeout(initializeModelEvents, 500);
-
     // If store config not loaded yet (e.g., direct HTML load without loader), fetch it
     if (!window.ELLO_STORE_CONFIG) {
         const storeSlug = window.ELLO_STORE_SLUG || window.ELLO_STORE_ID || 'default_store';
@@ -1586,13 +1574,28 @@ function cleanupStorage() {
 }
 
 // Load saved photo from localStorage
+// Load saved photo from localStorage
 function loadSavedPhoto() {
     try {
+        // 1. Check for Model Selection first
+        const savedSource = localStorage.getItem('ello_user_photo_source');
+        if (savedSource === 'model') {
+            const savedModelId = localStorage.getItem('ello_selected_model_id');
+            const model = modelCatalogue.find(m => m.id === savedModelId);
+            if (model) {
+                userPhotoSource = 'model'; // Ensure state is synced
+                selectModel(model); // Reuse check/select logic
+                return true;
+            }
+        }
+
+        // 2. Fallback to Uploaded Photo
         const savedPhoto = localStorage.getItem(USER_PHOTO_STORAGE_KEY);
         const savedFileId = localStorage.getItem(USER_PHOTO_FILE_ID_STORAGE_KEY);
 
         if (savedPhoto) {
             userPhoto = savedPhoto;
+            userPhotoSource = 'upload'; // Ensure state is synced
             userPhotoFileId = savedFileId || 'photo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 
             // Update both Full Widget and Preview UI
@@ -2503,6 +2506,16 @@ function initializeModelEvents() {
             closeModelBrowser();
             // Optional: trigger upload click if allowed
             // handlePhotoUploadClick();
+        });
+    }
+
+    // Reset to 'upload' source when a real file is selected
+    const fileInput = document.getElementById('imageUploadInput');
+    if (fileInput) {
+        fileInput.addEventListener('change', () => {
+            console.log('[Model Catalogue] Real file selected, switching source to upload');
+            userPhotoSource = 'upload';
+            localStorage.setItem('ello_user_photo_source', 'upload');
         });
     }
 }
