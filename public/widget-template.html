@@ -5862,6 +5862,51 @@
             border-color: #fff !important;
         }
 
+        /* Model Catalogue Native Styles */
+        .upload-help-row {
+            margin-top: 10px;
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            justify-content: flex-start;
+            /* keep it native */
+            font-size: 13px;
+            color: #777;
+        }
+
+        .upload-help-text {
+            color: #777;
+        }
+
+        .upload-help-link {
+            background: none;
+            border: none;
+            padding: 0;
+            font: inherit;
+            font-weight: 700;
+            color: #222;
+            /* NOT blue */
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
+        .upload-help-link:hover {
+            color: #000;
+        }
+
+        /* Dark Mode Support for Helper Link */
+        .theme-black .upload-help-text {
+            color: #aaa;
+        }
+
+        .theme-black .upload-help-link {
+            color: #fff;
+        }
+
+        .theme-black .upload-help-link:hover {
+            color: #ddd;
+        }
+
         /* Black theme wardrobe action buttons */
         .theme-black .wardrobe-action-btn {
             background: rgba(35, 39, 47, 0.95) !important;
