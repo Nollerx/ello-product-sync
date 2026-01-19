@@ -2572,22 +2572,35 @@ function selectModel(model) {
 
     // Set preview
     const preview = document.getElementById('photoPreview');
-    const uploadText = document.querySelector('.photo-upload .upload-text');
-    const subText = document.querySelector('.photo-instruction');
-    const icon = document.querySelector('.upload-icon');
+    const uploadEmpty = document.querySelector('.upload-empty'); // New UI element
 
     if (preview) {
         preview.src = model.image_url;
         preview.style.display = 'block';
     }
 
-    // Set global userPhoto so validation passes (even if skipped, button state checks it)
+    // Hide the "Click to upload" empty state
+    if (uploadEmpty) {
+        uploadEmpty.style.display = 'none';
+    }
+
+    // Set global userPhoto so validation passes
     userPhoto = model.image_url;
 
-    if (uploadText) uploadText.style.display = 'none';
-    if (icon) icon.style.display = 'none';
-
-    if (subText) subText.textContent = `Model Selected: ${model.name}`;
+    // Update the "Plan B" text area to show current selection
+    const altContainer = document.getElementById('modelSelectContainer');
+    if (altContainer) {
+        altContainer.innerHTML = `
+            <span style="color: #666;">Using: <strong>${model.name}</strong></span>
+            <span style="margin: 0 4px;">•</span>
+            <button type="button" class="link-btn" id="openModelBrowserBtn_Change">Change</button>
+        `;
+        // Re-attach listener to the new button
+        const changeBtn = document.getElementById('openModelBrowserBtn_Change');
+        if (changeBtn) {
+            changeBtn.addEventListener('click', openModelBrowser);
+        }
+    }
 
     // Persist model selection
     localStorage.setItem('ello_user_photo_source', 'model');
