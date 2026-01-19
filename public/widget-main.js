@@ -2518,6 +2518,20 @@ function initializeModelEvents() {
             localStorage.setItem('ello_user_photo_source', 'upload');
         });
     }
+
+    // New Refined UI Listeners
+    const dropzone = document.getElementById('photoUploadDropzone');
+    if (dropzone) {
+        dropzone.addEventListener('click', handlePhotoUploadClick);
+    }
+
+    const tipsBtn = document.getElementById('photoTipsBtn');
+    if (tipsBtn) {
+        tipsBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showBestPracticesModal();
+        });
+    }
 }
 
 function openModelBrowser() {
