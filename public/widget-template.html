@@ -5846,153 +5846,10 @@
             color: #fff !important;
         }
 
-        /* Refined Photo Section */
-        .photo-section {
-            margin-top: 16px;
-            padding: 16px;
-            border: 1px solid #e6e6e6;
-            border-radius: 14px;
-            background: #fff;
-        }
-
-        .photo-section__header {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            margin-bottom: 12px;
-        }
-
-        .photo-section__title {
-            font-size: 16px;
-            font-weight: 700;
-            letter-spacing: .2px;
-            color: #111;
-        }
-
-        .photo-section__sub {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 13px;
-            color: #666;
-        }
-
-        .info-btn {
-            width: 22px;
-            height: 22px;
-            border-radius: 999px;
-            border: 1px solid #d6d6d6;
-            background: #f7f7f7;
-            color: #444;
-            font-weight: 700;
-            cursor: pointer;
-            line-height: 1;
-            padding: 0;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .photo-upload {
-            border: 2px dashed #cfcfcf;
-            border-radius: 14px;
-            padding: 18px;
-            min-height: 140px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #fafafa;
-            cursor: pointer;
-            transition: border-color .15s ease, background .15s ease, transform .05s ease;
-            position: relative;
-            /* For preview img positioning */
-            flex-direction: column;
-            /* Center content */
-        }
-
-        .photo-upload:hover {
-            border-color: #b8b8b8;
-            background: #f6f6f6;
-        }
-
-        .photo-upload:active {
-            transform: scale(0.995);
-        }
-
-        .upload-empty {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            text-align: left;
-        }
-
-        .upload-icon-css {
-            width: 44px;
-            height: 44px;
-            border-radius: 12px;
-            border: 1px solid #e3e3e3;
-            background: #fff;
-            position: relative;
-            flex-shrink: 0;
-        }
-
-        .upload-icon-css:before {
-            content: "";
-            position: absolute;
-            inset: 12px;
-            border-radius: 8px;
-            border: 2px solid #c9c9c9;
-        }
-
-        .upload-text__main {
-            font-size: 14px;
-            font-weight: 700;
-            color: #111;
-        }
-
-        .upload-text__sub {
-            font-size: 12px;
-            color: #777;
-            margin-top: 2px;
-        }
-
-        .photo-section__alt {
-            margin-top: 10px;
-            font-size: 13px;
-            color: #6b6b6b;
-            display: flex;
-            justify-content: center;
-            gap: 6px;
-        }
-
-        .link-btn {
-            background: none;
-            border: none;
-            padding: 0;
-            font-size: 13px;
-            font-weight: 700;
-            color: #222;
-            text-decoration: underline;
-            cursor: pointer;
-        }
-
-        .link-btn:hover {
-            color: #000;
-        }
-
-        /* Update Photo Preview Styles for new container */
-        .photo-preview {
-            max-width: 100%;
-            max-height: 130px;
-            object-fit: contain;
-            border-radius: 8px;
-            display: none;
-            /* Toggled via JS */
-            margin-bottom: 8px;
-        }
-
-        border: 1px solid #fff !important;
-        color: #fff !important;
+        .theme-black .wardrobe-item {
+            background: #23272f !important;
+            border: 1px solid #fff !important;
+            color: #fff !important;
         }
 
         .theme-black .wardrobe-item:hover {
@@ -6294,109 +6151,105 @@
                     </button>
                 </div>
 
-                <!-- Photo Upload Section (Refined Layout) -->
+                <!-- Photo Upload Section -->
                 <div class="photo-section">
-                    <div class="photo-section__header">
-                        <div class="photo-section__title">Upload your photo</div>
-                        <div class="photo-section__sub">
-                            Full-body photos work best.
-                            <button type="button" class="info-btn" id="photoTipsBtn" aria-label="Photo tips"
-                                onclick="event.stopPropagation(); showBestPracticesModal();">i</button>
+                    <div class="photo-instruction">Upload full body image to get started</div>
+
+                    <!-- Photo Upload and Preview Container (flex for side-by-side on desktop) -->
+                    <div class="photo-section-content">
+                        <!-- Photo Upload Area -->
+                        <div class="photo-upload" onclick="handlePhotoUploadClick()">
+                            <button class="photo-tips-icon" onclick="event.stopPropagation(); showBestPracticesModal();"
+                                aria-label="View photo tips for best results" title="Photo Tips">ℹ️</button>
+                            <div class="upload-icon">🧍</div>
+                            <div class="upload-text">Tap to upload full body image</div>
+                            <img id="photoPreview" class="photo-preview" style="display: none;">
+                            <div id="changePhotoText" class="upload-text"
+                                style="display: none; margin-top: 8px; font-size: 12px; color: #6366f1;">Tap to change
+                                photo</div>
                         </div>
-                    </div>
 
-                    <div class="photo-upload" id="photoUploadDropzone">
-                        <div class="upload-empty">
-                            <div class="upload-icon-css" aria-hidden="true"></div>
-                            <div class="upload-text">
-                                <div class="upload-text__main">Click to upload</div>
-                                <div class="upload-text__sub">PNG or JPG • max 10MB</div>
-                            </div>
+                        <!-- Model Selector Link (Secondary Action - Native Style) -->
+                        <div class="upload-help-row">
+                            <span class="upload-help-text">No photo?</span>
+                            <button type="button" id="openModelBrowserBtn" class="upload-help-link">Choose a
+                                model</button>
                         </div>
-                        <img id="photoPreview" class="photo-preview" style="display: none;">
-                        <div id="changePhotoText" class="upload-text__main" style="display: none; color: #6366f1;">Tap
-                            to change photo</div>
-                    </div>
 
-                    <div class="photo-section__alt" id="modelSelectContainer">
-                        <span>Don’t have a photo?</span>
-                        <button type="button" class="link-btn" id="openModelBrowserBtn">Choose a model</button>
-                    </div>
-
-                    <!-- Selected Clothing Preview (Hidden logic kept for functionality) -->
-                    <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
-                        <div class="selected-clothing-content">
-                            <div class="selected-clothing-image-container">
-                                <img id="selectedClothingImage" class="selected-clothing-image" src=""
-                                    alt="Selected clothing">
-                                <button class="selected-clothing-remove" onclick="clearSelectedClothing()"
-                                    aria-label="Remove selected clothing">×</button>
+                        <!-- Selected Clothing Preview (shown when item is selected) -->
+                        <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
+                            <div class="selected-clothing-content">
+                                <div class="selected-clothing-image-container">
+                                    <img id="selectedClothingImage" class="selected-clothing-image" src=""
+                                        alt="Selected clothing">
+                                    <button class="selected-clothing-remove" onclick="clearSelectedClothing()"
+                                        aria-label="Remove selected clothing">×</button>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Mobile Camera Controls -->
-                <div id="cameraControls" class="camera-controls">
-                    <button class="camera-option-btn" onclick="takePicture()" type="button">
-                        <span class="icon">📸</span>
-                        <span>Camera</span>
-                    </button>
-                    <button class="camera-option-btn" onclick="chooseFromGallery()" type="button">
-                        <span class="icon">🖼️</span>
-                        <span>Gallery</span>
-                    </button>
-                </div>
-
-                <!-- File inputs -->
-                <input type="file" id="photoInput" class="hidden-input" accept="image/*" style="display:none !important"
-                    onchange="handlePhotoUpload(event)">
-                <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment"
-                    style="display:none !important" onchange="handlePhotoUpload(event)">
-
-                <!-- Analysis Loading Bar (Mobile & Desktop) -->
-                <div id="photoAnalysisOverlay" class="photo-analysis-bar" style="display: none;">
-                    <div class="analysis-spinner-small">
-                        <span></span>
-                        <span></span>
-                        <span></span>
+                    <!-- Mobile Camera Controls -->
+                    <div id="cameraControls" class="camera-controls">
+                        <button class="camera-option-btn" onclick="takePicture()" type="button">
+                            <span class="icon">📸</span>
+                            <span>Camera</span>
+                        </button>
+                        <button class="camera-option-btn" onclick="chooseFromGallery()" type="button">
+                            <span class="icon">🖼️</span>
+                            <span>Gallery</span>
+                        </button>
                     </div>
-                    <span class="analysis-text-bar">Analyzing image quality...</span>
+
+                    <!-- File inputs -->
+                    <input type="file" id="photoInput" class="hidden-input" accept="image/*"
+                        style="display:none !important" onchange="handlePhotoUpload(event)">
+                    <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment"
+                        style="display:none !important" onchange="handlePhotoUpload(event)">
+
+                    <!-- Analysis Loading Bar (Mobile & Desktop) -->
+                    <div id="photoAnalysisOverlay" class="photo-analysis-bar" style="display: none;">
+                        <div class="analysis-spinner-small">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                        </div>
+                        <span class="analysis-text-bar">Analyzing image quality...</span>
+                    </div>
+                </div>
+
+                <div id="resultSection" style="display: none;">
+                    <!-- Result will be shown here -->
+                    <div id="ello-tryon-loader" style="display: none; align-items: center; justify-content: center;">
+                    </div>
+                    <div id="ello-tryon-error"
+                        style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
+                    </div>
+                    <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
+                        <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
+                    </div>
                 </div>
             </div>
 
-            <div id="resultSection" style="display: none;">
-                <!-- Result will be shown here -->
-                <div id="ello-tryon-loader" style="display: none; align-items: center; justify-content: center;">
-                </div>
-                <div id="ello-tryon-error"
-                    style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
-                </div>
-                <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
-                    <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
-                </div>
-            </div>
-        </div>
-
-        <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
-        <div class="action-buttons">
-            <button class="btn btn-secondary" onclick="closeWidget()">
-                <span>✕</span>
-                Close
-            </button>
-            <button class="btn btn-primary" id="tryOnBtn" disabled
-                aria-label="Try on selected clothing with your photo. Press Enter to activate.">
-                <span>✨</span>
-                Try On
-            </button>
-            <!-- Loading Bar -->
-            <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
-                <div class="tryon-loading-bar">
-                    <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
+            <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
+            <div class="action-buttons">
+                <button class="btn btn-secondary" onclick="closeWidget()">
+                    <span>✕</span>
+                    Close
+                </button>
+                <button class="btn btn-primary" id="tryOnBtn" disabled
+                    aria-label="Try on selected clothing with your photo. Press Enter to activate.">
+                    <span>✨</span>
+                    Try On
+                </button>
+                <!-- Loading Bar -->
+                <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
+                    <div class="tryon-loading-bar">
+                        <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
     </div>
 
     <!-- Clothing Browser Modal -->

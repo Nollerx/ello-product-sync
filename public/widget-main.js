@@ -2516,21 +2516,6 @@ function initializeModelEvents() {
             console.log('[Model Catalogue] Real file selected, switching source to upload');
             userPhotoSource = 'upload';
             localStorage.setItem('ello_user_photo_source', 'upload');
-            resetModelSelectionUI(); // Reset UI text
-        });
-    }
-
-    // New Refined UI Listeners
-    const dropzone = document.getElementById('photoUploadDropzone');
-    if (dropzone) {
-        dropzone.addEventListener('click', handlePhotoUploadClick);
-    }
-
-    const tipsBtn = document.getElementById('photoTipsBtn');
-    if (tipsBtn) {
-        tipsBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            showBestPracticesModal();
         });
     }
 }
@@ -2587,34 +2572,38 @@ function selectModel(model) {
 
     // Set preview
     const preview = document.getElementById('photoPreview');
-    const uploadEmpty = document.querySelector('.upload-empty'); // New UI element
+    const uploadText = document.querySelector('.photo-upload .upload-text');
+    const subText = document.querySelector('.photo-instruction');
+    const icon = document.querySelector('.upload-icon');
 
     if (preview) {
         preview.src = model.image_url;
         preview.style.display = 'block';
     }
 
-    // Hide the "Click to upload" empty state
-    if (uploadEmpty) {
-        uploadEmpty.style.display = 'none';
-    }
-
-    // Set global userPhoto so validation passes
+    // Set global userPhoto so validation passes (even if skipped, button state checks it)
     userPhoto = model.image_url;
 
-    // Update the "Plan B" text area to show current selection
-    const altContainer = document.getElementById('modelSelectContainer');
-    if (altContainer) {
-        altContainer.innerHTML = `
-            <span style="color: #666;">Using: <strong>${model.name}</strong></span>
-            <span style="margin: 0 4px;">•</span>
-            <button type="button" class="link-btn" id="openModelBrowserBtn_Change">Change</button>
-        `;
-        // Re-attach listener to the new button
-        const changeBtn = document.getElementById('openModelBrowserBtn_Change');
-        if (changeBtn) {
-            changeBtn.addEventListener('click', openModelBrowser);
-        }
+    if (uploadText) uploadText.style.display = 'none';
+    if (icon) icon.style.display = 'none';
+
+    // Adjust UI text to reflect model mode
+    if (subText) subText.textContent = `Using model`;
+
+    // Update change text to be generic "Change" which opens modal
+    const changeText = document.getElementById('changePhotoText');
+    if (changeText) {
+        changeText.textContent = "Change";
+        changeText.style.display = 'block';
+        // Remove old onclicks and add new one to open model browser? 
+        // Actually, the user wants "Change" to open model modal. 
+        // But the previous implementation of change text (in HTML) says "Tap to change photo" and likely bubbled up to `handlePhotoUploadClick`.
+        // We should hijack the click or just let it bubble if we want upload?
+        // User request: "Using model" + "Change" link (opens model modal)
+
+        // Let's make the "Change" text a link/button distinct from the main container click if possible, 
+        // OR just make the main container click open the model modal if source is model.
+        // EASIER: Update the 'changePhotoText' to say "Change" and ensure the main container click handles it.
     }
 
     // Persist model selection
@@ -2628,32 +2617,6 @@ function selectModel(model) {
 
     // Show notification
     showNotification('Model selected', 'success');
-}
-
-// Helper to reset the model selection UI text
-function resetModelSelectionUI() {
-    const altContainer = document.getElementById('modelSelectContainer');
-    const uploadEmpty = document.querySelector('.upload-empty');
-
-    // Show upload prompt again if hidden
-    if (uploadEmpty) {
-        uploadEmpty.style.display = 'flex';
-    }
-
-    if (altContainer) {
-        altContainer.innerHTML = `
-            <span>Don’t have a photo?</span>
-            <button type="button" class="link-btn" id="openModelBrowserBtn">Choose a model</button>
-        `;
-        // Re-attach original listener
-        const openBtn = document.getElementById('openModelBrowserBtn');
-        if (openBtn) {
-            openBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                openModelBrowser();
-            });
-        }
-    }
 }
 
 // 🔄 REPLACE YOUR EXISTING populateFeaturedAndQuickPicks() FUNCTION WITH THIS:
