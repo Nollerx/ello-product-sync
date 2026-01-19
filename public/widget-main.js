@@ -2516,6 +2516,7 @@ function initializeModelEvents() {
             console.log('[Model Catalogue] Real file selected, switching source to upload');
             userPhotoSource = 'upload';
             localStorage.setItem('ello_user_photo_source', 'upload');
+            resetModelSelectionUI(); // Reset UI text
         });
     }
 
@@ -2627,6 +2628,32 @@ function selectModel(model) {
 
     // Show notification
     showNotification('Model selected', 'success');
+}
+
+// Helper to reset the model selection UI text
+function resetModelSelectionUI() {
+    const altContainer = document.getElementById('modelSelectContainer');
+    const uploadEmpty = document.querySelector('.upload-empty');
+
+    // Show upload prompt again if hidden
+    if (uploadEmpty) {
+        uploadEmpty.style.display = 'flex';
+    }
+
+    if (altContainer) {
+        altContainer.innerHTML = `
+            <span>Don’t have a photo?</span>
+            <button type="button" class="link-btn" id="openModelBrowserBtn">Choose a model</button>
+        `;
+        // Re-attach original listener
+        const openBtn = document.getElementById('openModelBrowserBtn');
+        if (openBtn) {
+            openBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                openModelBrowser();
+            });
+        }
+    }
 }
 
 // 🔄 REPLACE YOUR EXISTING populateFeaturedAndQuickPicks() FUNCTION WITH THIS:
