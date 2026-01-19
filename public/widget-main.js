@@ -14,6 +14,10 @@ window.initializeWidget = function () {
     // Use a small timeout to ensure DOM is ready if script loads fast
     setTimeout(initializeModelEvents, 500);
 
+    // Model Catalogue Feature - Init Event Listeners
+    // Use a small timeout to ensure DOM is ready if script loads fast
+    setTimeout(initializeModelEvents, 500);
+
     // If store config not loaded yet (e.g., direct HTML load without loader), fetch it
     if (!window.ELLO_STORE_CONFIG) {
         const storeSlug = window.ELLO_STORE_SLUG || window.ELLO_STORE_ID || 'default_store';
