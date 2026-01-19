@@ -2580,6 +2580,10 @@ function selectModel(model) {
         preview.src = model.image_url;
         preview.style.display = 'block';
     }
+
+    // Set global userPhoto so validation passes (even if skipped, button state checks it)
+    userPhoto = model.image_url;
+
     if (uploadText) uploadText.style.display = 'none';
     if (icon) icon.style.display = 'none';
 
