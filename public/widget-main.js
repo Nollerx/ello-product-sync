@@ -2011,6 +2011,11 @@ function handleBestPracticesUpload() {
 }
 
 function handlePhotoUploadClick() {
+    // [Model Catalogue] If using a model, open the browser instead of upload flow
+    if (userPhotoSource === 'model') {
+        openModelBrowser();
+        return;
+    }
     // Show best practices modal if not dismissed
     if (checkShouldShowBestPractices()) {
         // Set up pending action to trigger file picker (works for both mobile and desktop)
