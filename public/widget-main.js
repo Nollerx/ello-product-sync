@@ -22,6 +22,10 @@ window.initializeWidget = function () {
     // Use a small timeout to ensure DOM is ready if script loads fast
     setTimeout(initializeModelEvents, 500);
 
+    // Model Catalogue Feature - Init Event Listeners
+    // Use a small timeout to ensure DOM is ready if script loads fast
+    setTimeout(initializeModelEvents, 500);
+
     // If store config not loaded yet (e.g., direct HTML load without loader), fetch it
     if (!window.ELLO_STORE_CONFIG) {
         const storeSlug = window.ELLO_STORE_SLUG || window.ELLO_STORE_ID || 'default_store';
@@ -2464,6 +2468,121 @@ function isProductHidden(product) {
     }
 
     return false;
+}
+
+// --- Model Catalogue Feature ---
+const modelCatalogue = [
+    { id: 'model_f1', name: 'Model 1', gender: 'female', image_url: 'https://ello-vto-public-13593516897.us-central1.run.app/assets/overlay/itemplaceholder.jpg' }, // Placeholder
+    { id: 'model_m1', name: 'Model 2', gender: 'male', image_url: 'https://ello-vto-public-13593516897.us-central1.run.app/assets/overlay/userplaceholder.jpg' }, // Placeholder
+];
+
+let userPhotoSource = 'upload'; // 'upload' | 'model'
+
+function initializeModelEvents() {
+    const openBtn = document.getElementById('openModelBrowserBtn');
+    const closeBtn = document.getElementById('closeModelBrowserBtn');
+    const switchBtn = document.getElementById('switchToUploadBtn');
+
+    if (openBtn) {
+        openBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            openModelBrowser();
+        });
+    }
+
+    if (closeBtn) {
+        closeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeModelBrowser();
+        });
+    }
+
+    if (switchBtn) {
+        switchBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeModelBrowser();
+            // Optional: trigger upload click if allowed
+            // handlePhotoUploadClick();
+        });
+    }
+}
+
+function openModelBrowser() {
+    const modal = document.getElementById('modelBrowserModal');
+    const backdrop = document.getElementById('modalBackdrop');
+    if (!modal || !backdrop) return;
+
+    // Populate grid if empty
+    const grid = document.getElementById('modelBrowserGrid');
+    if (grid && grid.children.length === 0) {
+        renderModelGrid();
+    }
+
+    modal.classList.add('active');
+    backdrop.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeModelBrowser() {
+    const modal = document.getElementById('modelBrowserModal');
+    const backdrop = document.getElementById('modalBackdrop');
+    if (modal) modal.classList.remove('active');
+    if (backdrop) backdrop.classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+function renderModelGrid() {
+    const grid = document.getElementById('modelBrowserGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+
+    modelCatalogue.forEach(model => {
+        const card = document.createElement('div');
+        card.className = 'browser-clothing-card'; // Reuse clothing card style
+        card.onclick = () => selectModel(model);
+
+        card.innerHTML = `
+            <div class="clothing-card-image-container">
+                <img src="${model.image_url}" alt="${model.name}" class="clothing-card-image" style="object-fit: cover;">
+            </div>
+            <div class="clothing-card-details">
+                <div class="clothing-card-name" style="text-align:center;">${model.name}</div>
+            </div>
+        `;
+        grid.appendChild(card);
+    });
+}
+
+function selectModel(model) {
+    userPhotoSource = 'model';
+    console.log('[Model Catalogue] Selected:', model.id);
+
+    // Set preview
+    const preview = document.getElementById('photoPreview');
+    const uploadText = document.querySelector('.photo-upload .upload-text');
+    const subText = document.querySelector('.photo-instruction');
+    const icon = document.querySelector('.upload-icon');
+
+    if (preview) {
+        preview.src = model.image_url;
+        preview.style.display = 'block';
+    }
+    if (uploadText) uploadText.style.display = 'none';
+    if (icon) icon.style.display = 'none';
+
+    if (subText) subText.textContent = `Model Selected: ${model.name}`;
+
+    // Persist model selection
+    localStorage.setItem('ello_user_photo_source', 'model');
+    localStorage.setItem('ello_selected_model_id', model.id);
+
+    closeModelBrowser();
+
+    // Trigger "ready" state updates
+    updateTryOnButtonState();
+
+    // Show notification
+    showNotification('Model selected', 'success');
 }
 
 // 🔄 REPLACE YOUR EXISTING populateFeaturedAndQuickPicks() FUNCTION WITH THIS:
