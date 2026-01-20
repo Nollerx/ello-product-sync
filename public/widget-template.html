@@ -6198,394 +6198,411 @@
 
                 <!-- Photo Upload Section -->
                 <div class="photo-section">
-                    <div class="photo-instruction">Upload full body image to get started</div>
+                    <div class="photo-section">
+                        <div class="photo-instruction"
+                            style="text-transform: uppercase; font-weight: 600; font-size: 11px; letter-spacing: 0.05em; margin-bottom: 12px; color: #374151;">
+                            Choose who you’re trying this on</div>
 
-                    <!-- Photo Upload and Preview Container (flex for side-by-side on desktop) -->
-                    <div class="photo-section-content">
-                        <!-- Photo Upload Area -->
-                        <div class="photo-upload" onclick="handlePhotoUploadClick()">
-                            <button class="photo-tips-icon" onclick="event.stopPropagation(); showBestPracticesModal();"
-                                aria-label="View photo tips for best results" title="Photo Tips">ℹ️</button>
-                            <div class="upload-icon">🧍</div>
-                            <div class="upload-text">Tap to upload full body image</div>
-                            <img id="photoPreview" class="photo-preview" style="display: none;">
-                            <div id="changePhotoText" class="upload-text"
-                                style="display: none; margin-top: 8px; font-size: 12px; color: #6366f1;">Tap to change
-                                photo</div>
-                        </div>
+                        <!-- Photo Upload and Preview Container -->
+                        <div class="photo-section-content">
 
-                        <!-- Model Selector Link (Secondary Action - Native Style) -->
-                        <div class="upload-help-row">
-                            <span class="upload-help-text">No photo?</span>
-                            <button type="button" id="openModelBrowserBtn" class="upload-help-link">Choose a
-                                model</button>
-                        </div>
-
-                        <!-- Selected Clothing Preview (shown when item is selected) -->
-                        <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
-                            <div class="selected-clothing-content">
-                                <div class="selected-clothing-image-container">
-                                    <img id="selectedClothingImage" class="selected-clothing-image" src=""
-                                        alt="Selected clothing">
-                                    <button class="selected-clothing-remove" onclick="clearSelectedClothing()"
-                                        aria-label="Remove selected clothing">×</button>
+                            <!-- Dual Card Grid (Selection Mode) -->
+                            <div class="upload-options-grid">
+                                <!-- Left Card: Your Photo -->
+                                <div id="cardUpload" class="upload-option-card" onclick="handlePhotoUploadClick()">
+                                    <span class="card-badge recommended">Recommended</span>
+                                    <div class="card-icon">📷</div>
+                                    <div class="card-title">Your Photo</div>
+                                    <div class="card-subtext">Upload a full-body photo</div>
                                 </div>
+
+                                <!-- Right Card: Model -->
+                                <div id="cardModel" class="upload-option-card" onclick="openModelBrowser()">
+                                    <span class="card-badge">No photo needed</span>
+                                    <div class="card-icon">👤</div>
+                                    <div class="card-title">Use a Model</div>
+                                    <div class="card-subtext">Choose from our models</div>
+                                </div>
+                            </div>
+
+                            <!-- Preview Container (Shows result) -->
+                            <div id="activePhotoContainer" style="margin-top: 12px; position: relative;">
+                                <img id="photoPreview" class="photo-preview"
+                                    style="display: none; width: 100%; border-radius: 8px; object-fit: cover;">
+                                <div id="changePhotoText" class="upload-text"
+                                    style="display: none; margin-top: 8px; font-size: 12px; color: #6366f1; cursor: pointer;">
+                                    Tap to change
+                                </div>
+                            </div>
+
+                            <!-- Selected Clothing Preview (shown when item is selected) -->
+                            <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
+                                <div class="selected-clothing-content">
+                                    <div class="selected-clothing-image-container">
+                                        <img id="selectedClothingImage" class="selected-clothing-image" src=""
+                                            alt="Selected clothing">
+                                        <button class="selected-clothing-remove" onclick="clearSelectedClothing()"
+                                            aria-label="Remove selected clothing">×</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Mobile Camera Controls -->
+                        <div id="cameraControls" class="camera-controls">
+                            <button class="camera-option-btn" onclick="takePicture()" type="button">
+                                <span class="icon">📸</span>
+                                <span>Camera</span>
+                            </button>
+                            <button class="camera-option-btn" onclick="chooseFromGallery()" type="button">
+                                <span class="icon">🖼️</span>
+                                <span>Gallery</span>
+                            </button>
+                        </div>
+
+                        <!-- File inputs -->
+                        <input type="file" id="photoInput" class="hidden-input" accept="image/*"
+                            style="display:none !important" onchange="handlePhotoUpload(event)">
+                        <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment"
+                            style="display:none !important" onchange="handlePhotoUpload(event)">
+
+                        <!-- Analysis Loading Bar (Mobile & Desktop) -->
+                        <div id="photoAnalysisOverlay" class="photo-analysis-bar" style="display: none;">
+                            <div class="analysis-spinner-small">
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                            </div>
+                            <span class="analysis-text-bar">Analyzing image quality...</span>
+                        </div>
+                    </div>
+
+                    <div id="resultSection" style="display: none;">
+                        <!-- Result will be shown here -->
+                        <div id="ello-tryon-loader"
+                            style="display: none; align-items: center; justify-content: center;">
+                        </div>
+                        <div id="ello-tryon-error"
+                            style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
+                        </div>
+                        <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
+                            <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
+                <div class="action-buttons">
+                    <button class="btn btn-secondary" onclick="closeWidget()">
+                        <span>✕</span>
+                        Close
+                    </button>
+                    <button class="btn btn-primary" id="tryOnBtn" disabled
+                        aria-label="Try on selected clothing with your photo. Press Enter to activate.">
+                        <span>✨</span>
+                        Try On
+                    </button>
+                    <!-- Loading Bar -->
+                    <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
+                        <div class="tryon-loading-bar">
+                            <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Clothing Browser Modal -->
+        <div id="modalBackdrop" class="modal-backdrop" onclick="closeClothingBrowser()"></div>
+        <div id="clothingBrowserModal" class="clothing-browser-modal">
+            <div class="clothing-browser-content">
+                <div class="browser-header">
+                    <h2 class="browser-title">Browse Collection</h2>
+                    <button class="browser-close" onclick="closeClothingBrowser()">&times;</button>
+                </div>
+                <div class="browser-body">
+                    <div class="browser-search-container">
+                        <input type="text" class="browser-search" id="browserSearch"
+                            placeholder="Search for clothes, colors, or categories..." oninput="handleBrowserSearch()">
+                    </div>
+                    <div id="searchResultsCount" class="search-results-count"></div>
+                    <div id="browserGrid" class="browser-grid">
+                        <!-- Clothing items will be populated here -->
+                    </div>
+                    <div id="noResultsMessage" class="no-results" style="display: none;">
+                        No items found. Try a different search term.
+                    </div>
+                </div>
+                <div id="browserPagination" class="browser-pagination">
+                    <!-- Pagination controls will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Model Browser Modal (Cloned from Clothing Browser) -->
+        <div id="modelBrowserModal" class="clothing-browser-modal">
+            <div class="clothing-browser-content">
+                <div class="browser-header">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <h2 class="browser-title">Choose a model</h2>
+                        <button type="button" id="switchToUploadBtn" class="upload-help-link"
+                            style="font-weight: 400; font-size: 13px;">Upload instead</button>
+                    </div>
+                    <!-- Note: using id for JS listener attachment -->
+                    <button class="browser-close" id="closeModelBrowserBtn">&times;</button>
+                </div>
+                <div class="browser-body">
+                    <!-- Filters could go here later -->
+
+                    <div id="modelBrowserGrid" class="browser-grid">
+                        <!-- Models will be populated here via JS -->
+                    </div>
+                </div>
+                <!-- Pagination not needed for small model list yet -->
+            </div>
+        </div>
+
+        <!-- Image Modal -->
+        <div id="imageModal" class="image-modal" onclick="closeImageModal(event)">
+            <div class="modal-content">
+                <button class="modal-close" onclick="closeImageModal()">&times;</button>
+                <img id="modalImage" class="modal-image" src="" alt="Virtual Try-On Result">
+            </div>
+        </div>
+
+        <!-- Best Practices Modal -->
+        <div id="bestPracticesBackdrop" class="modal-backdrop" onclick="closeBestPracticesModal()"></div>
+        <div id="bestPracticesModal" class="best-practices-modal">
+            <div class="best-practices-content">
+                <div class="best-practices-header">
+                    <h2 class="best-practices-title">How to get the best results</h2>
+                    <button class="best-practices-close" onclick="closeBestPracticesModal()"
+                        aria-label="Close tips modal">&times;</button>
+                </div>
+                <div class="best-practices-body">
+                    <!-- Image Comparison Section -->
+                    <!-- Good example: Woman in jeans with plain background (full body, well-lit, standing straight) -->
+                    <!-- Bad example: Man in oversized puffy jacket (outdoor, bulky clothing, not full body) -->
+                    <div class="photo-comparison-container">
+                        <div class="comparison-image-wrapper">
+                            <img src="https://ello-vto-public-13593516897.us-central1.run.app/IMG_3109.png"
+                                alt="Good example: Full body portrait with plain background" class="comparison-image"
+                                id="goodExampleImage">
+                            <div class="comparison-badge good">
+                                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M16.6667 5L7.50004 14.1667L3.33337 10" stroke="white" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                            </div>
+                        </div>
+                        <div class="comparison-image-wrapper">
+                            <img src="https://ello-vto-public-13593516897.us-central1.run.app/IMG_3111.png"
+                                alt="Bad example: Oversized clothing with busy background" class="comparison-image"
+                                id="badExampleImage">
+                            <div class="comparison-badge bad">
+                                <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M5 5L15 15M15 5L5 15" stroke="white" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Mobile Camera Controls -->
-                    <div id="cameraControls" class="camera-controls">
-                        <button class="camera-option-btn" onclick="takePicture()" type="button">
-                            <span class="icon">📸</span>
-                            <span>Camera</span>
-                        </button>
-                        <button class="camera-option-btn" onclick="chooseFromGallery()" type="button">
-                            <span class="icon">🖼️</span>
-                            <span>Gallery</span>
-                        </button>
+                    <!-- Tips Comparison Section -->
+                    <div class="tips-comparison-container">
+                        <div class="tips-column tips-column-good">
+                            <div class="tip-bullet good">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#10b981" />
+                                    <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round" />
+                                </svg>
+                                <span>Full body</span>
+                            </div>
+                            <div class="tip-bullet good">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#10b981" />
+                                    <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round" />
+                                </svg>
+                                <span>Good lighting</span>
+                            </div>
+                            <div class="tip-bullet good">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#10b981" />
+                                    <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round" />
+                                </svg>
+                                <span>Just you</span>
+                            </div>
+                            <div class="tip-bullet good">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#10b981" />
+                                    <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round" />
+                                </svg>
+                                <span>No hands in pockets</span>
+                            </div>
+                            <div class="tip-bullet good">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#10b981" />
+                                    <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round" />
+                                </svg>
+                                <span>Plain background</span>
+                            </div>
+                            <div class="tip-bullet good">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#10b981" />
+                                    <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round" />
+                                </svg>
+                                <span>Minimal clothing</span>
+                            </div>
+                            <div class="tip-bullet good">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#10b981" />
+                                    <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round" />
+                                </svg>
+                                <span>High resolution</span>
+                            </div>
+                        </div>
+                        <div class="tips-column tips-column-bad">
+                            <div class="tip-bullet bad">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#ef4444" />
+                                    <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                <span>Sitting down</span>
+                            </div>
+                            <div class="tip-bullet bad">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#ef4444" />
+                                    <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                <span>Facing backwards</span>
+                            </div>
+                            <div class="tip-bullet bad">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#ef4444" />
+                                    <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                <span>Baggy clothes</span>
+                            </div>
+                            <div class="tip-bullet bad">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#ef4444" />
+                                    <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                <span>Harsh shadows</span>
+                            </div>
+                            <div class="tip-bullet bad">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#ef4444" />
+                                    <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                <span>Busy background</span>
+                            </div>
+                            <div class="tip-bullet bad">
+                                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
+                                    xmlns="http://www.w3.org/2000/svg">
+                                    <circle cx="9" cy="9" r="8" fill="#ef4444" />
+                                    <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2"
+                                        stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                                <span>Low resolution</span>
+                            </div>
+                        </div>
                     </div>
 
-                    <!-- File inputs -->
-                    <input type="file" id="photoInput" class="hidden-input" accept="image/*"
-                        style="display:none !important" onchange="handlePhotoUpload(event)">
-                    <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment"
-                        style="display:none !important" onchange="handlePhotoUpload(event)">
-
-                    <!-- Analysis Loading Bar (Mobile & Desktop) -->
-                    <div id="photoAnalysisOverlay" class="photo-analysis-bar" style="display: none;">
-                        <div class="analysis-spinner-small">
-                            <span></span>
-                            <span></span>
-                            <span></span>
-                        </div>
-                        <span class="analysis-text-bar">Analyzing image quality...</span>
+                    <!-- Disclaimer Note -->
+                    <div class="best-practices-note">
+                        <p>Note: Body shapes and personal features may not be accurately represented in virtual try-on
+                            results.</p>
+                        <p style="margin-top: 12px;">Privacy: Images uploaded are only used for the try-on process and
+                            are
+                            deleted after use. They are not stored or held for any other reason.</p>
                     </div>
                 </div>
-
-                <div id="resultSection" style="display: none;">
-                    <!-- Result will be shown here -->
-                    <div id="ello-tryon-loader" style="display: none; align-items: center; justify-content: center;">
-                    </div>
-                    <div id="ello-tryon-error"
-                        style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
-                    </div>
-                    <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
-                        <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
-                    </div>
+                <div class="best-practices-footer">
+                    <label class="dont-show-again-label">
+                        <input type="checkbox" id="dontShowAgainCheckbox">
+                        <span>Don't show this again</span>
+                    </label>
+                    <button class="upload-photo-btn" onclick="handleBestPracticesUpload()">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
+                            style="margin-right: 8px;">
+                            <path d="M10 2V13M10 13L6 9M10 13L14 9" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" />
+                            <path d="M2 18H18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                        </svg>
+                        Upload photo
+                    </button>
                 </div>
             </div>
+        </div>
 
-            <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
-            <div class="action-buttons">
-                <button class="btn btn-secondary" onclick="closeWidget()">
-                    <span>✕</span>
-                    Close
-                </button>
-                <button class="btn btn-primary" id="tryOnBtn" disabled
-                    aria-label="Try on selected clothing with your photo. Press Enter to activate.">
-                    <span>✨</span>
-                    Try On
-                </button>
-                <!-- Loading Bar -->
-                <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
-                    <div class="tryon-loading-bar">
-                        <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
+        <!-- Wardrobe Modal -->
+        <div id="wardrobeModal" class="wardrobe-modal">
+            <div class="wardrobe-content">
+                <div class="wardrobe-header">
+                    <h2 class="wardrobe-title">My Wardrobe</h2>
+                    <button class="wardrobe-close" onclick="closeWardrobe()">&times;</button>
+                </div>
+                <div class="wardrobe-body">
+                    <div id="wardrobeEmpty" class="wardrobe-empty" style="display: none;">
+                        <div class="wardrobe-empty-icon">👔</div>
+                        <h3>Your Wardrobe is Empty</h3>
+                        <p>Try on some clothes to see them here!</p>
+                    </div>
+                    <div id="wardrobeGrid" class="wardrobe-grid">
+                        <!-- Wardrobe items will be populated here -->
                     </div>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Clothing Browser Modal -->
-    <div id="modalBackdrop" class="modal-backdrop" onclick="closeClothingBrowser()"></div>
-    <div id="clothingBrowserModal" class="clothing-browser-modal">
-        <div class="clothing-browser-content">
-            <div class="browser-header">
-                <h2 class="browser-title">Browse Collection</h2>
-                <button class="browser-close" onclick="closeClothingBrowser()">&times;</button>
-            </div>
-            <div class="browser-body">
-                <div class="browser-search-container">
-                    <input type="text" class="browser-search" id="browserSearch"
-                        placeholder="Search for clothes, colors, or categories..." oninput="handleBrowserSearch()">
+        <!-- Try-On Loading Overlay -->
+        <div id="tryonLoadingOverlay" class="tryon-loading-overlay">
+            <div class="tryon-loading-content">
+                <div class="tryon-loading-spinner"></div>
+                <h3 class="tryon-loading-title">Processing Your Try-On</h3>
+                <p class="tryon-loading-subtitle">Analyzing your photo and applying the selected clothing. This may take
+                    a
+                    few moments...</p>
+                <div class="tryon-loading-progress">
+                    <div class="tryon-loading-progress-bar"></div>
                 </div>
-                <div id="searchResultsCount" class="search-results-count"></div>
-                <div id="browserGrid" class="browser-grid">
-                    <!-- Clothing items will be populated here -->
-                </div>
-                <div id="noResultsMessage" class="no-results" style="display: none;">
-                    No items found. Try a different search term.
-                </div>
-            </div>
-            <div id="browserPagination" class="browser-pagination">
-                <!-- Pagination controls will be populated here -->
-            </div>
-        </div>
-    </div>
-
-    <!-- Model Browser Modal (Cloned from Clothing Browser) -->
-    <div id="modelBrowserModal" class="clothing-browser-modal">
-        <div class="clothing-browser-content">
-            <div class="browser-header">
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <h2 class="browser-title">Choose a model</h2>
-                    <button type="button" id="switchToUploadBtn" class="upload-help-link"
-                        style="font-weight: 400; font-size: 13px;">Upload instead</button>
-                </div>
-                <!-- Note: using id for JS listener attachment -->
-                <button class="browser-close" id="closeModelBrowserBtn">&times;</button>
-            </div>
-            <div class="browser-body">
-                <!-- Filters could go here later -->
-
-                <div id="modelBrowserGrid" class="browser-grid">
-                    <!-- Models will be populated here via JS -->
-                </div>
-            </div>
-            <!-- Pagination not needed for small model list yet -->
-        </div>
-    </div>
-
-    <!-- Image Modal -->
-    <div id="imageModal" class="image-modal" onclick="closeImageModal(event)">
-        <div class="modal-content">
-            <button class="modal-close" onclick="closeImageModal()">&times;</button>
-            <img id="modalImage" class="modal-image" src="" alt="Virtual Try-On Result">
-        </div>
-    </div>
-
-    <!-- Best Practices Modal -->
-    <div id="bestPracticesBackdrop" class="modal-backdrop" onclick="closeBestPracticesModal()"></div>
-    <div id="bestPracticesModal" class="best-practices-modal">
-        <div class="best-practices-content">
-            <div class="best-practices-header">
-                <h2 class="best-practices-title">How to get the best results</h2>
-                <button class="best-practices-close" onclick="closeBestPracticesModal()"
-                    aria-label="Close tips modal">&times;</button>
-            </div>
-            <div class="best-practices-body">
-                <!-- Image Comparison Section -->
-                <!-- Good example: Woman in jeans with plain background (full body, well-lit, standing straight) -->
-                <!-- Bad example: Man in oversized puffy jacket (outdoor, bulky clothing, not full body) -->
-                <div class="photo-comparison-container">
-                    <div class="comparison-image-wrapper">
-                        <img src="https://ello-vto-public-13593516897.us-central1.run.app/IMG_3109.png"
-                            alt="Good example: Full body portrait with plain background" class="comparison-image"
-                            id="goodExampleImage">
-                        <div class="comparison-badge good">
-                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <path d="M16.6667 5L7.50004 14.1667L3.33337 10" stroke="white" stroke-width="2"
-                                    stroke-linecap="round" stroke-linejoin="round" />
-                            </svg>
-                        </div>
-                    </div>
-                    <div class="comparison-image-wrapper">
-                        <img src="https://ello-vto-public-13593516897.us-central1.run.app/IMG_3111.png"
-                            alt="Bad example: Oversized clothing with busy background" class="comparison-image"
-                            id="badExampleImage">
-                        <div class="comparison-badge bad">
-                            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <path d="M5 5L15 15M15 5L5 15" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Tips Comparison Section -->
-                <div class="tips-comparison-container">
-                    <div class="tips-column tips-column-good">
-                        <div class="tip-bullet good">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#10b981" />
-                                <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Full body</span>
-                        </div>
-                        <div class="tip-bullet good">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#10b981" />
-                                <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Good lighting</span>
-                        </div>
-                        <div class="tip-bullet good">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#10b981" />
-                                <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Just you</span>
-                        </div>
-                        <div class="tip-bullet good">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#10b981" />
-                                <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>No hands in pockets</span>
-                        </div>
-                        <div class="tip-bullet good">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#10b981" />
-                                <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Plain background</span>
-                        </div>
-                        <div class="tip-bullet good">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#10b981" />
-                                <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Minimal clothing</span>
-                        </div>
-                        <div class="tip-bullet good">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#10b981" />
-                                <path d="M5 9L8 12L13 6" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>High resolution</span>
-                        </div>
-                    </div>
-                    <div class="tips-column tips-column-bad">
-                        <div class="tip-bullet bad">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#ef4444" />
-                                <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Sitting down</span>
-                        </div>
-                        <div class="tip-bullet bad">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#ef4444" />
-                                <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Facing backwards</span>
-                        </div>
-                        <div class="tip-bullet bad">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#ef4444" />
-                                <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Baggy clothes</span>
-                        </div>
-                        <div class="tip-bullet bad">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#ef4444" />
-                                <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Harsh shadows</span>
-                        </div>
-                        <div class="tip-bullet bad">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#ef4444" />
-                                <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Busy background</span>
-                        </div>
-                        <div class="tip-bullet bad">
-                            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                                xmlns="http://www.w3.org/2000/svg">
-                                <circle cx="9" cy="9" r="8" fill="#ef4444" />
-                                <path d="M5 5L13 13M13 5L5 13" stroke="white" stroke-width="2" stroke-linecap="round"
-                                    stroke-linejoin="round" />
-                            </svg>
-                            <span>Low resolution</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Disclaimer Note -->
-                <div class="best-practices-note">
-                    <p>Note: Body shapes and personal features may not be accurately represented in virtual try-on
-                        results.</p>
-                    <p style="margin-top: 12px;">Privacy: Images uploaded are only used for the try-on process and are
-                        deleted after use. They are not stored or held for any other reason.</p>
-                </div>
-            </div>
-            <div class="best-practices-footer">
-                <label class="dont-show-again-label">
-                    <input type="checkbox" id="dontShowAgainCheckbox">
-                    <span>Don't show this again</span>
-                </label>
-                <button class="upload-photo-btn" onclick="handleBestPracticesUpload()">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-                        style="margin-right: 8px;">
-                        <path d="M10 2V13M10 13L6 9M10 13L14 9" stroke="currentColor" stroke-width="2"
-                            stroke-linecap="round" stroke-linejoin="round" />
-                        <path d="M2 18H18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                    </svg>
-                    Upload photo
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Wardrobe Modal -->
-    <div id="wardrobeModal" class="wardrobe-modal">
-        <div class="wardrobe-content">
-            <div class="wardrobe-header">
-                <h2 class="wardrobe-title">My Wardrobe</h2>
-                <button class="wardrobe-close" onclick="closeWardrobe()">&times;</button>
-            </div>
-            <div class="wardrobe-body">
-                <div id="wardrobeEmpty" class="wardrobe-empty" style="display: none;">
-                    <div class="wardrobe-empty-icon">👔</div>
-                    <h3>Your Wardrobe is Empty</h3>
-                    <p>Try on some clothes to see them here!</p>
-                </div>
-                <div id="wardrobeGrid" class="wardrobe-grid">
-                    <!-- Wardrobe items will be populated here -->
+                <!-- ADD THIS LINE -->
+                <div class="ello-branding">powered by <a href="https://ello.services" target="_blank">Ello.services</a>
                 </div>
             </div>
         </div>
-    </div>
 
-    <!-- Try-On Loading Overlay -->
-    <div id="tryonLoadingOverlay" class="tryon-loading-overlay">
-        <div class="tryon-loading-content">
-            <div class="tryon-loading-spinner"></div>
-            <h3 class="tryon-loading-title">Processing Your Try-On</h3>
-            <p class="tryon-loading-subtitle">Analyzing your photo and applying the selected clothing. This may take a
-                few moments...</p>
-            <div class="tryon-loading-progress">
-                <div class="tryon-loading-progress-bar"></div>
-            </div>
-            <!-- ADD THIS LINE -->
-            <div class="ello-branding">powered by <a href="https://ello.services" target="_blank">Ello.services</a>
-            </div>
-        </div>
-    </div>
-
-    <!-- Remove the inline <script> tag and replace it with an external script reference -->
-    <!-- Using local file for testing - change to hosted URL for production -->
-    <script src="widget-main.js"></script>
-    <!-- Production: <script src="https://ello-vto-13593516897.us-central1.run.app/widget-main.js"></script> -->
+        <!-- Remove the inline <script> tag and replace it with an external script reference -->
+        <!-- Using local file for testing - change to hosted URL for production -->
+        <script src="widget-main.js"></script>
+        <!-- Production: <script src="https://ello-vto-13593516897.us-central1.run.app/widget-main.js"></script> -->
 </body>
 
 </html>
