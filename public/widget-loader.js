@@ -207,7 +207,7 @@
     async function initializeWidget() {
         try {
             // Version for caching - update this when major changes occur to force refresh
-            const WIDGET_VERSION = '2.4.0';
+            const WIDGET_VERSION = '2.4.1';
 
             // Start fetching HTML immediately (in parallel with store config)
             const htmlPromise = fetch(`${WIDGET_BASE_URL}/widget.html?v=${WIDGET_VERSION}`, {
