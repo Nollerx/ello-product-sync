@@ -184,6 +184,7 @@ let previewScrollTimer = null;
 let previewDelayTimer = null;
 let hasUserInteractedWithPreview = false;
 let isPreviewVisible = false;
+let hasUserActivity = false; // Add missing variable
 
 // ============================================================================
 // CONFIGURATION & CONSTANTS
