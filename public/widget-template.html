@@ -6672,16 +6672,38 @@
                         </div>
                     </div>
 
-                    <!-- Mobile Camera Controls -->
-                    <div id="cameraControls" class="camera-controls">
-                        <button class="camera-option-btn" onclick="takePicture()" type="button">
-                            <span class="icon">📸</span>
-                            <span>Camera</span>
-                        </button>
-                        <button class="camera-option-btn" onclick="chooseFromGallery()" type="button">
-                            <span class="icon">🖼️</span>
-                            <span>Gallery</span>
-                        </button>
+                    <!-- NEW: Dual Card Upload Selection -->
+                    <div id="uploadOptionsContainer" class="upload-options-container">
+                        <div class="upload-options-grid">
+                            <!-- Card 1: Upload Photo -->
+                            <div class="upload-card" onclick="handlePhotoUploadClick()" role="button" tabindex="0">
+                                <div class="upload-card-icon">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+                                    </svg>
+                                </div>
+                                <div class="upload-card-content">
+                                    <span class="upload-card-title">Upload Photo</span>
+                                    <span class="upload-card-subtitle">Use your own image</span>
+                                </div>
+                            </div>
+
+                            <!-- Card 2: Choose Model -->
+                            <div class="upload-card" onclick="openModelBrowser()" role="button" tabindex="0">
+                                <div class="upload-card-icon">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                                        <circle cx="12" cy="7" r="4" />
+                                    </svg>
+                                </div>
+                                <div class="upload-card-content">
+                                    <span class="upload-card-title">Choose Model</span>
+                                    <span class="upload-card-subtitle">Try on a model</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- File inputs -->
