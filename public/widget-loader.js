@@ -14,6 +14,9 @@
         console.log("🔧 Ello Widget: Running in Local Development Mode");
     }
 
+    // Expose Base URL for widget-main.js to use for asset loading
+    window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
+
     // Get store configuration from script tag
     const currentScript = document.currentScript;
     // Use 'default_store' for testing when no script tag or store slug is provided

@@ -2616,13 +2616,24 @@ function renderModelGrid() {
     if (!grid) return;
     grid.innerHTML = '';
 
+    const baseUrl = window.ELLO_WIDGET_BASE_URL || '';
+
     modelCatalogue.forEach(model => {
         const card = document.createElement('div');
         card.className = 'model-browser-card'; // Distinct style for models
         card.onclick = () => selectModel(model);
 
+        // Ensure we have an absolute URL
+        let imageUrl = model.image_url;
+        if (imageUrl && !imageUrl.startsWith('http') && !imageUrl.startsWith('data:')) {
+            // Remove leading slash if both have it to avoid double slash, though harmless usually
+            const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+            const cleanPath = imageUrl.startsWith('/') ? imageUrl.slice(1) : imageUrl;
+            imageUrl = `${cleanBase}/${cleanPath}`;
+        }
+
         card.innerHTML = `
-            <img src="${model.image_url}" alt="${model.name}" class="model-card-image">
+            <img src="${imageUrl}" alt="${model.name}" class="model-card-image">
         `;
         grid.appendChild(card);
     });
@@ -2641,14 +2652,23 @@ function selectModel(model) {
     const subText = document.querySelector('.photo-instruction');
     const icon = document.querySelector('.upload-icon');
 
+    // Construct absolute URL
+    const baseUrl = window.ELLO_WIDGET_BASE_URL || '';
+    let imageUrl = model.image_url;
+    if (imageUrl && !imageUrl.startsWith('http') && !imageUrl.startsWith('data:')) {
+        const cleanBase = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+        const cleanPath = imageUrl.startsWith('/') ? imageUrl.slice(1) : imageUrl;
+        imageUrl = `${cleanBase}/${cleanPath}`;
+    }
+
     if (preview) {
-        preview.src = model.image_url;
+        preview.src = imageUrl;
         preview.style.display = 'block';
     }
 
     // Set global userPhoto so validation passes (even if skipped, button state checks it)
-    userPhoto = model.image_url;
-    window.elloUserImageUrl = model.image_url; // CRITICAL: Update global so startTryOn sees it
+    userPhoto = imageUrl;
+    window.elloUserImageUrl = imageUrl; // CRITICAL: Update global so startTryOn sees it
     userPhotoFileId = 'model_' + model.id; // Track model usage
 
     if (uploadText) uploadText.style.display = 'none';
@@ -2673,7 +2693,7 @@ function selectModel(model) {
     if (uploadGrid) uploadGrid.style.display = 'none';
     if (activeContainer) {
         activeContainer.style.display = 'flex'; // Use flex to center
-        if (activePhoto) activePhoto.src = model.image_url;
+        if (activePhoto) activePhoto.src = imageUrl;
     }
 
     // Show workspace
