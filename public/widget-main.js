@@ -2010,43 +2010,7 @@ function handleBestPracticesUpload() {
     }, 300);
 }
 
-function handlePhotoUploadClick() {
-    // If using a model, switch UI state back to upload? 
-    // Actually, just opening the picker is enough, the "change" listener will handle the state update.
-    // But we might want to visually select "Your Photo" immediately? 
-    // No, better to wait for file selection. 
-    // However, if we click "Your Photo" while "Model" is selected, we should probably just open picker 
-    // and let the change event handle the reset.
-    // The previous logic was: "If using model, open model browser".
-    // Now we have two distinct cards.
-    // If user clicks "Your Photo" card -> Open picker.
-    // If user clicks "Use a Model" card -> Open browser.
-    // So this function (attached to "Your Photo") should ALWAYS open picker.
 
-    const fileInput = document.getElementById('imageUploadInput');
-    if (fileInput) {
-        fileInput.click();
-    }
-}
-
-// Helper to update card UI
-function updateUploadCardSelection(source) {
-    const cardUpload = document.getElementById('cardUpload');
-    const cardModel = document.getElementById('cardModel');
-    if (!cardUpload || !cardModel) return;
-
-    if (source === 'upload') {
-        cardUpload.classList.add('selected');
-        cardModel.classList.remove('selected');
-        cardModel.classList.add('muted');
-        cardUpload.classList.remove('muted');
-    } else {
-        cardModel.classList.add('selected');
-        cardUpload.classList.remove('selected');
-        cardUpload.classList.add('muted');
-        cardModel.classList.remove('muted');
-    }
-}
 // Set up pending action to trigger file picker (works for both mobile and desktop)
 pendingPhotoAction = () => {
     const photoInput = document.getElementById('photoInput');
