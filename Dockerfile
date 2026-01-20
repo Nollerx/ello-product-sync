@@ -20,5 +20,6 @@ RUN npm run build
 ENV HOST=0.0.0.0
 ENV PORT=8080
 ENV NODE_ENV=production
+ENV SESSION_DB_PATH=/tmp/shopify_sessions.sqlite
 
 CMD ["npm", "run", "docker-start"]
