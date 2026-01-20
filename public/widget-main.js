@@ -7156,7 +7156,7 @@ function handleRouteChanged() {
 }
 
 // let previewDelayTimer = null; // Removed duplicate
-let hasUserActivity = false; // Re-enabled for global tracking
+// let hasUserActivity = false; // Re-enabled for global tracking
 
 function resetPreviewTimers() {
     // Clear existing
