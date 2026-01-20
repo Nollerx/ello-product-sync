@@ -168,6 +168,7 @@
                 "https://ello-vto-13593516897.us-central1.run.app/bootstrap",
                 {
                     method: "POST",
+                    mode: "cors", // Explicitly request CORS
                     headers: {
                         "Content-Type": "application/json"
                     },
