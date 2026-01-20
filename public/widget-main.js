@@ -2011,87 +2011,116 @@ function handleBestPracticesUpload() {
 }
 
 function handlePhotoUploadClick() {
-    // [Model Catalogue] If using a model, open the browser instead of upload flow
-    if (userPhotoSource === 'model') {
-        openModelBrowser();
-        return;
+    // If using a model, switch UI state back to upload? 
+    // Actually, just opening the picker is enough, the "change" listener will handle the state update.
+    // But we might want to visually select "Your Photo" immediately? 
+    // No, better to wait for file selection. 
+    // However, if we click "Your Photo" while "Model" is selected, we should probably just open picker 
+    // and let the change event handle the reset.
+    // The previous logic was: "If using model, open model browser".
+    // Now we have two distinct cards.
+    // If user clicks "Your Photo" card -> Open picker.
+    // If user clicks "Use a Model" card -> Open browser.
+    // So this function (attached to "Your Photo") should ALWAYS open picker.
+
+    const fileInput = document.getElementById('imageUploadInput');
+    if (fileInput) {
+        fileInput.click();
     }
-    // Show best practices modal if not dismissed
-    if (checkShouldShowBestPractices()) {
-        // Set up pending action to trigger file picker (works for both mobile and desktop)
-        pendingPhotoAction = () => {
-            const photoInput = document.getElementById('photoInput');
-            if (photoInput) {
-                // Reset the input value to allow selecting the same file again if needed
-                photoInput.value = '';
+}
 
-                if (isIOS) {
-                    // On iOS, create a new input element
-                    const newPhotoInput = document.createElement('input');
-                    newPhotoInput.type = 'file';
-                    newPhotoInput.accept = 'image/*';
-                    newPhotoInput.style.display = 'none';
-                    newPhotoInput.onchange = handlePhotoUpload;
+// Helper to update card UI
+function updateUploadCardSelection(source) {
+    const cardUpload = document.getElementById('cardUpload');
+    const cardModel = document.getElementById('cardModel');
+    if (!cardUpload || !cardModel) return;
 
-                    document.body.appendChild(newPhotoInput);
-
-                    setTimeout(() => {
-                        newPhotoInput.click();
-                        setTimeout(() => {
-                            if (newPhotoInput.parentNode) {
-                                newPhotoInput.parentNode.removeChild(newPhotoInput);
-                            }
-                        }, 1000);
-                    }, 100);
-                } else {
-                    // On Android/Desktop, use the existing input
-                    setTimeout(() => {
-                        photoInput.click();
-                    }, 100);
-                }
-            }
-        };
-        showBestPracticesModal();
-        return;
-    }
-
-    // If modal was dismissed, proceed normally
-    if (isMobile) {
-        // On mobile, trigger file picker directly
-        const photoInput = document.getElementById('photoInput');
-        if (photoInput) {
-            photoInput.value = '';
-            if (isIOS) {
-                const newPhotoInput = document.createElement('input');
-                newPhotoInput.type = 'file';
-                newPhotoInput.accept = 'image/*';
-                newPhotoInput.style.display = 'none';
-                newPhotoInput.onchange = handlePhotoUpload;
-
-                document.body.appendChild(newPhotoInput);
-
-                setTimeout(() => {
-                    newPhotoInput.click();
-                    setTimeout(() => {
-                        if (newPhotoInput.parentNode) {
-                            newPhotoInput.parentNode.removeChild(newPhotoInput);
-                        }
-                    }, 1000);
-                }, 100);
-            } else {
-                setTimeout(() => {
-                    photoInput.click();
-                }, 100);
-            }
-        }
+    if (source === 'upload') {
+        cardUpload.classList.add('selected');
+        cardModel.classList.remove('selected');
+        cardModel.classList.add('muted');
+        cardUpload.classList.remove('muted');
     } else {
-        // On desktop, trigger file input click
-        const photoInput = document.getElementById('photoInput');
-        if (photoInput) {
-            photoInput.value = '';
-            photoInput.click();
+        cardModel.classList.add('selected');
+        cardUpload.classList.remove('selected');
+        cardUpload.classList.add('muted');
+        cardModel.classList.remove('muted');
+    }
+}
+// Set up pending action to trigger file picker (works for both mobile and desktop)
+pendingPhotoAction = () => {
+    const photoInput = document.getElementById('photoInput');
+    if (photoInput) {
+        // Reset the input value to allow selecting the same file again if needed
+        photoInput.value = '';
+
+        if (isIOS) {
+            // On iOS, create a new input element
+            const newPhotoInput = document.createElement('input');
+            newPhotoInput.type = 'file';
+            newPhotoInput.accept = 'image/*';
+            newPhotoInput.style.display = 'none';
+            newPhotoInput.onchange = handlePhotoUpload;
+
+            document.body.appendChild(newPhotoInput);
+
+            setTimeout(() => {
+                newPhotoInput.click();
+                setTimeout(() => {
+                    if (newPhotoInput.parentNode) {
+                        newPhotoInput.parentNode.removeChild(newPhotoInput);
+                    }
+                }, 1000);
+            }, 100);
+        } else {
+            // On Android/Desktop, use the existing input
+            setTimeout(() => {
+                photoInput.click();
+            }, 100);
         }
     }
+};
+showBestPracticesModal();
+return;
+    }
+
+// If modal was dismissed, proceed normally
+if (isMobile) {
+    // On mobile, trigger file picker directly
+    const photoInput = document.getElementById('photoInput');
+    if (photoInput) {
+        photoInput.value = '';
+        if (isIOS) {
+            const newPhotoInput = document.createElement('input');
+            newPhotoInput.type = 'file';
+            newPhotoInput.accept = 'image/*';
+            newPhotoInput.style.display = 'none';
+            newPhotoInput.onchange = handlePhotoUpload;
+
+            document.body.appendChild(newPhotoInput);
+
+            setTimeout(() => {
+                newPhotoInput.click();
+                setTimeout(() => {
+                    if (newPhotoInput.parentNode) {
+                        newPhotoInput.parentNode.removeChild(newPhotoInput);
+                    }
+                }, 1000);
+            }, 100);
+        } else {
+            setTimeout(() => {
+                photoInput.click();
+            }, 100);
+        }
+    }
+} else {
+    // On desktop, trigger file input click
+    const photoInput = document.getElementById('photoInput');
+    if (photoInput) {
+        photoInput.value = '';
+        photoInput.click();
+    }
+}
 }
 
 /**
