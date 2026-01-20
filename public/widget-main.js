@@ -2010,9 +2010,12 @@ function handleBestPracticesUpload() {
     }, 300);
 }
 
-
-// 3. Handle Photo Upload Click
 function handlePhotoUploadClick() {
+    // [Model Catalogue] If using a model, open the browser instead of upload flow
+    if (userPhotoSource === 'model') {
+        openModelBrowser();
+        return;
+    }
     // Show best practices modal if not dismissed
     if (checkShouldShowBestPractices()) {
         // Set up pending action to trigger file picker (works for both mobile and desktop)
@@ -2128,25 +2131,6 @@ function lockBodyScroll() {
     };
 
     document.addEventListener('touchmove', scrollLockTouchHandler, { passive: false });
-}
-
-// Helper to update card UI
-function updateUploadCardSelection(source) {
-    const cardUpload = document.getElementById('cardUpload');
-    const cardModel = document.getElementById('cardModel');
-    if (cardUpload && cardModel) {
-        if (source === 'upload') {
-            cardUpload.classList.add('selected');
-            cardUpload.classList.remove('muted');
-            cardModel.classList.remove('selected');
-            cardModel.classList.add('muted');
-        } else {
-            cardModel.classList.add('selected');
-            cardModel.classList.remove('muted');
-            cardUpload.classList.remove('selected');
-            cardUpload.classList.add('muted');
-        }
-    }
 }
 
 /**
@@ -2342,26 +2326,53 @@ function closeWidget() {
  */
 function resetPhotoUploadArea() {
     const uploadArea = document.querySelector('.photo-upload');
-    if (!uploadArea) return;
+    // if (!uploadArea) return; // Removed early return to allow new grid logic to work
 
-    uploadArea.classList.remove('has-photo', 'uploading');
+    if (uploadArea) {
+        uploadArea.classList.remove('has-photo', 'uploading');
 
-    const uploadIcon = uploadArea.querySelector('.upload-icon');
-    const uploadText = uploadArea.querySelector('.upload-text:not(#changePhotoText)');
+        const uploadIcon = uploadArea.querySelector('.upload-icon');
+        const uploadText = uploadArea.querySelector('.upload-text:not(#changePhotoText)');
+
+        if (uploadIcon) uploadIcon.style.display = 'block';
+        if (uploadText) {
+            uploadText.style.display = 'block';
+            uploadText.textContent = isMobile ? 'Tap to upload full body image' : 'Click to upload full body image';
+        }
+    }
+
     const changeText = document.getElementById('changePhotoText');
     const preview = document.getElementById('photoPreview');
 
-    if (uploadIcon) uploadIcon.style.display = 'block';
-    if (uploadText) {
-        uploadText.style.display = 'block';
-        // Reset text to default in case it was stuck on "Analyzing image quality..."
-        uploadText.textContent = isMobile ? 'Tap to upload full body image' : 'Click to upload full body image';
-    }
     if (changeText) changeText.style.display = 'none';
     if (preview) {
         preview.style.display = 'none';
         preview.src = ''; // Clear source to prevent ghosting
     }
+
+    const instruction = document.querySelector('.photo-instruction');
+    if (instruction) instruction.style.display = 'block';
+
+    // NEW: Toggle Active Photo State
+    const activeContainer = document.getElementById('activeUserPhotoContainer');
+    const uploadGrid = document.querySelector('.upload-options-grid');
+    const activePhoto = document.getElementById('activeUserPhoto');
+
+    if (activeContainer) {
+        activeContainer.style.display = 'none';
+        if (activePhoto) activePhoto.src = '';
+    }
+
+    if (uploadGrid) {
+        uploadGrid.style.display = 'grid'; // Restore grid layout
+    }
+
+    // Hide any selected clothing to prevent layout squishing
+    clearSelectedClothing();
+
+    // Hide standard workspace container
+    const workspace = document.querySelector('.try-on-workspace');
+    if (workspace) workspace.classList.remove('visible');
 }
 
 function switchMode(mode) {
@@ -2496,8 +2507,13 @@ function isProductHidden(product) {
 
 // --- Model Catalogue Feature ---
 const modelCatalogue = [
-    { id: 'model_f1', name: 'Model 1', gender: 'female', image_url: 'https://ello-vto-public-13593516897.us-central1.run.app/assets/overlay/itemplaceholder.jpg' }, // Placeholder
-    { id: 'model_m1', name: 'Model 2', gender: 'male', image_url: 'https://ello-vto-public-13593516897.us-central1.run.app/assets/overlay/userplaceholder.jpg' }, // Placeholder
+    { id: 'model_1', name: 'Model 1', gender: 'female', image_url: 'assets/models/model_1.jpg' },
+    { id: 'model_2', name: 'Model 2', gender: 'female', image_url: 'assets/models/model_2.jpg' },
+    { id: 'model_3', name: 'Model 3', gender: 'female', image_url: 'assets/models/model_3.jpg' },
+    { id: 'model_4', name: 'Model 4', gender: 'female', image_url: 'assets/models/model_4.jpg' },
+    { id: 'model_5', name: 'Model 5', gender: 'female', image_url: 'assets/models/model_5.jpg' },
+    { id: 'model_6', name: 'Model 6', gender: 'female', image_url: 'assets/models/model_6.jpg' },
+    { id: 'model_7', name: 'Model 7', gender: 'female', image_url: 'assets/models/model_7.jpg' },
 ];
 
 let userPhotoSource = 'upload'; // 'upload' | 'model'
@@ -2513,6 +2529,35 @@ function initializeModelEvents() {
             openModelBrowser();
         });
     }
+    // Global handler for photo upload click - attached to window for HTML access
+    window.handlePhotoUploadClick = function () {
+        if (typeof checkShouldShowBestPractices === 'function' && checkShouldShowBestPractices()) {
+            pendingPhotoAction = window.triggerRealPhotoUpload;
+            if (typeof showBestPracticesModal === 'function') {
+                showBestPracticesModal();
+            } else {
+                // Fallback if function missing
+                window.triggerRealPhotoUpload();
+            }
+        } else {
+            // Dismissed or not available, go straight to upload
+            window.triggerRealPhotoUpload();
+        }
+    };
+
+    window.triggerRealPhotoUpload = function () {
+        // Ensure modal is closed (using the original function if available)
+        if (typeof closeBestPracticesModal === 'function') {
+            closeBestPracticesModal(true);
+        }
+
+        const fileInput = document.getElementById('photoInput');
+        if (fileInput) {
+            fileInput.click();
+        } else {
+            console.error('File input not found: photoInput');
+        }
+    };
 
     if (closeBtn) {
         closeBtn.addEventListener('click', (e) => {
@@ -2572,16 +2617,11 @@ function renderModelGrid() {
 
     modelCatalogue.forEach(model => {
         const card = document.createElement('div');
-        card.className = 'browser-clothing-card'; // Reuse clothing card style
+        card.className = 'model-browser-card'; // Distinct style for models
         card.onclick = () => selectModel(model);
 
         card.innerHTML = `
-            <div class="clothing-card-image-container">
-                <img src="${model.image_url}" alt="${model.name}" class="clothing-card-image" style="object-fit: cover;">
-            </div>
-            <div class="clothing-card-details">
-                <div class="clothing-card-name" style="text-align:center;">${model.name}</div>
-            </div>
+            <img src="${model.image_url}" alt="${model.name}" class="model-card-image">
         `;
         grid.appendChild(card);
     });
@@ -2590,6 +2630,9 @@ function renderModelGrid() {
 function selectModel(model) {
     userPhotoSource = 'model';
     console.log('[Model Catalogue] Selected:', model.id);
+
+    // Clear any existing clothing selection to prevent layout issues
+    clearSelectedClothing();
 
     // Set preview
     const preview = document.getElementById('photoPreview');
@@ -2604,28 +2647,37 @@ function selectModel(model) {
 
     // Set global userPhoto so validation passes (even if skipped, button state checks it)
     userPhoto = model.image_url;
+    window.elloUserImageUrl = model.image_url; // CRITICAL: Update global so startTryOn sees it
+    userPhotoFileId = 'model_' + model.id; // Track model usage
 
     if (uploadText) uploadText.style.display = 'none';
     if (icon) icon.style.display = 'none';
 
     // Adjust UI text to reflect model mode
-    if (subText) subText.textContent = `Using model`;
+    // Adjust UI text to reflect model mode
+    // (User requested removal of "Using model" text update)
+    if (subText) subText.style.display = 'none';
 
-    // Update change text to be generic "Change" which opens modal
+    // Update change text to be hidden
     const changeText = document.getElementById('changePhotoText');
     if (changeText) {
-        changeText.textContent = "Change";
-        changeText.style.display = 'block';
-        // Remove old onclicks and add new one to open model browser? 
-        // Actually, the user wants "Change" to open model modal. 
-        // But the previous implementation of change text (in HTML) says "Tap to change photo" and likely bubbled up to `handlePhotoUploadClick`.
-        // We should hijack the click or just let it bubble if we want upload?
-        // User request: "Using model" + "Change" link (opens model modal)
-
-        // Let's make the "Change" text a link/button distinct from the main container click if possible, 
-        // OR just make the main container click open the model modal if source is model.
-        // EASIER: Update the 'changePhotoText' to say "Change" and ensure the main container click handles it.
+        changeText.style.display = 'none';
     }
+
+    // NEW: Switch to Active Photo State
+    const activeContainer = document.getElementById('activeUserPhotoContainer');
+    const uploadGrid = document.querySelector('.upload-options-grid');
+    const activePhoto = document.getElementById('activeUserPhoto');
+
+    if (uploadGrid) uploadGrid.style.display = 'none';
+    if (activeContainer) {
+        activeContainer.style.display = 'flex'; // Use flex to center
+        if (activePhoto) activePhoto.src = model.image_url;
+    }
+
+    // Show workspace
+    const workspace = document.querySelector('.try-on-workspace');
+    if (workspace) workspace.classList.add('visible');
 
     // Persist model selection
     localStorage.setItem('ello_user_photo_source', 'model');
@@ -2634,7 +2686,7 @@ function selectModel(model) {
     closeModelBrowser();
 
     // Trigger "ready" state updates
-    updateTryOnButtonState();
+    updateTryOnButton();
 
     // Show notification
     showNotification('Model selected', 'success');
@@ -3377,41 +3429,45 @@ async function handlePhotoUpload(event) {
         try {
             const imageDataUrl = e.target.result;
 
-            // Show analyzing overlay (mobile and desktop)
-            const analysisOverlay = document.getElementById('photoAnalysisOverlay');
-            if (analysisOverlay) {
-                analysisOverlay.style.display = 'flex';
+            // 1. Switch to Active State Immediately for Analysis Visualization
+            const uploadGrid = document.querySelector('.upload-options-grid');
+            if (uploadGrid) uploadGrid.style.display = 'none';
+
+            // Show Active Container with Loader
+            const activeContainer = document.getElementById('activeUserPhotoContainer');
+            const activePhoto = document.getElementById('activeUserPhoto');
+            const activeLoader = document.getElementById('activePhotoLoader');
+
+            if (activeContainer) {
+                activeContainer.style.display = 'flex';
+                if (activePhoto) activePhoto.src = imageDataUrl;
+                if (activeLoader) activeLoader.style.display = 'flex';
             }
 
-            // Show analyzing overlay for Preview Widget
+            // Ensure workspace is visible so the container can actually be seen!
+            const workspace = document.querySelector('.try-on-workspace');
+            if (workspace) workspace.classList.add('visible');
+
+            // Show analyzing overlay for Preview Widget (keep this for preview)
             const previewOverlay = document.getElementById('previewAnalysisOverlay');
             if (previewOverlay) {
                 previewOverlay.style.display = 'flex';
-            }
-
-            // Show analyzing state
-            const uploadText = uploadArea?.querySelector('.upload-text:not(#changePhotoText)');
-            if (uploadText) {
-                const originalText = uploadText.textContent;
-                uploadText.textContent = 'First upload may take a moment';
             }
 
             // Enhanced quality validation
             const qualityResult = await validateImageQuality(imageDataUrl);
 
             if (!qualityResult.isValid) {
-                // Hide overlay
-                if (analysisOverlay) {
-                    analysisOverlay.style.display = 'none';
-                }
+                // Revert UI State
+                if (uploadGrid) uploadGrid.style.display = 'grid';
+                if (activeContainer) activeContainer.style.display = 'none';
+                if (activeLoader) activeLoader.style.display = 'none';
+
                 const previewOverlay = document.getElementById('previewAnalysisOverlay');
                 if (previewOverlay) {
                     previewOverlay.style.display = 'none';
                 }
-                // Restore original text
-                if (uploadText) {
-                    uploadText.textContent = uploadArea.querySelector('.upload-icon') ? 'Tap to upload full body image' : 'Click to upload full body image';
-                }
+
                 showSuccessNotification('Image Quality Issue', qualityResult.error, 5000, true);
                 if (uploadArea) {
                     uploadArea.classList.remove('uploading');
@@ -4332,9 +4388,10 @@ function updatePhotoPreview(imageData) {
     const uploadText = uploadArea?.querySelector('.upload-text:not(#changePhotoText)');
 
     // Hide analyzing overlay when photo preview is updated
-    const analysisOverlay = document.getElementById('photoAnalysisOverlay');
-    if (analysisOverlay) {
-        analysisOverlay.style.display = 'none';
+    // Hide active loader
+    const activeLoader = document.getElementById('activePhotoLoader');
+    if (activeLoader) {
+        activeLoader.style.display = 'none';
     }
     const previewOverlay = document.getElementById('previewAnalysisOverlay');
     if (previewOverlay) {
@@ -4365,9 +4422,23 @@ function updatePhotoPreview(imageData) {
     }
 
     if (changeText) {
-        changeText.style.display = 'block';
-        changeText.textContent = isMobile ? 'Tap to change photo' : 'Click to change photo';
+        changeText.style.display = 'none';
     }
+
+    // NEW: Switch to Active Photo State
+    const activeContainer = document.getElementById('activeUserPhotoContainer');
+    const uploadGrid = document.querySelector('.upload-options-grid');
+    const activePhoto = document.getElementById('activeUserPhoto');
+
+    if (uploadGrid) uploadGrid.style.display = 'none';
+    if (activeContainer) {
+        activeContainer.style.display = 'flex'; // Use flex to center
+        if (activePhoto) activePhoto.src = imageData;
+    }
+
+    // Show workspace
+    const workspace = document.querySelector('.try-on-workspace');
+    if (workspace) workspace.classList.add('visible');
 }
 
 function openClothingBrowser() {
@@ -4650,6 +4721,23 @@ async function callElloTryOn(personImageUrl, productImageUrl) {
         throw new Error("Store slug is required for try-on API call");
     }
 
+    // If personImageUrl is a relative URL (like assets/...), fetch and convert to base64
+    if (personImageUrl && !personImageUrl.startsWith('data:') && !personImageUrl.startsWith('http')) {
+        try {
+            const response = await fetch(personImageUrl);
+            const blob = await response.blob();
+            personImageUrl = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+            console.log("Converted model image to base64");
+        } catch (e) {
+            console.error("Failed to convert model image to base64", e);
+        }
+    }
+
     const payload = {
         personImageUrl,
         productImageUrl,
@@ -4881,16 +4969,12 @@ function scrollToLoadingBar() {
 
     // Wait a moment for the bar to be visible
     setTimeout(() => {
-        const containerRect = tryonContent.getBoundingClientRect();
-        const barRect = loadingBar.getBoundingClientRect();
-        const scrollOffset = barRect.top - containerRect.top + tryonContent.scrollTop - 20; // 20px padding from top
-
-        // Smooth scroll to loading bar
+        // Just scroll purely to the bottom to ensure full photo visibility
         tryonContent.scrollTo({
-            top: scrollOffset,
+            top: tryonContent.scrollHeight,
             behavior: 'smooth'
         });
-    }, 50);
+    }, 100);
 }
 
 /**
@@ -7071,7 +7155,7 @@ function handleRouteChanged() {
 }
 
 // let previewDelayTimer = null; // Removed duplicate
-// let hasUserActivity = false; // Removed duplicate
+let hasUserActivity = false; // Re-enabled for global tracking
 
 function resetPreviewTimers() {
     // Clear existing
@@ -7099,7 +7183,8 @@ function resetPreviewTimers() {
 
     // Define activity flag variable locally if not global, or ensure it is accessible.
     // In this scope, we need to make sure the listener callback can reach it.
-    let hasUserActivity = false;
+    // Use global activity tracker
+    // let hasUserActivity = false;
 
     console.log(`[Ello VTO] Starting Preview Timer (${delaySeconds}s delay)...`);
 
