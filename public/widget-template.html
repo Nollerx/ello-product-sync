@@ -2530,28 +2530,101 @@
         }
 
         /* Camera Controls */
+        /* Upload Options UI */
         .camera-controls {
-            display: none;
-            flex-direction: row;
-            gap: 10px;
-            margin: 12px 0;
+            display: none !important;
+            /* Hide old controls */
         }
 
-        .camera-controls.mobile {
+        .upload-options-container {
+            width: 100%;
+            margin-top: 16px;
+            margin-bottom: 16px;
+        }
+
+        .upload-options-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            /* Two equal columns */
+            gap: 12px;
+            width: 100%;
+        }
+
+        .upload-card {
+            background-color: var(--card-bg, #f9fafb);
+            border: 1px solid var(--border-color, #e5e7eb);
+            border-radius: 12px;
+            padding: 16px 12px;
             display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-height: 100px;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
         }
 
-        @media (max-width: 768px) {
-            .camera-controls {
-                gap: 8px;
-                margin: 10px 0;
-            }
+        .upload-card:hover {
+            background-color: var(--hover-bg, #f3f4f6);
+            border-color: var(--primary-color, #000);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
         }
 
-        @media (hover: hover) and (pointer: fine) {
-            .camera-controls {
-                display: none !important;
-            }
+        .upload-card:active {
+            transform: translateY(0);
+            background-color: var(--active-bg, #e5e7eb);
+        }
+
+        .upload-card-icon {
+            margin-bottom: 8px;
+            color: var(--primary-color, #000);
+            opacity: 0.8;
+        }
+
+        .upload-card-content {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .upload-card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary, #111827);
+            line-height: 1.2;
+        }
+
+        .upload-card-subtitle {
+            font-size: 11px;
+            color: var(--text-secondary, #6b7280);
+            line-height: 1.2;
+        }
+
+        /* Dark Mode Support for Cards */
+        .theme-black .upload-card {
+            background-color: #23272f;
+            border-color: #3f4451;
+        }
+
+        .theme-black .upload-card:hover {
+            background-color: #2d333b;
+            border-color: #fff;
+        }
+
+        .theme-black .upload-card-icon {
+            color: #fff;
+        }
+
+        .theme-black .upload-card-title {
+            color: #fff;
+        }
+
+        .theme-black .upload-card-subtitle {
+            color: #9ca3af;
         }
 
         /* Selected Clothing Preview Styles */
