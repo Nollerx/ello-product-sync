@@ -9,7 +9,7 @@ import { SQLiteSessionStorage } from "@shopify/shopify-app-session-storage-sqlit
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY || "missing_api_key",
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
+  apiSecretKey: process.env.SHOPIFY_API_SECRET || "missing_secret_key",
   apiVersion: ApiVersion.October25,
   scopes: process.env.SCOPES?.split(",") || [],
   appUrl: process.env.SHOPIFY_APP_URL || "https://missing-app-url.com",
