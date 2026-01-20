@@ -6686,33 +6686,7 @@
                     <!-- Photo Upload and Preview Container (flex for side-by-side on desktop) -->
                     <!-- Photo Upload and Preview Container (New Card Layout) -->
                     <div class="photo-section-content">
-                        <div class="upload-options-grid">
-                            <!-- Card 1: Upload Your Photo -->
-                            <div class="upload-option-card" onclick="handlePhotoUploadClick()">
-                                <div class="recommended-badge">Recommended</div>
-                                <div class="option-icon-wrapper">
-                                    <div class="option-icon">📷</div>
-                                </div>
-                                <h3 class="option-title">Upload your photo</h3>
-                                <p class="option-subtitle">Full-body photos work best.</p>
-                                <button class="option-btn">Upload your photo</button>
 
-                                <!-- Hidden elements required for functionality -->
-                                <img id="photoPreview" class="photo-preview" style="display: none;">
-                            </div>
-
-                            <!-- Card 2: Use a Model -->
-                            <div class="upload-option-card model-card" id="openModelBrowserBtn">
-                                <div class="option-image-wrapper">
-                                    <img src="assets/overlay/model_placeholder.png" alt="Model"
-                                        class="model-preview-img"
-                                        onerror="this.src='https://via.placeholder.com/150?text=Model'">
-                                </div>
-                                <h3 class="option-title">Use a model</h3>
-                                <p class="option-subtitle">Try outfits on a sample model.</p>
-                                <button class="option-btn">Use a model</button>
-                            </div>
-                        </div>
 
                         <!-- Try-On Workspace (Flex container for side-by-side view) -->
                         <div class="try-on-workspace">
@@ -6745,9 +6719,39 @@
                         </div>
                     </div>
 
-                    <!-- NEW: Dual Card Upload Selection -->
                     <div id="uploadOptionsContainer" class="upload-options-container">
+                        <div class="upload-options-grid">
+                            <!-- Card 1: Upload Your Photo -->
+                            <div class="upload-card" onclick="handlePhotoUploadClick()" role="button" tabindex="0">
+                                <div class="upload-card-icon">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+                                    </svg>
+                                </div>
+                                <div class="upload-card-content">
+                                    <span class="upload-card-title">Upload your photo</span>
+                                    <span class="upload-card-subtitle">Full-body photos work best.</span>
+                                </div>
+                                <button class="upload-card-btn">Upload your photo</button>
+                            </div>
 
+                            <!-- Card 2: Use a Model -->
+                            <div class="upload-card" onclick="openModelBrowser()" role="button" tabindex="0">
+                                <div class="upload-card-icon">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                                        <circle cx="12" cy="7" r="4" />
+                                    </svg>
+                                </div>
+                                <div class="upload-card-content">
+                                    <span class="upload-card-title">Use a model</span>
+                                    <span class="upload-card-subtitle">Try outfits on a sample model.</span>
+                                </div>
+                                <button class="upload-card-btn">Use a model</button>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- File inputs -->
