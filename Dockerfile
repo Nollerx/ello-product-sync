@@ -22,4 +22,15 @@ ENV PORT=8080
 ENV NODE_ENV=production
 ENV SESSION_DB_PATH=/tmp/shopify_sessions.sqlite
 
-CMD ["npm", "run", "docker-start"]
+# Create a script to handle startup
+RUN echo '#!/bin/sh' > /app/startup.sh && \
+    echo 'echo "Starting application with NODE_ENV=$NODE_ENV"' >> /app/startup.sh && \
+    echo 'echo "Session DB Path: $SESSION_DB_PATH"' >> /app/startup.sh && \
+    echo '# Verify write permissions to /tmp' >> /app/startup.sh && \
+    echo 'touch /tmp/test_write || echo "ERROR: Cannot write to /tmp"' >> /app/startup.sh && \
+    echo 'rm /tmp/test_write' >> /app/startup.sh && \
+    echo '# Start the application' >> /app/startup.sh && \
+    echo 'exec npm run docker-start' >> /app/startup.sh && \
+    chmod +x /app/startup.sh
+
+CMD ["/app/startup.sh"]
