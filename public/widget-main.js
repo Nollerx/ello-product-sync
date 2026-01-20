@@ -2011,80 +2011,84 @@ function handleBestPracticesUpload() {
 }
 
 
-// Set up pending action to trigger file picker (works for both mobile and desktop)
-pendingPhotoAction = () => {
-    const photoInput = document.getElementById('photoInput');
-    if (photoInput) {
-        // Reset the input value to allow selecting the same file again if needed
-        photoInput.value = '';
+// 3. Handle Photo Upload Click
+function handlePhotoUploadClick() {
+    // Show best practices modal if not dismissed
+    if (checkShouldShowBestPractices()) {
+        // Set up pending action to trigger file picker (works for both mobile and desktop)
+        pendingPhotoAction = () => {
+            const photoInput = document.getElementById('photoInput');
+            if (photoInput) {
+                // Reset the input value to allow selecting the same file again if needed
+                photoInput.value = '';
 
-        if (isIOS) {
-            // On iOS, create a new input element
-            const newPhotoInput = document.createElement('input');
-            newPhotoInput.type = 'file';
-            newPhotoInput.accept = 'image/*';
-            newPhotoInput.style.display = 'none';
-            newPhotoInput.onchange = handlePhotoUpload;
+                if (isIOS) {
+                    // On iOS, create a new input element
+                    const newPhotoInput = document.createElement('input');
+                    newPhotoInput.type = 'file';
+                    newPhotoInput.accept = 'image/*';
+                    newPhotoInput.style.display = 'none';
+                    newPhotoInput.onchange = handlePhotoUpload;
 
-            document.body.appendChild(newPhotoInput);
+                    document.body.appendChild(newPhotoInput);
 
-            setTimeout(() => {
-                newPhotoInput.click();
+                    setTimeout(() => {
+                        newPhotoInput.click();
+                        setTimeout(() => {
+                            if (newPhotoInput.parentNode) {
+                                newPhotoInput.parentNode.removeChild(newPhotoInput);
+                            }
+                        }, 1000);
+                    }, 100);
+                } else {
+                    // On Android/Desktop, use the existing input
+                    setTimeout(() => {
+                        photoInput.click();
+                    }, 100);
+                }
+            }
+        };
+        showBestPracticesModal();
+        return;
+    }
+
+    // If modal was dismissed, proceed normally
+    if (isMobile) {
+        // On mobile, trigger file picker directly
+        const photoInput = document.getElementById('photoInput');
+        if (photoInput) {
+            photoInput.value = '';
+            if (isIOS) {
+                const newPhotoInput = document.createElement('input');
+                newPhotoInput.type = 'file';
+                newPhotoInput.accept = 'image/*';
+                newPhotoInput.style.display = 'none';
+                newPhotoInput.onchange = handlePhotoUpload;
+
+                document.body.appendChild(newPhotoInput);
+
                 setTimeout(() => {
-                    if (newPhotoInput.parentNode) {
-                        newPhotoInput.parentNode.removeChild(newPhotoInput);
-                    }
-                }, 1000);
-            }, 100);
-        } else {
-            // On Android/Desktop, use the existing input
-            setTimeout(() => {
-                photoInput.click();
-            }, 100);
+                    newPhotoInput.click();
+                    setTimeout(() => {
+                        if (newPhotoInput.parentNode) {
+                            newPhotoInput.parentNode.removeChild(newPhotoInput);
+                        }
+                    }, 1000);
+                }, 100);
+            } else {
+                setTimeout(() => {
+                    photoInput.click();
+                }, 100);
+            }
+        }
+    } else {
+        // On desktop, trigger file input click
+        const photoInput = document.getElementById('photoInput');
+        if (photoInput) {
+            photoInput.value = '';
+            photoInput.click();
         }
     }
-};
-showBestPracticesModal();
-return;
-    }
-
-// If modal was dismissed, proceed normally
-if (isMobile) {
-    // On mobile, trigger file picker directly
-    const photoInput = document.getElementById('photoInput');
-    if (photoInput) {
-        photoInput.value = '';
-        if (isIOS) {
-            const newPhotoInput = document.createElement('input');
-            newPhotoInput.type = 'file';
-            newPhotoInput.accept = 'image/*';
-            newPhotoInput.style.display = 'none';
-            newPhotoInput.onchange = handlePhotoUpload;
-
-            document.body.appendChild(newPhotoInput);
-
-            setTimeout(() => {
-                newPhotoInput.click();
-                setTimeout(() => {
-                    if (newPhotoInput.parentNode) {
-                        newPhotoInput.parentNode.removeChild(newPhotoInput);
-                    }
-                }, 1000);
-            }, 100);
-        } else {
-            setTimeout(() => {
-                photoInput.click();
-            }, 100);
-        }
-    }
-} else {
-    // On desktop, trigger file input click
-    const photoInput = document.getElementById('photoInput');
-    if (photoInput) {
-        photoInput.value = '';
-        photoInput.click();
-    }
-}
 }
 
 /**
@@ -2124,6 +2128,25 @@ function lockBodyScroll() {
     };
 
     document.addEventListener('touchmove', scrollLockTouchHandler, { passive: false });
+}
+
+// Helper to update card UI
+function updateUploadCardSelection(source) {
+    const cardUpload = document.getElementById('cardUpload');
+    const cardModel = document.getElementById('cardModel');
+    if (cardUpload && cardModel) {
+        if (source === 'upload') {
+            cardUpload.classList.add('selected');
+            cardUpload.classList.remove('muted');
+            cardModel.classList.remove('selected');
+            cardModel.classList.add('muted');
+        } else {
+            cardModel.classList.add('selected');
+            cardModel.classList.remove('muted');
+            cardUpload.classList.remove('selected');
+            cardUpload.classList.add('muted');
+        }
+    }
 }
 
 /**
