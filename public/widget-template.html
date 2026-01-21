@@ -6553,6 +6553,138 @@
         .browser-clothing-card::after {
             content: none !important;
         }
+
+        /* --- NEW SPEC CSS (Step 2423) --- */
+
+        /* Wrapper holding the 2 main cards */
+        .photoSourceGrid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 24px;
+            align-items: stretch;
+            /* IMPORTANT: prevents squish */
+        }
+
+        /* The tall vertical card */
+        .sourceCard {
+            position: relative;
+            background: #fff;
+            border: 2px solid rgba(0, 0, 0, 0.10);
+            border-radius: 18px;
+            padding: 28px 26px;
+            min-height: 360px;
+            /* IMPORTANT: makes it tall */
+            aspect-ratio: 3 / 4;
+            /* IMPORTANT: keeps rectangle shape */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+
+            transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+            cursor: pointer;
+        }
+
+        /* Hover/active animations */
+        .sourceCard:hover {
+            transform: translateY(-3px) scale(1.01);
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12);
+        }
+
+        .sourceCard:active {
+            transform: translateY(-1px) scale(0.995);
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.10);
+        }
+
+        /* “Recommended” pill */
+        .recommendedPill {
+            position: absolute;
+            top: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 18px;
+            border-radius: 999px;
+            background: #000;
+            color: #fff;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            font-size: 13px;
+            box-shadow: 0 10px 18px rgba(0, 0, 0, 0.18);
+            z-index: 5;
+        }
+
+        /* Icon block */
+        .sourceIcon {
+            margin-top: 36px;
+            /* leaves room for the pill */
+            width: 64px;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Typography */
+        .sourceTitle {
+            font-size: 32px;
+            line-height: 1.05;
+            font-weight: 800;
+            text-align: center;
+            margin-top: 8px;
+        }
+
+        .sourceSubtitle {
+            font-size: 18px;
+            line-height: 1.25;
+            opacity: 0.75;
+            text-align: center;
+            margin-top: 8px;
+            max-width: 240px;
+        }
+
+        /* CTA button */
+        .sourceBtn {
+            margin-top: 18px;
+            min-height: 50px;
+            padding: 12px 18px;
+            border-radius: 14px;
+            font-weight: 800;
+            font-size: 18px;
+            transition: transform 140ms ease, filter 140ms ease;
+            cursor: pointer;
+        }
+
+        .sourceCard:hover .sourceBtn {
+            transform: translateY(-1px);
+            filter: brightness(0.98);
+        }
+
+        .sourceCard:active .sourceBtn {
+            transform: translateY(0px);
+        }
+
+        /* Recommended (green outline) state */
+        .sourceCard.isRecommended {
+            border-color: #18b26b;
+            box-shadow: 0 10px 24px rgba(24, 178, 107, 0.16);
+        }
+
+        /* Mobile */
+        @media (max-width: 520px) {
+            .photoSourceGrid {
+                grid-template-columns: 1fr;
+            }
+
+            .sourceCard {
+                min-height: 280px;
+                aspect-ratio: 4 / 5;
+                padding: 22px 18px;
+            }
+
+            .sourceTitle {
+                font-size: 28px;
+            }
+        }
     </style>
 </head>
 
@@ -6770,36 +6902,43 @@
 
 
 
-                    <div id="uploadOptionsContainer" class="upload-options-container">
-                        <div class="upload-options-grid">
-                            <!-- Card 1: Upload Your Photo (Rich Design) -->
-                            <div class="upload-card upload-card-recommended" onclick="handlePhotoUploadClick()"
-                                role="button" tabindex="0">
-                                <div class="card-badge">RECOMMENDED</div>
-                                <div class="upload-card-image-area">
-                                    <!-- Using an emoji/icon as placeholder for the camera image shown in screenshot -->
+                    <!-- Photo Source Grid (New Spec) -->
+                    <div id="uploadOptionsContainer" class="upload-options-container"
+                        style="height: auto !important; min-height: 0 !important;">
+                        <div class="photoSourceGrid">
+                            <!-- Card 1: Upload (Recommended) -->
+                            <div class="sourceCard isRecommended" onclick="handlePhotoUploadClick()" role="button"
+                                tabindex="0">
+                                <div class="recommendedPill">RECOMMENDED</div>
+                                <div class="sourceIcon">
                                     <span style="font-size: 48px;">📷</span>
                                 </div>
-                                <div class="upload-card-content">
-                                    <span class="upload-card-title">Upload your photo</span>
-                                    <span class="upload-card-subtitle">Full-body photos work best.</span>
+                                <div style="display: flex; flex-direction: column; align-items: center;">
+                                    <div class="sourceTitle">Upload your photo</div>
+                                    <div class="sourceSubtitle">Full-body photos work best.</div>
                                 </div>
-                                <button class="upload-card-btn btn-primary-green">Upload your photo</button>
+                                <button class="sourceBtn"
+                                    style="background: #10b981; color: white; border: none; width: 100%;">Upload your
+                                    photo</button>
                             </div>
 
-                            <!-- Card 2: Use a Model (Rich Design) -->
-                            <div class="upload-card" onclick="openModelBrowser()" role="button" tabindex="0">
-                                <div class="upload-card-image-area">
-                                    <!-- Placeholder for model silhouette -->
-                                    <div
-                                        style="width: 60px; height: 80px; background: #f3f4f6; margin: 0 auto; border-radius: 4px;">
-                                    </div>
+                            <!-- Card 2: Model -->
+                            <div class="sourceCard" onclick="openModelBrowser()" role="button" tabindex="0">
+                                <div class="sourceIcon" style="margin-top: 60px;">
+                                    <!-- Placeholder Model Icon -->
+                                    <svg width="48" height="64" viewBox="0 0 24 24" fill="none" stroke="#9ca3af"
+                                        stroke-width="2">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                                        <circle cx="12" cy="7" r="4" />
+                                    </svg>
                                 </div>
-                                <div class="upload-card-content">
-                                    <span class="upload-card-title">Use a model</span>
-                                    <span class="upload-card-subtitle">Try outfits on a sample model.</span>
+                                <div style="display: flex; flex-direction: column; align-items: center;">
+                                    <div class="sourceTitle">Use a model</div>
+                                    <div class="sourceSubtitle">Try outfits on a sample model.</div>
                                 </div>
-                                <button class="upload-card-btn btn-secondary-white">Use a model</button>
+                                <button class="sourceBtn"
+                                    style="background: white; color: #333; border: 1px solid #e0e0e0; width: 100%;">Use
+                                    a model</button>
                             </div>
                         </div>
                     </div>
