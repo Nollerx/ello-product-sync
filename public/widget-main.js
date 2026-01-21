@@ -2366,6 +2366,9 @@ function resetPhotoUploadArea() {
 
     if (uploadOptions) {
         uploadOptions.style.display = 'block'; // Restore container layout
+        // Also ensure the grid inside is visible if it was manually hidden
+        const grid = uploadOptions.querySelector('.upload-options-grid');
+        if (grid) grid.style.display = 'grid';
     }
 
     // Hide any selected clothing to prevent layout squishing
@@ -4448,10 +4451,10 @@ function updatePhotoPreview(imageData) {
 
     // NEW: Switch to Active Photo State
     const activeContainer = document.getElementById('activeUserPhotoContainer');
-    const uploadGrid = document.querySelector('.upload-options-grid');
+    const uploadOptions = document.getElementById('uploadOptionsContainer');
     const activePhoto = document.getElementById('activeUserPhoto');
 
-    if (uploadGrid) uploadGrid.style.display = 'none';
+    if (uploadOptions) uploadOptions.style.display = 'none';
     if (activeContainer) {
         activeContainer.style.display = 'flex'; // Use flex to center
         if (activePhoto) activePhoto.src = imageData;
@@ -4771,7 +4774,7 @@ async function callElloTryOn(personImageUrl, productImageUrl) {
 
 
     const res = await fetch(
-        "https://ello-shopify-app-u5htiuxfrq-uc.a.run.app/tryon",
+        "https://ello-vto-13593516897.us-central1.run.app/tryon",
         {
             method: "POST",
             headers: {
