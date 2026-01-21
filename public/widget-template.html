@@ -6557,12 +6557,17 @@
         /* --- NEW SPEC CSS (Step 2423) --- */
 
         /* Wrapper holding the 2 main cards */
+        /* Wrapper holding the 2 main cards */
         .photoSourceGrid {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 24px;
+            gap: 20px;
             align-items: stretch;
             /* IMPORTANT: prevents squish */
+            max-width: 640px;
+            /* Limit width */
+            margin: 0 auto;
+            /* Center grid */
         }
 
         /* The tall vertical card */
@@ -6571,9 +6576,9 @@
             background: #fff;
             border: 2px solid rgba(0, 0, 0, 0.10);
             border-radius: 18px;
-            padding: 28px 26px;
-            min-height: 360px;
-            /* IMPORTANT: makes it tall */
+            padding: 24px 20px;
+            min-height: 280px;
+            /* Reduced height */
             aspect-ratio: 3 / 4;
             /* IMPORTANT: keeps rectangle shape */
             display: flex;
