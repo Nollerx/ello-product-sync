@@ -7,7 +7,7 @@
 
     console.log("✅ Ello Widget Loader v2.1 - Duplicate check added");
 
-    let WIDGET_BASE_URL = "https://ello-vto-public-13593516897.us-central1.run.app";
+    let WIDGET_BASE_URL = "https://ello-shopify-app-u5htiuxfrq-uc.a.run.app";
 
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         WIDGET_BASE_URL = "http://localhost:8000";
@@ -168,7 +168,7 @@
         if (!shop) return null;
         try {
             const res = await fetch(
-                "https://ello-vto-public-13593516897.us-central1.run.app/bootstrap",
+                "https://ello-shopify-app-u5htiuxfrq-uc.a.run.app/bootstrap",
                 {
                     method: "POST",
                     mode: "cors", // Explicitly request CORS
