@@ -6918,89 +6918,84 @@
 
 
 
-                    <!-- Photo Source Grid (New Spec) -->
-                    <div id="uploadOptionsContainer" class="upload-options-container"
-                        style="height: auto !important; min-height: 0 !important;">
-                        <div class="photoSourceGrid">
-                            <!-- Card 1: Upload (Recommended) -->
-                            <div class="sourceCard isRecommended" onclick="handlePhotoUploadClick()" role="button"
+                    <!-- Restored Upload Options (Original) -->
+                    <div id="uploadOptionsContainer" class="upload-options-container">
+                        <div class="upload-options-grid">
+                            <!-- Card 1: Upload Your Photo -->
+                            <div class="upload-option-card" onclick="handlePhotoUploadClick()" role="button"
                                 tabindex="0">
-                                <div class="recommendedPill">RECOMMENDED</div>
-                                <div class="sourceIcon">
-                                    <span style="font-size: 48px;">📷</span>
+                                <div class="recommended-badge">Recommended</div>
+                                <div class="option-icon-wrapper">
+                                    <div class="option-icon">📷</div>
                                 </div>
-                                <div style="display: flex; flex-direction: column; align-items: center;">
-                                    <div class="sourceTitle">Upload your photo</div>
-                                    <div class="sourceSubtitle">Full-body photos work best.</div>
-                                </div>
-                                <button class="sourceBtn"
-                                    style="background: #10b981; color: white; border: none; width: 100%;">Upload your
-                                    photo</button>
+                                <h3 class="option-title">Upload your photo</h3>
+                                <p class="option-subtitle">Full-body photos work best.</p>
+                                <button class="option-btn">Upload your photo</button>
                             </div>
 
-                            <!-- Card 2: Model -->
-                            <div class="sourceCard" onclick="openModelBrowser()" role="button" tabindex="0">
-                                <div class="sourceIcon" style="margin-top: 60px;">
-                                    <!-- Placeholder Model Icon -->
-                                    <svg width="48" height="64" viewBox="0 0 24 24" fill="none" stroke="#9ca3af"
-                                        stroke-width="2">
-                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                                        <circle cx="12" cy="7" r="4" />
-                                    </svg>
+                            <!-- Card 2: Use a Model -->
+                            <div class="upload-option-card" onclick="openModelBrowser()" role="button" tabindex="0">
+                                <div class="option-image-wrapper">
+                                    <!-- Placeholder Model Icon/Image -->
+                                    <div
+                                        style="width: 100%; height: 100%; background: #f3f4f6; display: flex; align-items: center; justify-content: center;">
+                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9ca3af"
+                                            stroke-width="2">
+                                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                                            <circle cx="12" cy="7" r="4" />
+                                        </svg>
+                                    </div>
                                 </div>
-                                <div style="display: flex; flex-direction: column; align-items: center;">
-                                    <div class="sourceTitle">Use a model</div>
-                                    <div class="sourceSubtitle">Try outfits on a sample model.</div>
-                                </div>
-                                <button class="sourceBtn"
-                                    style="background: white; color: #333; border: 1px solid #e0e0e0; width: 100%;">Use
-                                    a model</button>
+                                <h3 class="option-title">Use a model</h3>
+                                <p class="option-subtitle">Try outfits on a sample model.
                             </div>
+                            <button class="option-btn">Use a model</button>
                         </div>
                     </div>
-
-                    <!-- File inputs -->
-                    <input type="file" id="photoInput" class="hidden-input" accept="image/*"
-                        style="display:none !important" onchange="handlePhotoUpload(event)">
-                    <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment"
-                        style="display:none !important" onchange="handlePhotoUpload(event)">
-
-                    <!-- Analysis Loading Bar (Mobile & Desktop) -->
-
                 </div>
 
-                <div id="resultSection" style="display: none;">
-                    <!-- Result will be shown here -->
-                    <div id="ello-tryon-loader" style="display: none; align-items: center; justify-content: center;">
-                    </div>
-                    <div id="ello-tryon-error"
-                        style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
-                    </div>
-                    <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
-                        <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
-                    </div>
-                </div>
+                <!-- File inputs -->
+                <input type="file" id="photoInput" class="hidden-input" accept="image/*" style="display:none !important"
+                    onchange="handlePhotoUpload(event)">
+                <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment"
+                    style="display:none !important" onchange="handlePhotoUpload(event)">
+
+                <!-- Analysis Loading Bar (Mobile & Desktop) -->
+
             </div>
 
-            <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
-            <div class="action-buttons">
-                <button class="btn btn-secondary" onclick="closeWidget()">
-                    <span>✕</span>
-                    Close
-                </button>
-                <button class="btn btn-primary" id="tryOnBtn" disabled
-                    aria-label="Try on selected clothing with your photo. Press Enter to activate.">
-                    <span>✨</span>
-                    Try On
-                </button>
-                <!-- Loading Bar -->
-                <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
-                    <div class="tryon-loading-bar">
-                        <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
-                    </div>
+            <div id="resultSection" style="display: none;">
+                <!-- Result will be shown here -->
+                <div id="ello-tryon-loader" style="display: none; align-items: center; justify-content: center;">
+                </div>
+                <div id="ello-tryon-error"
+                    style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
+                </div>
+                <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
+                    <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
                 </div>
             </div>
         </div>
+
+        <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
+        <div class="action-buttons">
+            <button class="btn btn-secondary" onclick="closeWidget()">
+                <span>✕</span>
+                Close
+            </button>
+            <button class="btn btn-primary" id="tryOnBtn" disabled
+                aria-label="Try on selected clothing with your photo. Press Enter to activate.">
+                <span>✨</span>
+                Try On
+            </button>
+            <!-- Loading Bar -->
+            <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
+                <div class="tryon-loading-bar">
+                    <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
+                </div>
+            </div>
+        </div>
+    </div>
     </div>
 
     <!-- Clothing Browser Modal -->
@@ -7295,3 +7290,119 @@
 </body>
 
 </html>
+<style>
+    /* RESTORED ORIGINAL CSS (Step 2488) */
+    .upload-options-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        width: 100%;
+        margin-top: 16px;
+    }
+
+    .upload-option-card {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 36px 16px 20px 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        min-height: 220px;
+        justify-content: space-between;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .recommended-badge {
+        position: absolute;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: #000000;
+        color: white;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 4px 12px;
+        border-radius: 20px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        z-index: 5;
+    }
+
+    .upload-option-card:hover {
+        border-color: #10b981;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        transform: translateY(-2px);
+    }
+
+    .option-icon-wrapper {
+        width: 64px;
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 12px;
+    }
+
+    .option-icon {
+        font-size: 42px;
+        color: #9ca3af;
+    }
+
+    .option-image-wrapper {
+        width: 80px;
+        height: 100px;
+        border-radius: 4px;
+        overflow: hidden;
+        margin-bottom: 12px;
+        background: #f3f4f6;
+    }
+
+    .model-preview-img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: top center;
+    }
+
+    .option-title {
+        font-size: 16px;
+        font-weight: 700;
+        color: #111827;
+        margin-bottom: 6px;
+        font-family: 'Poppins', sans-serif;
+    }
+
+    .option-subtitle {
+        font-size: 12px;
+        color: #6b7280;
+        margin-bottom: 16px;
+        line-height: 1.4;
+        flex-grow: 1;
+    }
+
+    .option-btn {
+        width: 100%;
+        padding: 10px 0;
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        color: #374151;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .upload-option-card:hover .option-btn {
+        background: #10b981;
+        color: white;
+        border-color: #10b981;
+    }
+</style>
