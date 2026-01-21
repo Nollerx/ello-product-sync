@@ -168,7 +168,7 @@
         if (!shop) return null;
         try {
             const res = await fetch(
-                "https://ello-vto-public-13593516897.us-central1.run.app/bootstrap",
+                "https://ello-shopify-app-u5htiuxfrq-uc.a.run.app/bootstrap",
                 {
                     method: "POST",
                     mode: "cors", // Explicitly request CORS

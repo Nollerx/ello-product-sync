@@ -4774,7 +4774,7 @@ async function callElloTryOn(personImageUrl, productImageUrl) {
 
 
     const res = await fetch(
-        "https://ello-vto-public-13593516897.us-central1.run.app/tryon",
+        "https://ello-vto-13593516897.us-central1.run.app/tryon",
         {
             method: "POST",
             headers: {
@@ -7075,7 +7075,7 @@ function trackPreviewEvent(eventName, data = {}) {
         };
 
         // Fire and forget - use sendBeacon if possible, or fetch with keepalive
-        let baseUrl = "https://ello-vto-public-13593516897.us-central1.run.app";
+        let baseUrl = "https://ello-vto-13593516897.us-central1.run.app";
         // Check if we are running locally for development
         if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
             baseUrl = "http://localhost:8000";
