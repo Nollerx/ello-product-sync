@@ -1,7 +1,3 @@
-node_modules
+.cache
 build
-.git
-.DS_Store
-.env
-coverage
-
+node_modules

@@ -4,7 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- CSP: Removed invalid frame-ancestors meta tag -->
+    <!-- CSP: Allow embedding from anywhere (widget is injected via JS, not iframe, but this ensures compatibility) -->
+    <meta http-equiv="Content-Security-Policy" content="frame-ancestors *;">
     <title>Virtual Try-On Widget</title>
     <!-- Google Fonts - Poppins -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -288,8 +289,7 @@
         .custom-notification {
             position: fixed;
             top: 20px;
-            left: 50%;
-            transform: translateX(-50%) translateY(-100px) scale(0.8);
+            right: 20px;
             background: linear-gradient(135deg, #10b981 0%, #059669 100%);
             color: white;
             padding: 16px 24px;
@@ -326,12 +326,12 @@
         }
 
         .custom-notification.show {
-            transform: translateX(-50%) translateY(0) scale(1);
+            transform: translateY(0) scale(1);
             opacity: 1;
         }
 
         .custom-notification.hide {
-            transform: translateX(-50%) translateY(-50px) scale(0.9);
+            transform: translateY(-50px) scale(0.9);
             opacity: 0;
         }
 
@@ -459,8 +459,8 @@
         @media (max-width: 768px) {
             .custom-notification {
                 top: 10px;
-                left: 10px;
                 right: 10px;
+                left: 10px;
                 max-width: none;
                 transform: translateY(-100px) scale(0.9);
                 z-index: 2147483647 !important;
@@ -468,7 +468,6 @@
 
             /* Ensure notification is visible above modals on mobile */
             .custom-notification.show {
-                transform: translateY(0) scale(1);
                 z-index: 100000;
             }
 
@@ -627,7 +626,6 @@
                 }
             }
 
-
             /* Reduced motion support */
             @media (prefers-reduced-motion: reduce) {
                 .virtual-tryon-widget {
@@ -649,306 +647,6 @@
                 transform-origin: right bottom !important;
                 /* No left positioning at all */
                 left: auto !important;
-            }
-        }
-
-        /* Upload UI Redesign Styles (Global) */
-        .upload-options-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            width: 100%;
-            margin-top: 16px;
-        }
-
-        .upload-option-card {
-            background: #ffffff;
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            padding: 36px 16px 20px 16px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            min-height: 220px;
-            justify-content: space-between;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-            position: relative;
-            overflow: hidden;
-        }
-
-        .recommended-badge {
-            position: absolute;
-            top: 12px;
-            left: 50%;
-            transform: translateX(-50%);
-            background-color: #000000;
-            color: white;
-            font-size: 10px;
-            font-weight: 600;
-            padding: 4px 12px;
-            border-radius: 20px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-            z-index: 5;
-        }
-
-        .upload-option-card:hover {
-            border-color: #10b981;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-            transform: translateY(-2px);
-        }
-
-        .option-icon-wrapper {
-            width: 64px;
-            height: 64px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 12px;
-        }
-
-        .option-icon {
-            font-size: 42px;
-            color: #9ca3af;
-        }
-
-        .option-image-wrapper {
-            width: 80px;
-            height: 100px;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-bottom: 12px;
-            background: #f3f4f6;
-        }
-
-        .model-preview-img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            object-position: top center;
-        }
-
-        .option-title {
-            font-size: 16px;
-            font-weight: 700;
-            color: #111827;
-            margin-bottom: 6px;
-            font-family: 'Poppins', sans-serif;
-            /* Explicitly set font */
-        }
-
-        .option-subtitle {
-            font-size: 12px;
-            color: #6b7280;
-            margin-bottom: 16px;
-            line-height: 1.4;
-            flex-grow: 1;
-            /* Push button to bottom */
-        }
-
-        .option-btn {
-            width: 100%;
-            padding: 10px 0;
-            background: #f9fafb;
-            border: 1px solid #e5e7eb;
-            border-radius: 8px;
-            color: #374151;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .upload-option-card:hover .option-btn {
-            background: #10b981;
-            color: white;
-            border-color: #10b981;
-        }
-
-        /* Photo Preview Override - Covers the card cleanly */
-        .photo-preview {
-            position: absolute !important;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            border-radius: 12px;
-            z-index: 10;
-            background: white;
-        }
-
-        /* Active User Photo State (Replaces the cards) */
-        .active-user-photo-container {
-            width: 100%;
-            margin-top: 16px;
-            display: flex;
-            justify-content: center;
-        }
-
-        .active-photo-wrapper {
-            position: relative;
-            width: 100%;
-            max-width: 200px;
-            /* Reduced from 320px */
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        .active-user-photo {
-            width: 100%;
-            height: auto;
-            display: block;
-            object-fit: contain;
-            /* Ensure no cropping */
-            /* Removed max-height to prevent vertical cutoff */
-        }
-
-        .change-photo-btn {
-            position: absolute;
-            bottom: 16px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.6);
-            color: white;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            backdrop-filter: blur(4px);
-            transition: all 0.2s ease;
-            z-index: 20;
-            white-space: nowrap;
-            /* Prevent text wrapping */
-        }
-
-        .change-photo-btn:hover {
-            background: rgba(0, 0, 0, 0.8);
-            transform: translateX(-50%) translateY(-1px);
-            /* Keep centering + hover effect */
-        }
-
-        /* In-Box Loader */
-        .active-photo-loader {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.6);
-            backdrop-filter: blur(2px);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            z-index: 10;
-        }
-
-        .loader-dots {
-            display: flex;
-            gap: 6px;
-        }
-
-        .loader-dots span {
-            width: 10px;
-            height: 10px;
-            background: #000;
-            border-radius: 50%;
-            animation: bounce 1.4s infinite ease-in-out both;
-        }
-
-        .loader-dots span:nth-child(1) {
-            animation-delay: -0.32s;
-        }
-
-        .loader-dots span:nth-child(2) {
-            animation-delay: -0.16s;
-        }
-
-        @keyframes bounce {
-
-            0%,
-            80%,
-            100% {
-                transform: scale(0);
-            }
-
-            40% {
-                transform: scale(1);
-            }
-        }
-
-        /* Hide "Tap to change photo" text or style it as a badge */
-        #changePhotoText {
-            position: absolute;
-            bottom: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 11;
-            background: rgba(0, 0, 0, 0.6);
-            color: white !important;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 11px !important;
-            margin: 0 !important;
-            pointer-events: none;
-            white-space: nowrap;
-        }
-
-
-
-        /* Mobile adjustments for upload cards */
-        @media (max-width: 400px) {
-            .upload-options-grid {
-                grid-template-columns: 1fr;
-                /* Stack on very small screens */
-            }
-
-            .upload-option-card {
-                min-height: auto;
-                padding: 16px;
-                flex-direction: row;
-                text-align: left;
-                align-items: center;
-                gap: 16px;
-            }
-
-            .option-icon-wrapper,
-            .option-image-wrapper {
-                width: 50px;
-                height: 50px;
-                margin-bottom: 0;
-                flex-shrink: 0;
-            }
-
-            .model-preview-img {
-                height: 100%;
-                width: 100%;
-            }
-
-            .option-image-wrapper {
-                height: 50px;
-                /* Force square on mobile list view */
-            }
-
-            .option-icon {
-                font-size: 24px;
-            }
-
-            .option-content {
-                flex: 1;
-            }
-
-            .option-btn {
-                display: none;
-                /* Hide button on mobile list view for cleaner look, whole card clickable */
             }
         }
 
@@ -2532,223 +2230,91 @@
         }
 
         /* Camera Controls */
-        /* Upload Options UI */
         .camera-controls {
-            display: none !important;
-            /* Hide old controls */
+            display: none;
+            flex-direction: row;
+            gap: 10px;
+            margin: 12px 0;
         }
 
-        .upload-options-container {
-            width: 100%;
-            margin-top: 16px;
-            margin-bottom: 16px;
-        }
-
-        .upload-options-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            /* Two equal columns */
-            gap: 12px;
-            width: 100%;
-        }
-
-        .upload-card {
-            background-color: var(--card-bg, #f9fafb);
-            border: 1px solid var(--border-color, #e5e7eb);
-            border-radius: 12px;
-            padding: 16px 12px;
+        .camera-controls.mobile {
             display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            min-height: 100px;
-            user-select: none;
-            -webkit-tap-highlight-color: transparent;
         }
 
-        .upload-card:hover {
-            background-color: var(--hover-bg, #f3f4f6);
-            border-color: var(--primary-color, #000);
-            transform: translateY(-2px);
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        @media (max-width: 768px) {
+            .camera-controls {
+                gap: 8px;
+                margin: 10px 0;
+            }
         }
 
-        .upload-card:active {
-            transform: translateY(0);
-            background-color: var(--active-bg, #e5e7eb);
-        }
-
-        .upload-card-icon {
-            margin-bottom: 8px;
-            color: var(--primary-color, #000);
-            opacity: 0.8;
-        }
-
-        .upload-card-content {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .upload-card-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-primary, #111827);
-            line-height: 1.2;
-        }
-
-        .upload-card-subtitle {
-            font-size: 11px;
-            color: var(--text-secondary, #6b7280);
-            line-height: 1.2;
-        }
-
-        /* Dark Mode Support for Cards */
-        .theme-black .upload-card {
-            background-color: #23272f;
-            border-color: #3f4451;
-        }
-
-        .theme-black .upload-card:hover {
-            background-color: #2d333b;
-            border-color: #fff;
-        }
-
-        .theme-black .upload-card-icon {
-            color: #fff;
-        }
-
-        .theme-black .upload-card-title {
-            color: #fff;
-        }
-
-        .theme-black .upload-card-subtitle {
-            color: #9ca3af;
+        @media (hover: hover) and (pointer: fine) {
+            .camera-controls {
+                display: none !important;
+            }
         }
 
         /* Selected Clothing Preview Styles */
         .photo-section-content {
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
             gap: 16px;
-            align-items: center;
-            justify-content: center;
-            width: 100%;
+            align-items: stretch;
         }
 
         @media (max-width: 768px) {
             .photo-section-content {
-                flex-direction: column;
+                flex-direction: row;
                 gap: 12px;
-                align-items: center;
-                justify-content: center;
-            }
-        }
-
-        /* Workspace for Active State */
-        .try-on-workspace {
-            display: none;
-            /* Hidden by default, toggled via JS or has-content class */
-            flex-direction: row;
-            /* Force side-by-side */
-            align-items: center;
-            justify-content: center;
-            gap: 24px;
-            width: 100%;
-            margin-top: 10px;
-            margin-left: 0;
-            margin-right: 0;
-            flex-wrap: nowrap;
-            /* Prevent stacking */
-            overflow-x: auto;
-            /* Allow horizontal scroll */
-            overflow-y: visible;
-            /* Ensure vertical overhanging buttons aren't clipped */
-            padding: 20px;
-            /* Generous padding to accommodate overhanging buttons */
-            box-sizing: border-box;
-            /* Prevent scrollbar from padding */
-        }
-
-        .try-on-workspace.visible {
-            display: flex !important;
-        }
-
-        /* Ensure items shrink to fit on mobile */
-        @media (max-width: 480px) {
-            .try-on-workspace {
-                gap: 12px;
-                justify-content: space-evenly;
-            }
-
-            .active-user-photo-container,
-            .selected-clothing-preview {
-                flex-shrink: 1;
-                max-width: 48%;
-                /* Ensure they share 50% width roughly */
-                min-width: 0;
-                /* Allow shrinking below content size */
-            }
-
-            .active-photo-wrapper,
-            .selected-clothing-image-container {
-                width: 100%;
-                /* Fill the shrunk container */
-                max-width: none;
-                height: auto;
-                aspect-ratio: 3/4;
-                /* Maintain safe aspect ratio */
-            }
-
-            .selected-clothing-image-container {
-                width: 100% !important;
-                /* Override fixed width */
-                height: auto !important;
-                aspect-ratio: 3/4;
+                align-items: stretch;
             }
         }
 
         .selected-clothing-preview {
-            background: transparent;
-            border: none;
-            box-shadow: none;
-            padding: 0;
-            min-height: auto;
+            background: #ffffff;
+            border: 2px solid #333;
+            border-radius: 8px;
+            padding: 12px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
             display: flex;
             align-items: center;
             justify-content: center;
+            min-height: 100px;
+            height: 100%;
         }
 
         .selected-clothing-content {
             display: flex;
+            flex-direction: row;
+            gap: 12px;
             align-items: center;
             justify-content: center;
-            width: auto;
+            width: 100%;
+            height: 100%;
+        }
+
+        @media (max-width: 768px) {
+            .selected-clothing-content {
+                gap: 10px;
+            }
         }
 
         .selected-clothing-image-container {
             position: relative;
-            width: 180px;
-            /* Comparable to model card */
-            height: 240px;
-            /* Taller rectangular shape */
-            background: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            flex-shrink: 0;
             display: flex;
             align-items: center;
             justify-content: center;
-            /* overflow: hidden; Removed to allow close button to overhang */
         }
 
         .selected-clothing-image {
-            width: 100%;
-            height: 100%;
+            width: 100px;
+            height: 100px;
             object-fit: contain;
-            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
         }
 
         @media (max-width: 768px) {
@@ -2767,32 +2333,29 @@
 
         .selected-clothing-remove {
             position: absolute;
-            top: -10px;
-            right: -10px;
-            background: #000;
+            top: -8px;
+            right: -8px;
+            background: #333;
             color: white;
             border: 2px solid #ffffff;
             border-radius: 50%;
-            width: 28px;
-            height: 28px;
-            font-size: 16px;
+            width: 24px;
+            height: 24px;
+            font-size: 18px;
             line-height: 1;
             cursor: pointer;
             display: flex;
             align-items: center;
             justify-content: center;
             transition: all 0.2s ease;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-            z-index: 10;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
             -webkit-tap-highlight-color: transparent;
         }
 
         .selected-clothing-remove:hover {
+            background: #dc2626;
             transform: scale(1.1);
-            background: #333;
         }
-
-
 
         .selected-clothing-remove:active {
             transform: scale(0.95);
@@ -5486,14 +5049,11 @@
         .browser-clothing-card img {
             width: 100%;
             height: 100%;
-            object-fit: contain;
-            /* Changed to contain to show full model */
+            object-fit: cover;
             /* fill tile nicely */
             position: static;
             /* avoid absolute overlapping */
             z-index: 1;
-            background: #f9fafb;
-            /* Light background for contained images */
         }
 
 
@@ -5504,8 +5064,7 @@
                 height: 100%;
                 margin-bottom: 0;
                 border-radius: 0;
-                object-fit: contain;
-                /* Changed to contain */
+                object-fit: cover;
                 width: 100%;
                 min-height: 100%;
             }
@@ -5581,62 +5140,12 @@
             text-overflow: ellipsis;
             display: -webkit-box;
             -webkit-line-clamp: 2;
+            line-clamp: 2;
             -webkit-box-orient: vertical;
             word-break: break-word;
             flex-shrink: 0;
             min-height: 32px;
             /* Reserve space for 2 lines */
-        }
-
-        /* Model Browser Specific Styles */
-        .model-browser-card {
-            cursor: pointer;
-            border-radius: 8px;
-            overflow: hidden;
-            transition: all 0.2s ease;
-            position: relative;
-            aspect-ratio: 2/3;
-            /* Taller aspect ratio to fit models better */
-            background: transparent;
-        }
-
-        .model-browser-card:hover {
-            transform: translateY(-2px);
-            /* Subtle shadow on hover */
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-        }
-
-        /* Active state for selected model */
-        .model-browser-card.active {
-            box-shadow: 0 0 0 2px #000;
-        }
-
-        .model-card-image {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            /* Ensure head/feet are never cut off */
-            display: block;
-            border-radius: 8px;
-            /* Ensure image corners match */
-        }
-
-        /* Override grid columns for model browser for larger look */
-        #modelBrowserModal .browser-grid {
-            grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-            gap: 24px;
-            padding-bottom: 24px;
-            /* Ensure content isn't cut off at bottom */
-            align-items: start;
-            /* Prevent vertical stretching overlap */
-        }
-
-        /* Responsive override for mobile to ensure 2 columns */
-        @media (max-width: 600px) {
-            #modelBrowserModal .browser-grid {
-                grid-template-columns: 1fr 1fr !important;
-                gap: 16px;
-            }
         }
 
 
@@ -6353,51 +5862,6 @@
             border-color: #fff !important;
         }
 
-        /* Model Catalogue Native Styles */
-        .upload-help-row {
-            margin-top: 10px;
-            display: flex;
-            gap: 6px;
-            align-items: center;
-            justify-content: flex-start;
-            /* keep it native */
-            font-size: 13px;
-            color: #777;
-        }
-
-        .upload-help-text {
-            color: #777;
-        }
-
-        .upload-help-link {
-            background: none;
-            border: none;
-            padding: 0;
-            font: inherit;
-            font-weight: 700;
-            color: #222;
-            /* NOT blue */
-            text-decoration: underline;
-            cursor: pointer;
-        }
-
-        .upload-help-link:hover {
-            color: #000;
-        }
-
-        /* Dark Mode Support for Helper Link */
-        .theme-black .upload-help-text {
-            color: #aaa;
-        }
-
-        .theme-black .upload-help-link {
-            color: #fff;
-        }
-
-        .theme-black .upload-help-link:hover {
-            color: #ddd;
-        }
-
         /* Black theme wardrobe action buttons */
         .theme-black .wardrobe-action-btn {
             background: rgba(35, 39, 47, 0.95) !important;
@@ -6689,78 +6153,46 @@
 
                 <!-- Photo Upload Section -->
                 <div class="photo-section">
+                    <div class="photo-instruction">Upload full body image to get started</div>
 
                     <!-- Photo Upload and Preview Container (flex for side-by-side on desktop) -->
-                    <!-- Photo Upload and Preview Container (New Card Layout) -->
                     <div class="photo-section-content">
-                        <!-- Restored Upload Options (Original) -->
-                        <div id="uploadOptionsContainer" class="upload-options-container">
-                            <div class="upload-options-grid">
-                                <!-- Card 1: Upload Your Photo -->
-                                <div class="upload-option-card" onclick="handlePhotoUploadClick()" role="button"
-                                    tabindex="0">
-                                    <div class="recommended-badge">Recommended</div>
-                                    <div class="option-icon-wrapper">
-                                        <div class="option-icon">📷</div>
-                                    </div>
-                                    <h3 class="option-title">Upload your photo</h3>
-                                    <p class="option-subtitle">Full-body photos work best.</p>
-                                    <button class="option-btn">Upload your photo</button>
-                                </div>
-
-                                <!-- Card 2: Use a Model -->
-                                <div class="upload-option-card" onclick="openModelBrowser()" role="button" tabindex="0">
-                                    <div class="option-image-wrapper">
-                                        <!-- Placeholder Model Icon/Image -->
-                                        <div
-                                            style="width: 100%; height: 100%; background: #f3f4f6; display: flex; align-items: center; justify-content: center;">
-                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9ca3af"
-                                                stroke-width="2">
-                                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                                                <circle cx="12" cy="7" r="4" />
-                                            </svg>
-                                        </div>
-                                    </div>
-                                    <h3 class="option-title">Use a model</h3>
-                                    <p class="option-subtitle">Try outfits on a sample model.</p>
-                                    <button class="option-btn">Use a model</button>
-                                </div>
-                            </div>
+                        <!-- Photo Upload Area -->
+                        <div class="photo-upload" onclick="handlePhotoUploadClick()">
+                            <button class="photo-tips-icon" onclick="event.stopPropagation(); showBestPracticesModal();"
+                                aria-label="View photo tips for best results" title="Photo Tips">ℹ️</button>
+                            <div class="upload-icon">🧍</div>
+                            <div class="upload-text">Tap to upload full body image</div>
+                            <img id="photoPreview" class="photo-preview" style="display: none;">
+                            <div id="changePhotoText" class="upload-text"
+                                style="display: none; margin-top: 8px; font-size: 12px; color: #6366f1;">Tap to change
+                                photo</div>
                         </div>
 
-
-                        <!-- Try-On Workspace (Flex container for side-by-side view) -->
-                        <div class="try-on-workspace">
-                            <!-- Active User Photo Container (Visually replaces the grid when selected) -->
-                            <div id="activeUserPhotoContainer" class="active-user-photo-container"
-                                style="display: none;">
-                                <div class="active-photo-wrapper">
-                                    <img id="activeUserPhoto" class="active-user-photo" src="" alt="Your photo">
-                                    <div id="activePhotoLoader" class="active-photo-loader" style="display: none;">
-                                        <div class="loader-dots">
-                                            <span></span><span></span><span></span>
-                                        </div>
-                                    </div>
-                                    <button class="change-photo-btn" onclick="resetPhotoUploadArea()">Change
-                                        Photo</button>
-                                </div>
-                            </div>
-
-                            <!-- Selected Clothing Preview (Keep this for when an item is selected) -->
-                            <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
-                                <div class="selected-clothing-content">
-                                    <div class="selected-clothing-image-container">
-                                        <img id="selectedClothingImage" class="selected-clothing-image" src=""
-                                            alt="Selected clothing">
-                                        <button class="selected-clothing-remove" onclick="clearSelectedClothing()"
-                                            aria-label="Remove selected clothing">×</button>
-                                    </div>
+                        <!-- Selected Clothing Preview (shown when item is selected) -->
+                        <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
+                            <div class="selected-clothing-content">
+                                <div class="selected-clothing-image-container">
+                                    <img id="selectedClothingImage" class="selected-clothing-image" src=""
+                                        alt="Selected clothing">
+                                    <button class="selected-clothing-remove" onclick="clearSelectedClothing()"
+                                        aria-label="Remove selected clothing">×</button>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-
+                    <!-- Mobile Camera Controls -->
+                    <div id="cameraControls" class="camera-controls">
+                        <button class="camera-option-btn" onclick="takePicture()" type="button">
+                            <span class="icon">📸</span>
+                            <span>Camera</span>
+                        </button>
+                        <button class="camera-option-btn" onclick="chooseFromGallery()" type="button">
+                            <span class="icon">🖼️</span>
+                            <span>Gallery</span>
+                        </button>
+                    </div>
 
                     <!-- File inputs -->
                     <input type="file" id="photoInput" class="hidden-input" accept="image/*"
@@ -6769,7 +6201,14 @@
                         style="display:none !important" onchange="handlePhotoUpload(event)">
 
                     <!-- Analysis Loading Bar (Mobile & Desktop) -->
-
+                    <div id="photoAnalysisOverlay" class="photo-analysis-bar" style="display: none;">
+                        <div class="analysis-spinner-small">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                        </div>
+                        <span class="analysis-text-bar">Analyzing image quality...</span>
+                    </div>
                 </div>
 
                 <div id="resultSection" style="display: none;">
@@ -6832,29 +6271,6 @@
             </div>
         </div>
     </div>
-
-    <!-- Model Browser Modal (Cloned from Clothing Browser) -->
-    <div id="modelBrowserModal" class="clothing-browser-modal">
-        <div class="clothing-browser-content">
-            <div class="browser-header">
-                <div style="display: flex; align-items: center; gap: 12px;">
-                    <h2 class="browser-title">Choose a model</h2>
-                </div>
-                <!-- Note: using id for JS listener attachment -->
-                <button class="browser-close" id="closeModelBrowserBtn">&times;</button>
-            </div>
-            <div class="browser-body">
-                <!-- Filters could go here later -->
-
-                <div id="modelBrowserGrid" class="browser-grid">
-                    <!-- Models will be populated here via JS -->
-                </div>
-            </div>
-            <!-- Pagination not needed for small model list yet -->
-        </div>
-    </div>
-
-
 
     <!-- Image Modal -->
     <div id="imageModal" class="image-modal" onclick="closeImageModal(event)">

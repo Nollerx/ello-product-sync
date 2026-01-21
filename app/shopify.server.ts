@@ -8,11 +8,11 @@ import { supabaseAdmin } from "./lib/supabase.server";
 import { SQLiteSessionStorage } from "@shopify/shopify-app-session-storage-sqlite";
 
 const shopify = shopifyApp({
-  apiKey: process.env.SHOPIFY_API_KEY || "missing_api_key",
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "missing_secret_key",
+  apiKey: process.env.SHOPIFY_API_KEY,
+  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
   apiVersion: ApiVersion.October25,
-  scopes: process.env.SCOPES?.split(",") || [],
-  appUrl: process.env.SHOPIFY_APP_URL || "https://missing-app-url.com",
+  scopes: process.env.SCOPES?.split(","),
+  appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
   sessionStorage: new SQLiteSessionStorage(process.env.SESSION_DB_PATH || "./shopify_sessions.sqlite"),
   hooks: {
