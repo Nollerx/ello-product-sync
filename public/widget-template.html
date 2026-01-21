@@ -288,7 +288,8 @@
         .custom-notification {
             position: fixed;
             top: 20px;
-            right: 20px;
+            left: 50%;
+            transform: translateX(-50%) translateY(-100px) scale(0.8);
             background: linear-gradient(135deg, #10b981 0%, #059669 100%);
             color: white;
             padding: 16px 24px;
@@ -325,12 +326,12 @@
         }
 
         .custom-notification.show {
-            transform: translateY(0) scale(1);
+            transform: translateX(-50%) translateY(0) scale(1);
             opacity: 1;
         }
 
         .custom-notification.hide {
-            transform: translateY(-50px) scale(0.9);
+            transform: translateX(-50%) translateY(-50px) scale(0.9);
             opacity: 0;
         }
 
@@ -458,8 +459,8 @@
         @media (max-width: 768px) {
             .custom-notification {
                 top: 10px;
-                right: 10px;
                 left: 10px;
+                right: 10px;
                 max-width: none;
                 transform: translateY(-100px) scale(0.9);
                 z-index: 2147483647 !important;
@@ -467,6 +468,7 @@
 
             /* Ensure notification is visible above modals on mobile */
             .custom-notification.show {
+                transform: translateY(0) scale(1);
                 z-index: 100000;
             }
 
@@ -2630,16 +2632,19 @@
         /* Selected Clothing Preview Styles */
         .photo-section-content {
             display: flex;
-            flex-direction: row;
+            flex-direction: column;
             gap: 16px;
-            align-items: stretch;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
         }
 
         @media (max-width: 768px) {
             .photo-section-content {
-                flex-direction: row;
+                flex-direction: column;
                 gap: 12px;
-                align-items: stretch;
+                align-items: center;
+                justify-content: center;
             }
         }
 
@@ -2654,6 +2659,8 @@
             gap: 24px;
             width: 100%;
             margin-top: 10px;
+            margin-left: auto;
+            margin-right: auto;
             flex-wrap: nowrap;
             /* Prevent stacking */
             overflow-x: auto;
