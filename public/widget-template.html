@@ -5991,62 +5991,13 @@
             }
         }
 
+        /* Add error notification style */
         .custom-notification.error {
             background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
             color: white;
             box-shadow: 0 10px 40px rgba(239, 68, 68, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.2);
         }
-
-        /* --- RICH DESIGN UPLOAD CARDS --- */
-        .upload-card-recommended {
-            border: 2px solid #10b981 !important;
-            /* Green primary color */
-            position: relative;
-        }
-
-        .card-badge {
-            position: absolute;
-            top: -10px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #000;
-            color: #fff;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 10px;
-            font-weight: 800;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
-            z-index: 5;
-        }
-
-        .upload-card-image-area {
-            height: 100px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 8px;
-        }
-
-        .btn-primary-green {
-            background-color: #10b981 !important;
-            color: white !important;
-            border: none !important;
-        }
-
-        .btn-primary-green:hover {
-            background-color: #059669 !important;
-            transform: translateY(-2px);
-        }
-
-        .btn-secondary-white {
-            background-color: #fff !important;
-            color: #333 !important;
-            border: 1px solid #e0e0e0 !important;
-        }
-
 
         .notification-icon {
             color: white;
@@ -6553,154 +6504,6 @@
         .browser-clothing-card::after {
             content: none !important;
         }
-
-        /* --- NEW SPEC CSS (Step 2423) --- */
-
-        /* Wrapper holding the 2 main cards */
-        /* Wrapper holding the 2 main cards */
-        .photoSourceGrid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 20px;
-            align-items: stretch;
-            /* IMPORTANT: prevents squish */
-            max-width: 640px;
-            /* Limit width */
-            margin: 0 auto;
-            /* Center grid */
-        }
-
-        /* The tall vertical card */
-        .sourceCard {
-            position: relative;
-            background: #fff;
-            border: 2px solid rgba(0, 0, 0, 0.10);
-            border-radius: 18px;
-            padding: 24px 20px;
-            min-height: 280px;
-            /* Reduced height */
-            aspect-ratio: 3 / 4;
-            /* IMPORTANT: keeps rectangle shape */
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: space-between;
-
-            transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
-            cursor: pointer;
-        }
-
-        /* Hover/active animations */
-        .sourceCard:hover {
-            transform: translateY(-3px) scale(1.01);
-            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12);
-        }
-
-        .sourceCard:active {
-            transform: translateY(-1px) scale(0.995);
-            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.10);
-        }
-
-        /* “Recommended” pill */
-        .recommendedPill {
-            position: absolute;
-            top: 14px;
-            left: 50%;
-            transform: translateX(-50%);
-            padding: 8px 18px;
-            border-radius: 999px;
-            background: #000;
-            color: #fff;
-            font-weight: 800;
-            letter-spacing: 0.06em;
-            font-size: 13px;
-            box-shadow: 0 10px 18px rgba(0, 0, 0, 0.18);
-            z-index: 5;
-        }
-
-        /* Icon block */
-        .sourceIcon {
-            margin-top: 36px;
-            /* leaves room for the pill */
-            width: 64px;
-            height: 64px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        /* Typography */
-        .sourceTitle {
-            font-size: 32px;
-            line-height: 1.05;
-            font-weight: 800;
-            text-align: center;
-            margin-top: 8px;
-        }
-
-        .sourceSubtitle {
-            font-size: 18px;
-            line-height: 1.25;
-            opacity: 0.75;
-            text-align: center;
-            margin-top: 8px;
-            max-width: 240px;
-        }
-
-        /* CTA button */
-        .sourceBtn {
-            margin-top: 18px;
-            min-height: 50px;
-            padding: 12px 18px;
-            border-radius: 14px;
-            font-weight: 800;
-            font-size: 18px;
-            transition: transform 140ms ease, filter 140ms ease;
-            cursor: pointer;
-        }
-
-        .sourceCard:hover .sourceBtn {
-            transform: translateY(-1px);
-            filter: brightness(0.98);
-        }
-
-        .sourceCard:active .sourceBtn {
-            transform: translateY(0px);
-        }
-
-        /* Recommended (green outline) state */
-        .sourceCard.isRecommended {
-            border-color: #18b26b;
-            box-shadow: 0 10px 24px rgba(24, 178, 107, 0.16);
-        }
-
-        /* Mobile */
-        @media (max-width: 520px) {
-            .photoSourceGrid {
-                grid-template-columns: 1fr;
-            }
-
-            .sourceCard {
-                min-height: 280px;
-                aspect-ratio: 4 / 5;
-                padding: 22px 18px;
-            }
-
-            .sourceTitle {
-                font-size: 28px;
-            }
-        }
-
-        /* --- EXTRA COMPACT CSS (Override) --- */
-        .photoSourceGrid {
-            gap: 16px !important;
-            max-width: 500px !important;
-        }
-
-        .sourceCard {
-            padding: 20px 16px !important;
-            min-height: 220px !important;
-        }
     </style>
 </head>
 
@@ -6952,50 +6755,48 @@
 
 
 
+                    <!-- File inputs -->
+                    <input type="file" id="photoInput" class="hidden-input" accept="image/*"
+                        style="display:none !important" onchange="handlePhotoUpload(event)">
+                    <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment"
+                        style="display:none !important" onchange="handlePhotoUpload(event)">
+
+                    <!-- Analysis Loading Bar (Mobile & Desktop) -->
+
                 </div>
 
-                <!-- File inputs -->
-                <input type="file" id="photoInput" class="hidden-input" accept="image/*" style="display:none !important"
-                    onchange="handlePhotoUpload(event)">
-                <input type="file" id="cameraInput" class="hidden-input" accept="image/*" capture="environment"
-                    style="display:none !important" onchange="handlePhotoUpload(event)">
-
-                <!-- Analysis Loading Bar (Mobile & Desktop) -->
-
+                <div id="resultSection" style="display: none;">
+                    <!-- Result will be shown here -->
+                    <div id="ello-tryon-loader" style="display: none; align-items: center; justify-content: center;">
+                    </div>
+                    <div id="ello-tryon-error"
+                        style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
+                    </div>
+                    <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
+                        <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
+                    </div>
+                </div>
             </div>
 
-            <div id="resultSection" style="display: none;">
-                <!-- Result will be shown here -->
-                <div id="ello-tryon-loader" style="display: none; align-items: center; justify-content: center;">
-                </div>
-                <div id="ello-tryon-error"
-                    style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
-                </div>
-                <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
-                    <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
+            <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
+            <div class="action-buttons">
+                <button class="btn btn-secondary" onclick="closeWidget()">
+                    <span>✕</span>
+                    Close
+                </button>
+                <button class="btn btn-primary" id="tryOnBtn" disabled
+                    aria-label="Try on selected clothing with your photo. Press Enter to activate.">
+                    <span>✨</span>
+                    Try On
+                </button>
+                <!-- Loading Bar -->
+                <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
+                    <div class="tryon-loading-bar">
+                        <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
+                    </div>
                 </div>
             </div>
         </div>
-
-        <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
-        <div class="action-buttons">
-            <button class="btn btn-secondary" onclick="closeWidget()">
-                <span>✕</span>
-                Close
-            </button>
-            <button class="btn btn-primary" id="tryOnBtn" disabled
-                aria-label="Try on selected clothing with your photo. Press Enter to activate.">
-                <span>✨</span>
-                Try On
-            </button>
-            <!-- Loading Bar -->
-            <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
-                <div class="tryon-loading-bar">
-                    <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
-                </div>
-            </div>
-        </div>
-    </div>
     </div>
 
     <!-- Clothing Browser Modal -->
@@ -7290,209 +7091,3 @@
 </body>
 
 </html>
-<style>
-    /* RESTORED ORIGINAL CSS (Step 2488) */
-    .upload-options-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 16px;
-        width: 100%;
-        margin-top: 16px;
-    }
-
-    .upload-option-card {
-        background: #ffffff;
-        border: 1px solid #e5e7eb;
-        border-radius: 12px;
-        padding: 36px 16px 20px 16px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        cursor: pointer;
-        transition: all 0.2s ease;
-        min-height: 220px;
-        justify-content: space-between;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        position: relative;
-        overflow: hidden;
-    }
-
-    .recommended-badge {
-        position: absolute;
-        top: 12px;
-        left: 50%;
-        transform: translateX(-50%);
-        background-color: #000000;
-        color: white;
-        font-size: 10px;
-        font-weight: 600;
-        padding: 4px 12px;
-        border-radius: 20px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        z-index: 5;
-    }
-
-    .upload-option-card:hover {
-        border-color: #10b981;
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-        transform: translateY(-2px);
-    }
-
-    .option-icon-wrapper {
-        width: 64px;
-        height: 64px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin-bottom: 12px;
-    }
-
-    .option-icon {
-        font-size: 42px;
-        color: #9ca3af;
-    }
-
-    .option-image-wrapper {
-        width: 80px;
-        height: 100px;
-        border-radius: 4px;
-        overflow: hidden;
-        margin-bottom: 12px;
-        background: #f3f4f6;
-    }
-
-    .model-preview-img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        object-position: top center;
-    }
-
-    .option-title {
-        font-size: 16px;
-        font-weight: 700;
-        color: #111827;
-        margin-bottom: 6px;
-        font-family: 'Poppins', sans-serif;
-    }
-
-    .option-subtitle {
-        font-size: 12px;
-        color: #6b7280;
-        margin-bottom: 16px;
-        line-height: 1.4;
-        flex-grow: 1;
-    }
-
-    .option-btn {
-        width: 100%;
-        padding: 10px 0;
-        background: #f9fafb;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        color: #374151;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-
-    .upload-option-card:hover .option-btn {
-        background: #10b981;
-        color: white;
-        border-color: #10b981;
-    }
-</style>
-<style>
-/* RESTORED ACTIVE PHOTO CSS */
-        .active-user-photo-container {
-            width: 100%;
-            margin-top: 16px;
-            display: flex;
-            justify-content: center;
-        }
-
-        .active-photo-wrapper {
-            position: relative;
-            width: 100%;
-            max-width: 200px;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        .active-user-photo {
-            width: 100%;
-            height: auto;
-            display: block;
-            object-fit: contain;
-        }
-
-        .change-photo-btn {
-            position: absolute;
-            bottom: 16px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.6);
-            color: white;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            backdrop-filter: blur(4px);
-            transition: all 0.2s ease;
-            z-index: 20;
-            white-space: nowrap;
-        }
-
-        .change-photo-btn:hover {
-            background: rgba(0, 0, 0, 0.8);
-            transform: translateX(-50%) translateY(-1px);
-        }
-
-        .active-photo-loader {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.6);
-            backdrop-filter: blur(2px);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            z-index: 10;
-        }
-
-        .loader-dots {
-            display: flex;
-            gap: 6px;
-        }
-
-        .loader-dots span {
-            width: 10px;
-            height: 10px;
-            background: #000;
-            border-radius: 50%;
-            animation: bounce 1.4s infinite ease-in-out both;
-        }
-
-        .loader-dots span:nth-child(1) {
-            animation-delay: -0.32s;
-        }
-
-        .loader-dots span:nth-child(2) {
-            animation-delay: -0.16s;
-        }
-
-        @keyframes bounce {
-            0%, 80%, 100% { transform: scale(0); }
-            40% { transform: scale(1); }
-        }
-</style>
