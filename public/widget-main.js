@@ -2356,7 +2356,7 @@ function resetPhotoUploadArea() {
 
     // NEW: Toggle Active Photo State
     const activeContainer = document.getElementById('activeUserPhotoContainer');
-    const uploadGrid = document.querySelector('.upload-options-grid');
+    const uploadOptions = document.getElementById('uploadOptionsContainer');
     const activePhoto = document.getElementById('activeUserPhoto');
 
     if (activeContainer) {
@@ -2364,8 +2364,8 @@ function resetPhotoUploadArea() {
         if (activePhoto) activePhoto.src = '';
     }
 
-    if (uploadGrid) {
-        uploadGrid.style.display = 'grid'; // Restore grid layout
+    if (uploadOptions) {
+        uploadOptions.style.display = 'block'; // Restore container layout
     }
 
     // Hide any selected clothing to prevent layout squishing
@@ -2687,10 +2687,10 @@ function selectModel(model) {
 
     // NEW: Switch to Active Photo State
     const activeContainer = document.getElementById('activeUserPhotoContainer');
-    const uploadGrid = document.querySelector('.upload-options-grid');
+    const uploadOptions = document.getElementById('uploadOptionsContainer');
     const activePhoto = document.getElementById('activeUserPhoto');
 
-    if (uploadGrid) uploadGrid.style.display = 'none';
+    if (uploadOptions) uploadOptions.style.display = 'none';
     if (activeContainer) {
         activeContainer.style.display = 'flex'; // Use flex to center
         if (activePhoto) activePhoto.src = imageUrl;
@@ -3451,8 +3451,8 @@ async function handlePhotoUpload(event) {
             const imageDataUrl = e.target.result;
 
             // 1. Switch to Active State Immediately for Analysis Visualization
-            const uploadGrid = document.querySelector('.upload-options-grid');
-            if (uploadGrid) uploadGrid.style.display = 'none';
+            const uploadOptions = document.getElementById('uploadOptionsContainer');
+            if (uploadOptions) uploadOptions.style.display = 'none';
 
             // Show Active Container with Loader
             const activeContainer = document.getElementById('activeUserPhotoContainer');
@@ -3480,7 +3480,7 @@ async function handlePhotoUpload(event) {
 
             if (!qualityResult.isValid) {
                 // Revert UI State
-                if (uploadGrid) uploadGrid.style.display = 'grid';
+                if (uploadOptions) uploadOptions.style.display = 'block';
                 if (activeContainer) activeContainer.style.display = 'none';
                 if (activeLoader) activeLoader.style.display = 'none';
 
