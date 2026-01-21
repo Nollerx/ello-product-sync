@@ -2710,7 +2710,7 @@ function selectModel(model) {
     updateTryOnButton();
 
     // Show notification
-    showNotification('Model selected', 'success');
+    showSuccessNotification('Model selected', 'You can now try on outfits!');
 }
 
 // 🔄 REPLACE YOUR EXISTING populateFeaturedAndQuickPicks() FUNCTION WITH THIS:
