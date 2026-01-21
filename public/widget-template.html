@@ -6883,6 +6883,40 @@
                     <!-- Photo Upload and Preview Container (flex for side-by-side on desktop) -->
                     <!-- Photo Upload and Preview Container (New Card Layout) -->
                     <div class="photo-section-content">
+                        <!-- Restored Upload Options (Original) -->
+                        <div id="uploadOptionsContainer" class="upload-options-container">
+                            <div class="upload-options-grid">
+                                <!-- Card 1: Upload Your Photo -->
+                                <div class="upload-option-card" onclick="handlePhotoUploadClick()" role="button"
+                                    tabindex="0">
+                                    <div class="recommended-badge">Recommended</div>
+                                    <div class="option-icon-wrapper">
+                                        <div class="option-icon">📷</div>
+                                    </div>
+                                    <h3 class="option-title">Upload your photo</h3>
+                                    <p class="option-subtitle">Full-body photos work best.</p>
+                                    <button class="option-btn">Upload your photo</button>
+                                </div>
+
+                                <!-- Card 2: Use a Model -->
+                                <div class="upload-option-card" onclick="openModelBrowser()" role="button" tabindex="0">
+                                    <div class="option-image-wrapper">
+                                        <!-- Placeholder Model Icon/Image -->
+                                        <div
+                                            style="width: 100%; height: 100%; background: #f3f4f6; display: flex; align-items: center; justify-content: center;">
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9ca3af"
+                                                stroke-width="2">
+                                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                                                <circle cx="12" cy="7" r="4" />
+                                            </svg>
+                                        </div>
+                                    </div>
+                                    <h3 class="option-title">Use a model</h3>
+                                    <p class="option-subtitle">Try outfits on a sample model.</p>
+                                    <button class="option-btn">Use a model</button>
+                                </div>
+                            </div>
+                        </div>
 
 
                         <!-- Try-On Workspace (Flex container for side-by-side view) -->
@@ -6918,40 +6952,6 @@
 
 
 
-                    <!-- Restored Upload Options (Original) -->
-                    <div id="uploadOptionsContainer" class="upload-options-container">
-                        <div class="upload-options-grid">
-                            <!-- Card 1: Upload Your Photo -->
-                            <div class="upload-option-card" onclick="handlePhotoUploadClick()" role="button"
-                                tabindex="0">
-                                <div class="recommended-badge">Recommended</div>
-                                <div class="option-icon-wrapper">
-                                    <div class="option-icon">📷</div>
-                                </div>
-                                <h3 class="option-title">Upload your photo</h3>
-                                <p class="option-subtitle">Full-body photos work best.</p>
-                                <button class="option-btn">Upload your photo</button>
-                            </div>
-
-                            <!-- Card 2: Use a Model -->
-                            <div class="upload-option-card" onclick="openModelBrowser()" role="button" tabindex="0">
-                                <div class="option-image-wrapper">
-                                    <!-- Placeholder Model Icon/Image -->
-                                    <div
-                                        style="width: 100%; height: 100%; background: #f3f4f6; display: flex; align-items: center; justify-content: center;">
-                                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9ca3af"
-                                            stroke-width="2">
-                                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                                            <circle cx="12" cy="7" r="4" />
-                                        </svg>
-                                    </div>
-                                </div>
-                                <h3 class="option-title">Use a model</h3>
-                                <p class="option-subtitle">Try outfits on a sample model.</p>
-                                <button class="option-btn">Use a model</button>
-                            </div>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- File inputs -->
