@@ -8,8 +8,8 @@ import { supabaseAdmin } from "./lib/supabase.server";
 import { SQLiteSessionStorage } from "@shopify/shopify-app-session-storage-sqlite";
 
 const shopify = shopifyApp({
-  apiKey: process.env.SHOPIFY_API_KEY || "missing_api_key",
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "missing_secret_key",
+  apiKey: process.env.SHOPIFY_API_KEY,
+  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
   apiVersion: ApiVersion.October25,
   scopes: process.env.SCOPES?.split(",") || [],
   appUrl: process.env.SHOPIFY_APP_URL || "https://ello-shopify-app-13593516897.us-central1.run.app",

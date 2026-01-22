@@ -4,6 +4,9 @@
 
 console.log("✅ Ello Widget v2.3.7 - Bootstrap Blacklist Fix");
 
+// Global activity flag to prevent ReferenceError
+let hasUserActivity = false;
+
 // Make initializeWidget globally accessible
 window.initializeWidget = function () {
     detectDevice();
@@ -3264,6 +3267,13 @@ async function handlePhotoUpload(event) {
             const activeLoader = document.getElementById('activePhotoLoader');
             if (activeLoader) {
                 activeLoader.style.display = 'flex';
+            }
+
+            // Show analyzing state
+            const uploadText = uploadArea?.querySelector('.upload-text:not(#changePhotoText)');
+            if (uploadText) {
+                const originalText = uploadText.textContent;
+                uploadText.textContent = 'First upload may take a moment';
             }
 
             // Enhanced quality validation
