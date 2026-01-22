@@ -60,8 +60,7 @@ const shopify = shopifyApp({
           .upsert(
             {
               shop,
-              storefront_access_token: token,
-              updated_at: new Date().toISOString()
+              storefront_access_token: token
             },
             { onConflict: "shop" }
           );
@@ -88,8 +87,7 @@ const shopify = shopifyApp({
               store_slug: shop.replace('.myshopify.com', ''),
               storefront_token: token,
               clothing_population_type: 'shopify',
-              widget_primary_color: '#000000',
-              updated_at: new Date().toISOString()
+              widget_primary_color: '#000000'
             },
             { onConflict: "shop_domain" }
           );
@@ -107,7 +105,6 @@ const shopify = shopifyApp({
   },
   distribution: AppDistribution.AppStore,
   future: {
-    unstable_newEmbeddedAuthStrategy: true,
     removeRest: true,
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN

@@ -51,8 +51,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             .upsert(
                 {
                     shop,
-                    storefront_access_token: token,
-                    updated_at: new Date().toISOString()
+                    storefront_access_token: token
                 },
                 { onConflict: "shop" }
             );
@@ -77,8 +76,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                     store_slug: shop.replace('.myshopify.com', ''),
                     storefront_token: token,
                     clothing_population_type: 'shopify',
-                    widget_primary_color: '#000000',
-                    updated_at: new Date().toISOString()
+                    widget_primary_color: '#000000'
                 },
                 { onConflict: "shop_domain" }
             );

@@ -47,7 +47,7 @@ export async function action({ request }: ActionFunctionArgs) {
         // 2. Fetch Store Config from Supabase
         const { data: storeData, error: storeError } = await supabaseAdmin
             .from("vto_stores")
-            .select("store_slug, shop_domain, storefront_token, clothing_population_type, featured_item_id, quick_picks_ids, widget_primary_color, supported_products_filter_type, supported_products_filter_value")
+            .select("store_slug, shop_domain, storefront_token, clothing_population_type, featured_item_id, quick_picks_ids, widget_primary_color")
             .or(`shop_domain.eq.${shop},store_slug.eq.${shop}`)
             .maybeSingle();
 
@@ -79,9 +79,7 @@ export async function action({ request }: ActionFunctionArgs) {
                     store_slug: shop.replace('.myshopify.com', ''),
                     widget_primary_color: '#000000',
                     featured_item_id: null,
-                    quick_picks_ids: [],
-                    supported_products_filter_type: null,
-                    supported_products_filter_value: null
+                    quick_picks_ids: []
                 };
             }
         }
