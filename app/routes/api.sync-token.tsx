@@ -66,20 +66,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
         console.log("✅ Successfully stored storefront token (Manual) for", shop);
 
-        // 3) Auto-populate vto_stores 
+        // 3) Auto-populate vto_stores - Manual Check-then-Act for Legacy Schema Support
         console.log("👉 Ensuring vto_stores entry exists (Manual)...");
-        const { error: vtoErr } = await supabaseAdmin
+        const { data: existingStore, error: fetchErr } = await supabaseAdmin
             .from("vto_stores")
-            .upsert(
-                {
-                    shop_domain: shop,
-                    store_slug: shop.replace('.myshopify.com', ''),
-                    storefront_token: token,
-                    clothing_population_type: 'shopify',
-                    widget_primary_color: '#000000'
-                },
-                { onConflict: "shop_domain" }
-            );
+            .select("id")
+            .eq("shop_domain", shop)
+            .maybeSingle();
+
+        if (fetchErr) {
+            console.error("❌ Error checking vto_stores:", fetchErr);
+        }
+
+        const storePayload = {
+            shop_domain: shop,
+            store_slug: shop.replace('.myshopify.com', ''),
+            storefront_token: token,
+            clothing_population_type: 'shopify',
+            widget_primary_color: '#000000'
+        };
+
+        let vtoErr;
+        if (existingStore) {
+            console.log("👉 Updating existing vto_stores entry...");
+            const { error } = await supabaseAdmin
+                .from("vto_stores")
+                .update(storePayload)
+                .eq("id", existingStore.id);
+            vtoErr = error;
+        } else {
+            console.log("👉 Inserting new vto_stores entry...");
+            const { error } = await supabaseAdmin
+                .from("vto_stores")
+                .insert([storePayload]);
+            vtoErr = error;
+        }
 
         if (vtoErr) {
             console.error("❌ Supabase vto_stores upsert error (Manual):", vtoErr);
