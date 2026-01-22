@@ -1976,8 +1976,9 @@
         /* Photo Upload Section */
         .photo-section {
             padding: 20px;
-            background: #f8f8f8;
-            border-top: 1px solid #e0e0e0;
+            background: #ffffff;
+            border-top: 1px solid #f0f0f0;
+            flex-shrink: 0;
         }
 
         /* Mobile-specific photo section adjustments */
@@ -2257,9 +2258,8 @@
         /* Selected Clothing Preview Styles */
         .photo-section-content {
             display: flex;
-            flex-direction: row;
+            flex-direction: column;
             gap: 16px;
-            align-items: stretch;
         }
 
         @media (max-width: 768px) {
@@ -6036,6 +6036,183 @@
         .browser-clothing-card::after {
             content: none !important;
         }
+
+        /* Upload UI Redesign Styles (Global) */
+        .upload-options-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            width: 100%;
+            margin-top: 16px;
+        }
+
+        .upload-option-card {
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 36px 16px 20px 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-height: 220px;
+            justify-content: space-between;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .recommended-badge {
+            position: absolute;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #000000;
+            color: white;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 4px 12px;
+            border-radius: 20px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            z-index: 5;
+        }
+
+        .upload-option-card:hover {
+            border-color: #10b981;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .option-icon-wrapper {
+            width: 64px;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 12px;
+        }
+
+        .option-icon {
+            font-size: 42px;
+            color: #9ca3af;
+        }
+
+        .option-image-wrapper {
+            width: 80px;
+            height: 100px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 12px;
+            background: #f3f4f6;
+        }
+
+        .model-preview-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: top center;
+        }
+
+        .option-title {
+            font-size: 16px;
+            font-weight: 700;
+            color: #111827;
+            margin-bottom: 6px;
+            font-family: 'Poppins', sans-serif;
+        }
+
+        .option-subtitle {
+            font-size: 12px;
+            color: #6b7280;
+            margin-bottom: 16px;
+            line-height: 1.4;
+            flex-grow: 1;
+        }
+
+        .option-btn {
+            width: 100%;
+            padding: 10px 0;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            color: #374151;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .upload-option-card:hover .option-btn {
+            background: #10b981;
+            color: white;
+            border-color: #10b981;
+        }
+
+        .active-user-photo-container {
+            width: 100%;
+            margin-top: 16px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .active-photo-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 200px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .active-user-photo {
+            width: 100%;
+            height: auto;
+            display: block;
+            object-fit: contain;
+        }
+
+        .change-photo-btn {
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.6);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+            transition: all 0.2s ease;
+            z-index: 20;
+            white-space: nowrap;
+        }
+
+        .change-photo-btn:hover {
+            background: rgba(0, 0, 0, 0.8);
+            transform: translateX(-50%) translateY(-1px);
+        }
+
+        .active-photo-loader {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(2px);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
     </style>
 </head>
 
@@ -6218,15 +6395,68 @@
 
                     <!-- Photo Upload and Preview Container (flex for side-by-side on desktop) -->
                     <div class="photo-section-content">
+                        <!-- Restored Upload Options (Original) -->
+                        <div id="uploadOptionsContainer" class="upload-options-container">
+                            <div class="upload-options-grid">
+                                <!-- Card 1: Upload Your Photo -->
+                                <div class="upload-option-card" onclick="handlePhotoUploadClick()" role="button"
+                                    tabindex="0">
+                                    <div class="recommended-badge">Recommended</div>
+                                    <div class="option-icon-wrapper">
+                                        <div class="option-icon">📷</div>
+                                    </div>
+                                    <h3 class="option-title">Upload your photo</h3>
+                                    <p class="option-subtitle">Full-body photos work best.</p>
+                                    <button class="option-btn">Upload your photo</button>
+                                </div>
 
-                        <!-- Selected Clothing Preview (shown when item is selected) -->
-                        <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
-                            <div class="selected-clothing-content">
-                                <div class="selected-clothing-image-container">
-                                    <img id="selectedClothingImage" class="selected-clothing-image" src=""
-                                        alt="Selected clothing">
-                                    <button class="selected-clothing-remove" onclick="clearSelectedClothing()"
-                                        aria-label="Remove selected clothing">×</button>
+                                <!-- Card 2: Use a Model -->
+                                <div class="upload-option-card" onclick="openModelBrowser()" role="button" tabindex="0">
+                                    <div class="option-image-wrapper">
+                                        <!-- Placeholder Model Icon/Image -->
+                                        <div
+                                            style="width: 100%; height: 100%; background: #f3f4f6; display: flex; align-items: center; justify-content: center;">
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9ca3af"
+                                                stroke-width="2">
+                                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                                                <circle cx="12" cy="7" r="4" />
+                                            </svg>
+                                        </div>
+                                    </div>
+                                    <h3 class="option-title">Use a model</h3>
+                                    <p class="option-subtitle">Try outfits on a sample model.</p>
+                                    <button class="option-btn">Use a model</button>
+                                </div>
+                            </div>
+                        </div>
+
+
+                        <!-- Try-On Workspace (Flex container for side-by-side view) -->
+                        <div class="try-on-workspace">
+                            <!-- Active User Photo Container (Visually replaces the grid when selected) -->
+                            <div id="activeUserPhotoContainer" class="active-user-photo-container"
+                                style="display: none;">
+                                <div class="active-photo-wrapper">
+                                    <img id="activeUserPhoto" class="active-user-photo" src="" alt="Your photo">
+                                    <div id="activePhotoLoader" class="active-photo-loader" style="display: none;">
+                                        <div class="loader-dots">
+                                            <span></span><span></span><span></span>
+                                        </div>
+                                    </div>
+                                    <button class="change-photo-btn" onclick="resetPhotoUploadArea()">Change
+                                        Photo</button>
+                                </div>
+                            </div>
+
+                            <!-- Selected Clothing Preview (shown when item is selected) -->
+                            <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
+                                <div class="selected-clothing-content">
+                                    <div class="selected-clothing-image-container">
+                                        <img id="selectedClothingImage" class="selected-clothing-image" src=""
+                                            alt="Selected clothing">
+                                        <button class="selected-clothing-remove" onclick="clearSelectedClothing()"
+                                            aria-label="Remove selected clothing">×</button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
