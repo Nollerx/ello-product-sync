@@ -1,4 +1,4 @@
-import { type ActionFunctionArgs, type LoaderFunctionArgs } from "@react-router/node";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { supabaseAdmin } from "../lib/supabase.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -55,13 +55,44 @@ export async function action({ request }: ActionFunctionArgs) {
             console.error("[Bootstrap] DB Error:", storeError);
         }
 
-        // 3. Detect Hidden Products (Blacklist) using Admin Client
+        // 3. Fallback to shopify_app.storefront_tokens if not found in vto_stores
+        let finalStoreData = storeData;
+        if (!finalStoreData) {
+            console.log(`[Bootstrap] Store not found in vto_stores, checking storefront_tokens for: ${shop}`);
+            const { data: tokenData, error: tokenError } = await supabaseAdmin
+                .schema('shopify_app')
+                .from("storefront_tokens")
+                .select("storefront_access_token")
+                .eq("shop", shop)
+                .maybeSingle();
+
+            if (tokenError) {
+                console.error("[Bootstrap] Token DB Error:", tokenError);
+            }
+
+            if (tokenData) {
+                console.log(`[Bootstrap] Found token in storefront_tokens, creating synthetic store object.`);
+                finalStoreData = {
+                    shop_domain: shop,
+                    storefront_token: tokenData.storefront_access_token,
+                    clothing_population_type: 'shopify',
+                    store_slug: shop.replace('.myshopify.com', ''),
+                    widget_primary_color: '#000000',
+                    featured_item_id: null,
+                    quick_picks_ids: [],
+                    supported_products_filter_type: null,
+                    supported_products_filter_value: null
+                };
+            }
+        }
+
+        // 4. Detect Hidden Products (Blacklist) using Admin Client
         let hiddenProductIds: string[] = [];
         // (Optional: Add logic here to fetch hidden products if you have a table)
 
         // 4. Return JSON Response with CORS Headers
         return new Response(JSON.stringify({
-            store: storeData || null,
+            store: finalStoreData || null,
             blacklist: {
                 hiddenProductIds: hiddenProductIds
             },

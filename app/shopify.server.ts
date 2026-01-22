@@ -12,7 +12,7 @@ const shopify = shopifyApp({
   apiSecretKey: process.env.SHOPIFY_API_SECRET || "missing_secret_key",
   apiVersion: ApiVersion.October25,
   scopes: process.env.SCOPES?.split(",") || [],
-  appUrl: process.env.SHOPIFY_APP_URL || "https://missing-app-url.com",
+  appUrl: process.env.SHOPIFY_APP_URL || "https://ello-shopify-app-13593516897.us-central1.run.app",
   authPathPrefix: "/auth",
   sessionStorage: new SQLiteSessionStorage(process.env.SESSION_DB_PATH || "./shopify_sessions.sqlite"),
   hooks: {
@@ -77,6 +77,29 @@ const shopify = shopifyApp({
         }
 
         console.log("✅ Successfully stored storefront token for", shop);
+
+        // 3) Auto-populate vto_stores (Branding/Config)
+        console.log("👉 Ensuring vto_stores entry exists...");
+        const { error: vtoErr } = await supabaseAdmin
+          .from("vto_stores")
+          .upsert(
+            {
+              shop_domain: shop,
+              store_slug: shop.replace('.myshopify.com', ''),
+              storefront_token: token,
+              clothing_population_type: 'shopify',
+              widget_primary_color: '#000000',
+              updated_at: new Date().toISOString()
+            },
+            { onConflict: "shop_domain" }
+          );
+
+        if (vtoErr) {
+          console.error("❌ Supabase vto_stores upsert error:", vtoErr);
+          return;
+        }
+
+        console.log("✅ Successfully initialized vto_stores for", shop);
       } catch (err) {
         console.error("❌ Critical afterAuth hook error:", err);
       }

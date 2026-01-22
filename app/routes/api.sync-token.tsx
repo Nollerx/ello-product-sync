@@ -66,6 +66,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }
 
         console.log("✅ Successfully stored storefront token (Manual) for", shop);
+
+        // 3) Auto-populate vto_stores 
+        console.log("👉 Ensuring vto_stores entry exists (Manual)...");
+        const { error: vtoErr } = await supabaseAdmin
+            .from("vto_stores")
+            .upsert(
+                {
+                    shop_domain: shop,
+                    store_slug: shop.replace('.myshopify.com', ''),
+                    storefront_token: token,
+                    clothing_population_type: 'shopify',
+                    widget_primary_color: '#000000',
+                    updated_at: new Date().toISOString()
+                },
+                { onConflict: "shop_domain" }
+            );
+
+        if (vtoErr) {
+            console.error("❌ Supabase vto_stores upsert error (Manual):", vtoErr);
+            return new Response(JSON.stringify({ success: false, error: "Branding initialization failed" }), {
+                status: 500,
+                headers: { "Content-Type": "application/json" },
+            });
+        }
+
+        console.log("✅ Successfully initialized vto_stores (Manual) for", shop);
         return new Response(JSON.stringify({ success: true }), {
             status: 200,
             headers: { "Content-Type": "application/json" },

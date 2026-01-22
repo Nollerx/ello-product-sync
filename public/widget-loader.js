@@ -7,21 +7,25 @@
 
     console.log("✅ Ello Widget Loader v2.1 - Duplicate check added");
 
-    let WIDGET_BASE_URL = "https://ello-shopify-app-u5htiuxfrq-uc.a.run.app";
+    let WIDGET_BASE_URL = "https://ello-shopify-app-13593516897.us-central1.run.app";
 
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        WIDGET_BASE_URL = "http://localhost:8000";
+        WIDGET_BASE_URL = "http://localhost:5173";
         console.log("🔧 Ello Widget: Running in Local Development Mode");
     }
 
-    // Expose Base URL for widget-main.js to use for asset loading
-    window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
-
-    // Get store configuration from script tag
+    // Get store configuration from script tag or window context
     const currentScript = document.currentScript;
+
+    // NEW: Robust Shop Detection
+    // 1. Prefer window.Shopify.shop (most accurate for the current storefront)
+    // 2. Fallback to data-shop attribute (legacy/embedded)
+    const detectedShop = window.Shopify?.shop || currentScript?.dataset?.shop || null;
+    const shop = detectedShop;
+
     // Use 'default_store' for testing when no script tag or store slug is provided
     // Support both storeSlug (new) and storeId (legacy) for backward compatibility
-    const shop = currentScript?.dataset?.shop || null; // NEW: Should be primary identifier
+
     // PRIORITIZE shop domain as the default "slug" if no explicit slug provided
     const storeSlug = currentScript?.dataset?.storeSlug || currentScript?.dataset?.storeId || shop || 'default_store';
     const storeName = currentScript?.dataset?.storeName || 'default-name';
@@ -168,10 +172,9 @@
         if (!shop) return null;
         try {
             const res = await fetch(
-                "https://ello-shopify-app-u5htiuxfrq-uc.a.run.app/bootstrap",
+                `${WIDGET_BASE_URL}/bootstrap`,
                 {
                     method: "POST",
-                    mode: "cors", // Explicitly request CORS
                     headers: {
                         "Content-Type": "application/json"
                     },
@@ -210,7 +213,7 @@
     async function initializeWidget() {
         try {
             // Version for caching - update this when major changes occur to force refresh
-            const WIDGET_VERSION = '2.4.4';
+            const WIDGET_VERSION = '2.3.7';
 
             // Start fetching HTML immediately (in parallel with store config)
             const htmlPromise = fetch(`${WIDGET_BASE_URL}/widget.html?v=${WIDGET_VERSION}`, {

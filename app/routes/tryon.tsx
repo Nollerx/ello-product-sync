@@ -34,7 +34,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
         // 2. Forward to ML API service
         const res = await fetch(
-            "https://ello-vto-13593516897.us-central1.run.app/tryon",
+            "https://ello-vto-13593516897-13593516897.us-central1.run.app/tryon",
             {
                 method: "POST",
                 headers: {

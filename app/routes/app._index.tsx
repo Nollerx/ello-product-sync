@@ -13,7 +13,6 @@ import {
   InlineStack,
   Banner,
 } from "@shopify/polaris";
-import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -38,7 +37,6 @@ export const action = async ({ request }: LoaderFunctionArgs) => {
 export default function Index() {
   const { shop, apiKey } = useLoaderData<typeof loader>();
   const syncFetcher = useFetcher();
-  const shopify = useAppBridge();
 
   // Force sync token on load
   useEffect(() => {
