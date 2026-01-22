@@ -6037,7 +6037,13 @@
             content: none !important;
         }
 
-        /* Upload UI Redesign Styles (Global) */
+        .upload-options-container {
+            width: 100%;
+            margin-top: 16px;
+            margin-bottom: 24px;
+            display: block !important;
+        }
+
         .upload-options-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -6431,8 +6437,8 @@
                         </div>
 
 
-                        <!-- Try-On Workspace (Flex container for side-by-side view) -->
-                        <div class="try-on-workspace">
+                        <!-- Try-On Workspace -->
+                        <div id="tryOnWorkspace" class="try-on-workspace">
                             <!-- Active User Photo Container (Visually replaces the grid when selected) -->
                             <div id="activeUserPhotoContainer" class="active-user-photo-container"
                                 style="display: none;">
