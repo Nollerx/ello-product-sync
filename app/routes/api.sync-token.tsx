@@ -58,7 +58,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
         if (upsertErr) {
             console.error("❌ Supabase upsert error (Manual):", upsertErr);
-            return new Response(JSON.stringify({ success: false, error: upsertErr.message }), {
+
+            // Helpful error for mission-critical schema exposure
+            let errorMsg = upsertErr.message;
+            if (upsertErr.code === 'PGRST106') {
+                errorMsg = "ACTION REQUIRED: You must expose the 'shopify_app' schema in Supabase Settings -> API -> Exposed Schemas.";
+            }
+
+            return new Response(JSON.stringify({ success: false, error: errorMsg }), {
                 status: 500,
                 headers: { "Content-Type": "application/json" },
             });
@@ -66,17 +73,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
         console.log("✅ Successfully stored storefront token (Manual) for", shop);
 
-        // 3) Auto-populate vto_stores - Manual Check-then-Act for Legacy Schema Support
+        // 3) Auto-populate vto_stores - Resilient Check-then-Act
         console.log("👉 Ensuring vto_stores entry exists (Manual)...");
-        const { data: existingStore, error: fetchErr } = await supabaseAdmin
+
+        // Find existing by shop_domain
+        const { data: existing, error: findErr } = await supabaseAdmin
             .from("vto_stores")
             .select("id")
             .eq("shop_domain", shop)
             .maybeSingle();
-
-        if (fetchErr) {
-            console.error("❌ Error checking vto_stores:", fetchErr);
-        }
 
         const storePayload = {
             shop_domain: shop,
@@ -87,12 +92,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         };
 
         let vtoErr;
-        if (existingStore) {
+        if (existing) {
             console.log("👉 Updating existing vto_stores entry...");
             const { error } = await supabaseAdmin
                 .from("vto_stores")
                 .update(storePayload)
-                .eq("id", existingStore.id);
+                .eq("id", existing.id);
             vtoErr = error;
         } else {
             console.log("👉 Inserting new vto_stores entry...");
@@ -104,7 +109,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
         if (vtoErr) {
             console.error("❌ Supabase vto_stores upsert error (Manual):", vtoErr);
-            return new Response(JSON.stringify({ success: false, error: "Branding initialization failed" }), {
+            return new Response(JSON.stringify({
+                success: false,
+                error: `Branding initialization failed: ${vtoErr.message}`
+            }), {
                 status: 500,
                 headers: { "Content-Type": "application/json" },
             });

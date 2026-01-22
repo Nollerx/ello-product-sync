@@ -478,88 +478,55 @@ async function loadClothingData() {
                 // Race the bootstrap against the timeout
                 const bootstrap = await Promise.race([window.ELLO_BOOTSTRAP_PROMISE, timeoutPromise]);
 
-                if (bootstrap && Array.isArray(bootstrap)) {
-                    const products = bootstrap;
-                    console.log("🚀 Main: using bootstrapped catalog:", products.length);
+                if (bootstrap) {
+                    let products = [];
 
-                    // Initialize Blacklists for Bootstrap Path
-                    window.elloHiddenProductIds = new Set();
-                    window.elloHiddenTitles = new Set();
-                    window.elloHiddenHandles = new Set();
+                    // New Object Format: { store: {...}, blacklist: {...}, products: [...] }
+                    if (bootstrap.store) {
+                        console.log("🚀 Main: synced store config from bootstrap:", bootstrap.store.clothing_population_type);
+                        window.ELLO_STORE_CONFIG = {
+                            ...window.ELLO_STORE_CONFIG,
+                            ...bootstrap.store
+                        };
+                        storeConfig = window.ELLO_STORE_CONFIG;
+                    }
 
-                    if (products.length > 0) {
-                        // Normalize bootstrap products and apply Blacklist Logic
-                        sampleClothing = [];
+                    if (bootstrap.products && Array.isArray(bootstrap.products)) {
+                        products = bootstrap.products;
+                    } else if (Array.isArray(bootstrap)) {
+                        // Legacy Array Format
+                        products = bootstrap;
+                    }
 
-                        products.forEach(p => {
-                            // Check for Hidden Status (active: false)
-                            // If p.active is strictly false, it's hidden. If undefined or true, it's visible.
-                            if (p.active === false) {
-                                // Add to Blacklists
-                                if (p.id) window.elloHiddenProductIds.add(String(p.id));
+                    if (products && products.length > 0) {
+                        console.log("🚀 Main: using bootstrapped catalog:", products.length);
 
-                                // Shopify GID
-                                const gid = p.id || p.shopify_product_id;
-                                if (gid) {
-                                    const cleanId = String(gid).split('/').pop();
-                                    window.elloHiddenProductIds.add(cleanId);
-                                    window.elloHiddenProductIds.add(String(gid));
-                                }
-
-                                // Title (Lowercase)
-                                const name = p.title || p.name;
-                                if (name) window.elloHiddenTitles.add(name.trim().toLowerCase());
-
-                                // Handle (from URL or Handle field)
-                                let handle = p.handle;
-                                if (!handle && (p.product_url || p.url)) {
-                                    const url = p.product_url || p.url;
-                                    handle = url.split('/').pop().split('?')[0];
-                                }
-                                if (!handle && name) {
-                                    // Fallback slugify
-                                    handle = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-                                }
-                                if (handle) window.elloHiddenHandles.add(handle.toLowerCase());
-
-                                return; // SKIP adding to sampleClothing
-                            }
-
-                            // Add to Visible Clothing
-                            sampleClothing.push({
-                                ...p,
-                                name: p.title || p.name, // Ensure 'name' exists
-                                image_url: p.image || p.image_url, // Ensure 'image_url' match
-                                price: typeof p.price === 'string' ? parseFloat(p.price) : (p.price || 0), // Ensure price is number
-                                shopify_product_gid: p.shopify_product_id || p.id, // Ensure GID is available for tracking (prefer explicit shopify field)
-                                variants: p.variants || [] // Pass through variants
-                            });
-                        });
-                        // Refresh UI if widget is open
-                        if (widgetOpen && currentMode === 'tryon') {
-                            await populateFeaturedAndQuickPicks();
+                        // Initialize Blacklists
+                        window.elloHiddenProductIds = new Set();
+                        if (bootstrap.blacklist?.hiddenProductIds) {
+                            bootstrap.blacklist.hiddenProductIds.forEach(id => window.elloHiddenProductIds.add(String(id)));
                         }
 
-                        // ⚡️ PRELOAD OPTIMIZATION:
-                        // Identify the current product immediately and start loading its image
-                        // so it is ready when the preview widget pops up.
-                        try {
-                            const current = detectCurrentProduct();
-                            if (current && current.image_url) {
-                                console.log("🚀 Preloading image for:", current.name);
-                                const preloadLink = document.createElement('link');
-                                preloadLink.rel = 'preload';
-                                preloadLink.as = 'image';
-                                preloadLink.href = current.image_url;
-                                document.head.appendChild(preloadLink);
-                                new Image().src = current.image_url; // Force browser cache
-                            }
-                        } catch (e) { console.warn("Preload failed", e); }
+                        // Normalize bootstrap products
+                        sampleClothing = [];
+                        products.forEach(p => {
+                            if (p.active === false || window.elloHiddenProductIds.has(String(p.id))) return;
 
-                        return; // STOP HERE - Do not run Supabase/Shopify logic
+                            sampleClothing.push({
+                                ...p,
+                                name: p.title || p.name,
+                                image_url: p.image || p.image_url,
+                                price: typeof p.price === 'string' ? parseFloat(p.price) : (p.price || 0),
+                                shopify_product_gid: p.shopify_product_id || p.id,
+                                variants: p.variants || []
+                            });
+                        });
+
+                        if (widgetOpen && currentMode === 'tryon') await populateFeaturedAndQuickPicks();
+                        return;
                     }
                 } else {
-                    console.warn("⚠️ Bootstrap promise returned null or invalid data");
+                    console.warn("⚠️ Bootstrap promise returned no data");
                 }
             } catch (e) {
                 console.error("❌ Error awaiting bootstrap promise:", e);

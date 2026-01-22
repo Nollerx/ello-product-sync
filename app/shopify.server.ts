@@ -71,23 +71,18 @@ const shopify = shopifyApp({
             console.error("🚨 CRITICAL: You must expose the 'shopify_app' schema in Supabase!");
             console.error("   Go to: Dashboard -> Settings -> API -> Exposed Schemas -> Add 'shopify_app'");
           }
-          if (upsertErr.code === '42P01') console.error("   (Table does not exist?)");
           return;
         }
 
         console.log("✅ Successfully stored storefront token for", shop);
 
-        // 3) Auto-populate vto_stores - Manual Check-then-Act for Legacy Schema Support
+        // 3) Auto-populate vto_stores - Resilient Check-then-Act
         console.log("👉 Ensuring vto_stores entry exists...");
-        const { data: existingStore, error: fetchErr } = await supabaseAdmin
+        const { data: existing, error: findErr } = await supabaseAdmin
           .from("vto_stores")
           .select("id")
           .eq("shop_domain", shop)
           .maybeSingle();
-
-        if (fetchErr) {
-          console.error("❌ Error checking vto_stores:", fetchErr);
-        }
 
         const storePayload = {
           shop_domain: shop,
@@ -98,12 +93,12 @@ const shopify = shopifyApp({
         };
 
         let vtoErr;
-        if (existingStore) {
+        if (existing) {
           console.log("👉 Updating existing vto_stores entry...");
           const { error } = await supabaseAdmin
             .from("vto_stores")
             .update(storePayload)
-            .eq("id", existingStore.id);
+            .eq("id", existing.id);
           vtoErr = error;
         } else {
           console.log("👉 Inserting new vto_stores entry...");
