@@ -2303,9 +2303,6 @@ function closeWidget() {
 /**
  * Resets the photo upload area to its initial state
  */
-/**
- * Resets the photo upload area to its initial state
- */
 function resetPhotoUploadArea() {
     // Reset internal state
     userPhoto = null;

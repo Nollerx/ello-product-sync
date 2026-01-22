@@ -2264,33 +2264,22 @@
 
         @media (max-width: 768px) {
             .photo-section-content {
-                flex-direction: row;
+                flex-direction: column;
                 gap: 12px;
-                align-items: stretch;
             }
         }
 
         /* Workspace for Active State */
         .try-on-workspace {
             display: none;
-            /* Hidden by default, toggled via JS or has-content class */
-            flex-direction: row;
-            /* Force side-by-side */
+            flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 24px;
+            gap: 20px;
             width: 100%;
             margin-top: 10px;
-            flex-wrap: nowrap;
-            /* Prevent stacking */
-            overflow-x: auto;
-            /* Allow horizontal scroll */
-            overflow-y: visible;
-            /* Ensure vertical overhanging buttons aren't clipped */
-            padding: 20px;
-            /* Generous padding to accommodate overhanging buttons */
+            padding: 10px;
             box-sizing: border-box;
-            /* Prevent scrollbar from padding */
         }
 
         .try-on-workspace.visible {
@@ -2483,7 +2472,7 @@
         @media (min-width: 769px) {
             .photo-section-content {
                 display: flex;
-                flex-direction: row;
+                flex-direction: column;
                 gap: 16px;
                 align-items: flex-start;
             }
@@ -2505,7 +2494,7 @@
         /* Mobile: Side-by-side layout - preview and photo upload next to each other */
         @media (max-width: 768px) {
             .photo-section-content {
-                flex-direction: row;
+                flex-direction: column;
                 width: 100%;
                 gap: 10px;
                 align-items: stretch;
@@ -6041,7 +6030,7 @@
             width: 100%;
             margin-top: 16px;
             margin-bottom: 24px;
-            display: block !important;
+            display: block;
         }
 
         .upload-options-grid {
@@ -6085,6 +6074,7 @@
             letter-spacing: 0.5px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
             z-index: 5;
+            white-space: nowrap;
         }
 
         .upload-option-card:hover {
