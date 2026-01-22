@@ -6201,13 +6201,36 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(255, 255, 255, 0.6);
-            backdrop-filter: blur(2px);
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(4px);
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
             z-index: 10;
+        }
+
+        .loader-dots {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .loader-dots span {
+            width: 8px;
+            height: 8px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: dotBounce 1.4s infinite ease-in-out;
+        }
+
+        .loader-dots span:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+
+        .loader-dots span:nth-child(2) {
+            animation-delay: -0.16s;
         }
     </style>
 </head>
