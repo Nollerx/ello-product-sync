@@ -2,26 +2,35 @@ import "@shopify/shopify-app-react-router/adapters/node";
 import {
   ApiVersion,
   AppDistribution,
+  BillingInterval,
+  BillingReplacementBehavior,
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
-import { supabaseAdmin } from "./lib/supabase.server";
-import { SQLiteSessionStorage } from "@shopify/shopify-app-session-storage-sqlite";
+import { SupabaseSessionStorage } from "./lib/supabase-session-storage.server";
+import { runTokenSync } from "./lib/sync.server";
+import { syncShopifyMerchantToSupabase } from "./lib/shopify-billing.server";
+import dns from "node:dns";
+
+// Fix for Node 18+ "fetch failed" errors in Cloud Run due to IPv6 prioritization issues
+dns.setDefaultResultOrder("ipv4first");
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
   apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
   apiVersion: ApiVersion.October25,
-  scopes: process.env.SCOPES?.split(",") || [],
-  appUrl: process.env.SHOPIFY_APP_URL || "https://ello-shopify-app-13593516897.us-central1.run.app",
+  scopes: process.env.SCOPES?.split(/[, ]+/) || [],
+  appUrl: process.env.SHOPIFY_APP_URL || "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app",
   authPathPrefix: "/auth",
-  sessionStorage: new SQLiteSessionStorage(process.env.SESSION_DB_PATH || "./shopify_sessions.sqlite"),
+  sessionStorage: new SupabaseSessionStorage(),
   hooks: {
     async afterAuth({ session, admin }) {
       console.log("👉 Entered afterAuth for shop:", session.shop);
+      const requestId = `install_${crypto.randomUUID()}`;
+
       try {
         const shop = session.shop;
 
-        // 1) Creates storefront token in Shopify
+        // 1. Mint Token immediately
         const mutation = `#graphql
           mutation CreateStorefrontToken($input: StorefrontAccessTokenInput!) {
             storefrontAccessTokenCreate(input: $input) {
@@ -31,96 +40,62 @@ const shopify = shopifyApp({
           }
         `;
 
-        console.log("👉 Minting Storefront Token...");
         const resp = await admin.graphql(mutation, {
-          variables: { input: { title: "Ello VTO" } },
+            variables: { input: { title: "Ello VTO Auto-Sync" } },
         });
 
         const json = await resp.json();
-        const token =
-          json?.data?.storefrontAccessTokenCreate?.storefrontAccessToken?.accessToken;
-        const errs = json?.data?.storefrontAccessTokenCreate?.userErrors;
-
-        if (errs && errs.length > 0) {
-          console.error("❌ call to storefrontAccessTokenCreate failed:", errs);
-        }
-
-        if (!token) {
-          console.error("❌ No token returned from Shopify:", json);
-          return;
-        }
-
-        console.log("✅ Minted Shopify Token:", token);
-
-        // 2) Store in Supabase (shopify_app Schema)
-        console.log("👉 Saving to Supabase (shopify_app.storefront_tokens)...");
-        const { error: upsertErr } = await supabaseAdmin
-          .schema('shopify_app')
-          .from("storefront_tokens")
-          .upsert(
-            {
-              shop,
-              storefront_access_token: token
-            },
-            { onConflict: "shop" }
-          );
-
-        if (upsertErr) {
-          console.error("❌ Supabase upsert error:", upsertErr);
-          if (upsertErr.code === 'PGRST106') {
-            console.error("🚨 CRITICAL: You must expose the 'shopify_app' schema in Supabase!");
-            console.error("   Go to: Dashboard -> Settings -> API -> Exposed Schemas -> Add 'shopify_app'");
-          }
-          return;
-        }
-
-        console.log("✅ Successfully stored storefront token for", shop);
-
-        // 3) Auto-populate vto_stores - Resilient Check-then-Act
-        console.log("👉 Ensuring vto_stores entry exists...");
-        const { data: existing, error: findErr } = await supabaseAdmin
-          .from("vto_stores")
-          .select("id")
-          .eq("shop_domain", shop)
-          .maybeSingle();
-
-        const storePayload = {
-          shop_domain: shop,
-          store_slug: shop.replace('.myshopify.com', ''),
-          storefront_token: token,
-          clothing_population_type: 'shopify',
-          widget_primary_color: '#000000'
-        };
-
-        let vtoErr;
-        if (existing) {
-          console.log("👉 Updating existing vto_stores entry...");
-          const { error } = await supabaseAdmin
-            .from("vto_stores")
-            .update(storePayload)
-            .eq("id", existing.id);
-          vtoErr = error;
+        const token = json?.data?.storefrontAccessTokenCreate?.storefrontAccessToken?.accessToken;
+        
+        if (token) {
+             console.log(`[AutoSync:${requestId}] Token acquired. Running Sync Engine...`);
+             // 2. Run Sync Engine (Idempotent + Retries)
+             await runTokenSync(shop, token, requestId);
         } else {
-          console.log("👉 Inserting new vto_stores entry...");
-          const { error } = await supabaseAdmin
-            .from("vto_stores")
-            .insert([storePayload]);
-          vtoErr = error;
+             console.error(`[AutoSync:${requestId}] Failed to mint token on install.`);
         }
 
-        if (vtoErr) {
-          console.error("❌ Supabase vto_stores upsert error:", vtoErr);
-          return;
+        // 3. Provision Supabase merchant records so the store is auto-connected
+        //    Uses "custom_distribution" when SKIP_BILLING is enabled (custom distribution — billed via Stripe)
+        //    Otherwise uses "developer_free" as the provisional plan (idempotent — billing confirm will upgrade it).
+        try {
+          const provisionPlan = process.env.SKIP_BILLING === "true" ? "custom_distribution" : "developer_free";
+          const shopQuery = await admin.graphql(`query { shop { email } }`);
+          const shopJson = await shopQuery.json();
+          const shopEmail = shopJson?.data?.shop?.email ?? shop;
+          await syncShopifyMerchantToSupabase(shop, shopEmail, provisionPlan, undefined);
+          console.log(`[AutoSync:${requestId}] Supabase merchant records provisioned for ${shop} (plan: ${provisionPlan})`);
+        } catch (syncErr) {
+          console.error(`[AutoSync:${requestId}] Supabase merchant sync failed (non-fatal):`, syncErr);
         }
 
-        console.log("✅ Successfully initialized vto_stores for", shop);
       } catch (err) {
-        console.error("❌ Critical afterAuth hook error:", err);
+        console.error(`[AutoSync:${requestId}] Critical Install Error:`, err);
       }
     },
   },
-  distribution: AppDistribution.AppStore,
+  distribution: (process.env.APP_DISTRIBUTION as AppDistribution) || AppDistribution.AppStore,
   future: {},
+  billing: {
+    // Each paid plan has: (1) recurring subscription charge + (2) usage-based overage at $0.15/try-on
+    // The usage line item cappedAmount is set to $0.01 (minimum Shopify allows). Merchants can increase via auto top-up settings.
+    starter_monthly:         { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 97,        currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    starter_annual:          { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1047.60,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    launch_monthly:          { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 149,       currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    launch_annual:           { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1609.20,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    growth_monthly:          { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 172,       currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    growth_annual:           { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1857.60,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    growth_plus_monthly:     { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 289,       currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    growth_plus_annual:      { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 3121.20,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    pro_monthly:             { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 647,       currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    pro_annual:              { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 6987.60,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    pro_plus_monthly:        { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1149,      currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    pro_plus_annual:         { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 12409.20,  currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    enterprise_monthly:      { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1897,      currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    enterprise_annual:       { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 20487.60,  currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    enterprise_plus_monthly: { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 5197,      currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    enterprise_plus_annual:  { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 56127.60,  currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+  },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),
