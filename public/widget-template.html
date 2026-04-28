@@ -4,14 +4,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- CSP: Allow embedding from anywhere (widget is injected via JS, not iframe, but this ensures compatibility) -->
-    <meta http-equiv="Content-Security-Policy" content="frame-ancestors *;">
     <title>Virtual Try-On Widget</title>
-    <!-- Google Fonts - Poppins -->
+    <!-- Google Fonts - Poppins (loaded async to avoid blocking merchant LCP) -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
-        rel="stylesheet">
+        rel="stylesheet" media="print" onload="this.media='all'">
     <style>
         /* Custom Notification Styles */
         /* First-Run Overlay Styles - Visual Polish V5 */
@@ -40,15 +38,60 @@
 
         /* Inner Wrapper for Layout Control */
         .onboarding-inner {
-            width: 100%;
+            width: 90%;
             max-width: 420px;
             margin: 0 auto;
-            /* Reduced bottom padding as requested (28px -> 16px) */
+            /* Padding for balanced spacing */
             padding: 24px 20px 16px;
             text-align: center;
             display: flex;
             flex-direction: column;
             align-items: center;
+            position: relative;
+            background: #ffffff;
+            border-radius: 20px;
+        }
+
+        .fro-dismiss-btn {
+            position: absolute;
+            /* ULTIMATE corner pinning for surgical precision */
+            top: 4px;
+            right: 4px;
+            width: 44px;
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent !important;
+            border: none !important;
+            outline: none !important;
+            box-shadow: none !important;
+            cursor: pointer;
+            z-index: 10010;
+            color: #9ca3af;
+            transition: color 0.2s ease;
+            padding: 0;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .fro-dismiss-btn:hover {
+            color: #4b5563;
+        }
+
+        @media (max-width: 600px) {
+            .fro-dismiss-btn {
+                display: none !important;
+            }
+        }
+
+        .fro-dismiss-btn:hover {
+            color: #4b5563;
+        }
+
+        .fro-dismiss-btn svg {
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
         }
 
         /* Visual Strip Container */
@@ -59,6 +102,47 @@
             gap: 16px;
             width: 100%;
             margin-bottom: 24px;
+        }
+
+        @media (max-width: 450px) {
+            .onboarding-inner {
+                padding: 28px 20px 20px;
+                /* More breathing room at top */
+            }
+
+            .onboarding-strip {
+                gap: 8px;
+                /* Slightly more space between steps */
+                margin-bottom: 24px;
+            }
+
+            .fro-media {
+                width: 76px !important;
+                /* Larger for better visibility */
+                height: 100px !important;
+            }
+
+            .fro-label {
+                font-size: 11px;
+                /* Better legibility */
+            }
+
+            .fro-arrow {
+                font-size: 12px;
+                margin-bottom: 22px;
+                /* Re-center relative to larger media frames */
+            }
+        }
+
+        @media (max-width: 350px) {
+            .onboarding-strip {
+                gap: 2px;
+            }
+
+            .fro-media {
+                width: 56px !important;
+                height: 74px !important;
+            }
         }
 
         /* Card Wrapper (Layout only) */
@@ -111,12 +195,17 @@
         /* Result Card Variant - Apply Tint/Border to Media Frame */
         /* Use specific class on the wrapper to target inner frame */
         .fro-step.result-card .fro-media {
-            background: #f0fdf4;
-            border: 1px solid #10b981;
+            background: #f9fafb;
+            border: 1px solid #000000;
+        }
+
+        .fro-step.result-card .fro-label {
+            color: #111827;
+            /* Standardized to black */
         }
 
         .fro-step.result-card .fro-step-icon {
-            color: #10b981;
+            color: #000000;
         }
 
         /* Per-Tile Crop Rules */
@@ -263,17 +352,17 @@
         /* Spotlight/Pulse Effect for Onboarding */
         @keyframes pulseHighlight {
             0% {
-                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
-                border-color: #10b981;
+                box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.4);
+                border-color: #000000;
             }
 
             70% {
-                box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
-                border-color: #10b981;
+                box-shadow: 0 0 0 10px rgba(0, 0, 0, 0);
+                border-color: #000000;
             }
 
             100% {
-                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+                box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
             }
         }
 
@@ -284,6 +373,79 @@
             /* Ensure it pops out */
             background: white;
             /* Ensure background opaque */
+        }
+
+        /* Selection Feedback Animations */
+        @keyframes selectionPulse {
+            0% {
+                box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.4);
+                transform: scale(1);
+            }
+
+            50% {
+                box-shadow: 0 0 20px 5px rgba(0, 0, 0, 0.2);
+                transform: scale(1.02);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.4);
+                transform: scale(1);
+            }
+        }
+
+        .selection-highlight-user {
+            border-color: #000000 !important;
+            border-width: 2px !important;
+            animation: selectionPulseUser 0.6s ease-in-out 3;
+            z-index: 10;
+        }
+
+        .selection-highlight-model {
+            border-color: #000000 !important;
+            border-width: 2px !important;
+            animation: selectionPulseUser 0.6s ease-in-out 3;
+            z-index: 10;
+        }
+
+        @keyframes selectionPulseUser {
+            0% {
+                box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.4);
+                transform: scale(1);
+            }
+
+            50% {
+                box-shadow: 0 0 25px 8px rgba(0, 0, 0, 0.15);
+                transform: scale(1.03);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.4);
+                transform: scale(1);
+            }
+        }
+
+        @keyframes selectionPulseModel {
+            0% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+                transform: scale(1);
+            }
+
+            50% {
+                box-shadow: 0 0 25px 8px rgba(16, 185, 129, 0.25);
+                transform: scale(1.03);
+            }
+
+            100% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+                transform: scale(1);
+            }
+        }
+
+        .selection-muted {
+            opacity: 0.3;
+            filter: grayscale(0.8);
+            pointer-events: none;
+            transition: all 0.5s ease;
         }
 
         .custom-notification {
@@ -309,10 +471,14 @@
             border: 1px solid rgba(255, 255, 255, 0.2);
         }
 
-        /* Ensure widget works when injected */
+        /* Ensure widget works when injected — zero-height so it causes
+           no CLS on the merchant page. Children are position:fixed so
+           they render above the page regardless. */
         #virtual-tryon-widget-container {
             position: relative;
             z-index: 999999;
+            height: 0;
+            overflow: visible;
         }
 
         #virtual-tryon-widget-container * {
@@ -403,6 +569,41 @@
             background: rgba(255, 255, 255, 0.1);
         }
 
+        /* Free-plan monthly limit reached */
+        #ello-limit-reached {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 32px 20px;
+            gap: 12px;
+            background: #fff;
+            border-radius: 12px;
+            margin: 12px;
+        }
+        #ello-limit-reached .ello-limit-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #111;
+        }
+        #ello-limit-reached .ello-limit-sub {
+            font-size: 13px;
+            color: #555;
+            line-height: 1.4;
+        }
+        #ello-limit-reached a.ello-limit-cta {
+            display: inline-block;
+            padding: 10px 18px;
+            background: #000;
+            color: #fff;
+            border-radius: 999px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            margin-top: 4px;
+        }
+
         /* Powered by Ello.services branding */
         .ello-branding {
             font-size: 11px;
@@ -438,19 +639,21 @@
             color: #10b981;
         }
 
+        /* Hide Powered-by branding while the widget is minimized — only show when opened */
+        #virtualTryonWidget.widget-minimized .ello-branding {
+            display: none !important;
+        }
+
         @keyframes successPulse {
             0% {
-                transform: scale(0);
                 background: rgba(255, 255, 255, 0.4);
             }
 
             50% {
-                transform: scale(1.2);
                 background: rgba(255, 255, 255, 0.3);
             }
 
             100% {
-                transform: scale(1);
                 background: rgba(255, 255, 255, 0.2);
             }
         }
@@ -592,38 +795,45 @@
                 min-height: 0;
             }
 
-            /* Mobile animation: Opening with bouncy easing */
+            /* Fix model browser images on mobile to show full body */
+            .browser-clothing-card .browser-image-wrap img {
+                object-fit: contain !important;
+                height: 100% !important;
+                width: 100% !important;
+                padding: 4px;
+                /* Add slight padding so it doesn't touch edges */
+            }
+
+            /* Hide redundant camera/gallery controls on mobile */
+            #cameraControls {
+                display: none !important;
+            }
+
+            /* Mobile: kill the base size transition so the widget never
+               visibly morphs between the 64×64 minimized button and the
+               full-screen panel. The fade keyframes own the visual change. */
+            .virtual-tryon-widget {
+                transition: none !important;
+            }
+
+            /* Mobile animation: clean opacity fade in */
             .virtual-tryon-widget.is-animating-open {
-                animation: widgetOpenMobile 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
+                animation: widgetFadeIn 220ms ease both;
             }
 
-            /* Mobile animation: Closing with simple ease-out */
+            /* Mobile animation: clean opacity fade out */
             .virtual-tryon-widget.is-animating-close {
-                animation: widgetCloseMobile 250ms ease-out;
+                animation: widgetFadeOut 200ms ease both;
             }
 
-            @keyframes widgetOpenMobile {
-                0% {
-                    transform: scale(0.9);
-                    opacity: 0.8;
-                }
-
-                100% {
-                    transform: scale(1);
-                    opacity: 1;
-                }
+            @keyframes widgetFadeIn {
+                from { opacity: 0; }
+                to   { opacity: 1; }
             }
 
-            @keyframes widgetCloseMobile {
-                0% {
-                    transform: scale(1);
-                    opacity: 1;
-                }
-
-                100% {
-                    transform: scale(0.9);
-                    opacity: 0.8;
-                }
+            @keyframes widgetFadeOut {
+                from { opacity: 1; }
+                to   { opacity: 0; }
             }
 
             /* Reduced motion support */
@@ -741,7 +951,8 @@
         .widget-minimized .widget-header,
         .widget-minimized .mode-selector,
         .widget-minimized .widget-content,
-        .widget-minimized .input-area {
+        .widget-minimized .input-area,
+        .widget-minimized .first-run-overlay {
             display: none !important;
         }
 
@@ -2272,14 +2483,24 @@
         /* Workspace for Active State */
         .try-on-workspace {
             display: none;
-            flex-direction: column;
+            flex-direction: row;
             align-items: center;
             justify-content: center;
-            gap: 20px;
+            gap: 16px;
             width: 100%;
             margin-top: 10px;
             padding: 10px;
             box-sizing: border-box;
+            flex-wrap: nowrap;
+        }
+
+        .plus-separator {
+            display: none;
+            /* Controlled by JS */
+            font-size: 24px;
+            font-weight: 300;
+            color: #888;
+            padding: 0 4px;
         }
 
         .try-on-workspace.visible {
@@ -2321,33 +2542,26 @@
         }
 
         .selected-clothing-preview {
-            background: #ffffff;
-            border: 2px solid #333;
-            border-radius: 8px;
-            padding: 12px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            background: transparent;
+            border: none;
+            padding: 0;
+            box-shadow: none;
             transition: all 0.3s ease;
             display: flex;
             align-items: center;
             justify-content: center;
-            min-height: 100px;
             height: 100%;
+            width: fit-content;
         }
 
         .selected-clothing-content {
             display: flex;
             flex-direction: row;
-            gap: 12px;
+            gap: 0;
             align-items: center;
             justify-content: center;
-            width: 100%;
-            height: 100%;
-        }
-
-        @media (max-width: 768px) {
-            .selected-clothing-content {
-                gap: 10px;
-            }
+            width: auto;
+            position: relative;
         }
 
         .selected-clothing-image-container {
@@ -2356,15 +2570,29 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            background: transparent;
+            border-radius: 12px;
+            overflow: visible;
+            /* Allow button to hang out if needed, but we'll position inside */
+            box-shadow: none;
+            border: none;
+            width: 120px;
+            height: 160px;
         }
 
         .selected-clothing-image {
-            width: 100px;
-            height: 100px;
+            width: 100%;
+            height: 100%;
             object-fit: contain;
-            border-radius: 6px;
-            border: 1px solid #e0e0e0;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            border: none;
+            border-radius: 12px;
+            /* Radius on image itself */
+            padding: 0;
+            display: block;
+            background: #f8f8f8;
+            /* Subtle background for transparency */
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            /* Shadow on image itself */
         }
 
         @media (max-width: 768px) {
@@ -2385,9 +2613,9 @@
             position: absolute;
             top: -8px;
             right: -8px;
-            background: #333;
-            color: white;
-            border: 2px solid #ffffff;
+            background: #ffffff;
+            color: #333;
+            border: 1px solid #e5e7eb;
             border-radius: 50%;
             width: 24px;
             height: 24px;
@@ -2977,7 +3205,7 @@
             /* Hidden by default, shown only when image is ready */
             align-items: center;
             justify-content: center;
-            padding: 20px;
+            padding: 12px 8px;
             text-align: center;
             overflow-y: auto;
             overflow-x: hidden;
@@ -3257,7 +3485,7 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            padding: 16px;
+            padding: 16px 0;
             text-align: center;
             box-sizing: border-box;
         }
@@ -4656,10 +4884,10 @@
             cursor: pointer;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             white-space: nowrap;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #000000;
             color: #ffffff;
             border: none;
-            box-shadow: 0 4px 16px rgba(102, 126, 234, 0.3);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
             position: relative;
             overflow: hidden;
             display: flex;
@@ -4680,7 +4908,7 @@
 
         .upload-photo-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
         }
 
         .upload-photo-btn:hover::before {
@@ -5104,7 +5332,14 @@
             position: static;
             /* avoid absolute overlapping */
             z-index: 1;
+            opacity: 0;
+            transition: opacity 0.4s ease-in;
         }
+
+        .browser-clothing-card img.loaded {
+            opacity: 1;
+        }
+
 
 
 
@@ -5122,17 +5357,24 @@
 
         @media (max-width: 480px) {
             .browser-clothing-card img {
-                height: 90px;
+                height: 100% !important;
+                /* Allow natural scaling */
                 margin-bottom: 5px;
                 border-radius: 4px;
+                object-fit: contain !important;
+                /* Force full visibility */
+                width: 100% !important;
             }
         }
 
         @media (max-width: 320px) {
             .browser-clothing-card img {
-                height: 80px;
+                height: 100% !important;
+                /* Allow natural scaling */
                 margin-bottom: 4px;
                 border-radius: 3px;
+                object-fit: contain !important;
+                width: 100% !important;
             }
         }
 
@@ -6026,6 +6268,113 @@
             content: none !important;
         }
 
+        /* --- Modern Model Browser Aggressive Refinements --- */
+        #modelBrowserModal .browser-body {
+            padding: 12px !important;
+            background: #fff !important;
+        }
+
+        #modelBrowserGrid {
+            gap: 12px !important;
+            padding: 16px 0 !important;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)) !important;
+            width: 100% !important;
+        }
+
+        @media (max-width: 768px) {
+            #modelBrowserGrid {
+                grid-template-columns: repeat(2, 1fr) !important;
+                gap: 10px !important;
+                padding: 12px 4px !important;
+            }
+        }
+
+        #modelBrowserGrid .browser-clothing-card {
+            padding: 0 !important;
+            margin: 0 !important;
+            background: transparent !important;
+            border: none !important;
+            border-radius: 16px !important;
+            box-shadow: none !important;
+            height: auto !important;
+            width: 100% !important;
+            min-height: 0 !important;
+            max-width: none !important;
+            overflow: hidden !important;
+            display: block !important;
+            cursor: pointer !important;
+            /* Indicate interactivity */
+        }
+
+        #modelBrowserGrid .browser-image-wrap {
+            padding: 0 !important;
+            margin: 0 !important;
+            aspect-ratio: 3 / 4 !important;
+            width: 100% !important;
+            height: auto !important;
+            border-radius: 12px !important;
+            background: #f8f8f8 !important;
+            overflow: hidden !important;
+            display: block !important;
+        }
+
+        #modelBrowserGrid .browser-image-wrap img {
+            object-fit: contain !important;
+            /* SHOW FULL MODEL HEAD-TO-TOE */
+            width: 100% !important;
+            height: 100% !important;
+            max-height: none !important;
+            min-height: 0 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border-radius: 16px !important;
+            display: block !important;
+            position: relative !important;
+            background: #fdfdfd !important;
+            /* Blends with typical studio backgrounds */
+        }
+
+        #modelBrowserGrid .browser-card-info {
+            display: none !important;
+        }
+
+        /* Mobile specific overrides for model browser only */
+        @media (max-width: 768px) {
+            #modelBrowserGrid {
+                grid-template-columns: 1fr 1fr !important;
+                gap: 12px !important;
+                padding: 4px !important;
+            }
+
+            #modelBrowserGrid .browser-image-wrap {
+                height: 0 !important;
+                padding-bottom: 150% !important;
+                /* Force 2:3 aspect ratio via padding hack */
+                min-height: 0 !important;
+                width: 100% !important;
+                position: relative !important;
+                aspect-ratio: unset !important;
+                /* Disable native aspect-ratio to rely on padding */
+            }
+
+            #modelBrowserGrid .browser-image-wrap img {
+                position: absolute !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100% !important;
+                height: 100% !important;
+                border-radius: 12px !important;
+                object-fit: cover !important;
+                object-position: top center !important;
+                min-height: 0 !important;
+            }
+        }
+
+
+
+
+
+
         .upload-options-container {
             width: 100%;
             margin-top: 16px;
@@ -6078,7 +6427,7 @@
         }
 
         .upload-option-card:hover {
-            border-color: #10b981;
+            border-color: #000000;
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
             transform: translateY(-2px);
         }
@@ -6143,9 +6492,9 @@
         }
 
         .upload-option-card:hover .option-btn {
-            background: #10b981;
+            background: #000000;
             color: white;
-            border-color: #10b981;
+            border-color: #000000;
         }
 
         .active-user-photo-container {
@@ -6305,6 +6654,15 @@
     <div id="virtualTryonWidget" class="virtual-tryon-widget widget-minimized">
         <!-- First-Run Overlay -->
         <div id="firstRunOverlay" class="first-run-overlay">
+            <!-- Dismiss button moved to root of overlay for absolute top-right positioning -->
+            <button id="froDismissBtn" class="fro-dismiss-btn" aria-label="Dismiss intro">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                    stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+
             <div class="onboarding-inner">
                 <!-- Visual Strip -->
                 <div class="onboarding-strip">
@@ -6341,15 +6699,12 @@
 
                 <!-- Text -->
                 <div class="fro-headline">See it on you.<br>Instantly.</div>
-                <div class="fro-subtext">Upload your photo, pick an item, and see exactly how it fits.</div>
+                <div class="fro-subtext">Upload your photo, pick an item, and see exactly how it looks.</div>
 
                 <!-- Buttons -->
                 <div class="onboarding-ctas">
                     <button id="froDemoBtn" class="fro-btn fro-btn-primary">
-                        Try a Demo
-                        <span
-                            style="display: block; font-size: 11px; font-weight: 400; opacity: 0.7; margin-top: 3px;">No
-                            photo needed</span>
+                        Use a Model
                     </button>
                     <button id="froRealBtn" class="fro-btn fro-btn-secondary">
                         <!-- Camera Icon (Simple SVG) -->
@@ -6373,6 +6728,13 @@
 
         <!-- Content -->
         <div class="widget-content">
+            <!-- Free-plan monthly limit reached (hidden by default) -->
+            <div id="ello-limit-reached">
+                <div class="ello-limit-title">Monthly try-on limit reached</div>
+                <div class="ello-limit-sub">You've used all 10 free try-ons this month. Upgrade to continue.</div>
+                <a class="ello-limit-cta" href="https://ello.services/#pricing" target="_blank" rel="noopener">Upgrade plan</a>
+            </div>
+
             <!-- Try-On Specific Content -->
             <div id="tryonContent" class="tryon-content" style="display: block;">
 
@@ -6418,8 +6780,8 @@
                         <div id="uploadOptionsContainer" class="upload-options-container">
                             <div class="upload-options-grid">
                                 <!-- Card 1: Upload Your Photo -->
-                                <div class="upload-option-card" onclick="handlePhotoUploadClick()" role="button"
-                                    tabindex="0">
+                                <div id="uploadPhotoCard" class="upload-option-card" onclick="handlePhotoUploadClick()"
+                                    role="button" tabindex="0">
                                     <div class="recommended-badge">Recommended</div>
                                     <div class="option-icon-wrapper">
                                         <div class="option-icon">📷</div>
@@ -6430,17 +6792,12 @@
                                 </div>
 
                                 <!-- Card 2: Use a Model -->
-                                <div class="upload-option-card" onclick="openModelBrowser()" role="button" tabindex="0">
+                                <div id="useModelCard" class="upload-option-card" onclick="openModelBrowser()"
+                                    role="button" tabindex="0">
                                     <div class="option-image-wrapper">
                                         <!-- Placeholder Model Icon/Image -->
-                                        <div
-                                            style="width: 100%; height: 100%; background: #f3f4f6; display: flex; align-items: center; justify-content: center;">
-                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#9ca3af"
-                                                stroke-width="2">
-                                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                                                <circle cx="12" cy="7" r="4" />
-                                            </svg>
-                                        </div>
+                                        <img src="https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app/assets/models/model_1.jpg"
+                                            class="model-preview-img" alt="Model 1" loading="lazy">
                                     </div>
                                     <h3 class="option-title">Use a model</h3>
                                     <p class="option-subtitle">Try outfits on a sample model.</p>
@@ -6466,6 +6823,9 @@
                                         Photo</button>
                                 </div>
                             </div>
+
+                            <!-- Plus Separator -->
+                            <div id="tryOnPlusSeparator" class="plus-separator">+</div>
 
                             <!-- Selected Clothing Preview (shown when item is selected) -->
                             <div id="selectedClothingPreview" class="selected-clothing-preview" style="display: none;">
@@ -6567,6 +6927,22 @@
             </div>
             <div id="browserPagination" class="browser-pagination">
                 <!-- Pagination controls will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Browser Modal -->
+    <div id="modelModalBackdrop" class="modal-backdrop" onclick="closeModelBrowser()"></div>
+    <div id="modelBrowserModal" class="clothing-browser-modal">
+        <div class="clothing-browser-content">
+            <div class="browser-header">
+                <h2 class="browser-title">Choose a Model</h2>
+                <button class="browser-close" onclick="closeModelBrowser()">&times;</button>
+            </div>
+            <div class="browser-body">
+                <div id="modelBrowserGrid" class="browser-grid">
+                    <!-- Model items will be populated here -->
+                </div>
             </div>
         </div>
     </div>

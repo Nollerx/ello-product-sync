@@ -79,9 +79,9 @@ export async function runTokenSync(shop: string, accessToken: string, requestId:
                 }
             }
 
-            // Success! Update vto_stores metadata
+            // Success! Update vto_stores metadata + storefront token
             console.log(`[SyncEngine:${requestId}] ✅ Token Synced. Updating Store Metadata...`);
-            await updateStoreMetadata(shop, 'synced', requestId, attempts);
+            await updateStoreMetadata(shop, 'synced', requestId, attempts, undefined, accessToken);
 
             return {
                 success: true,
@@ -145,17 +145,21 @@ function mapDbErrorToResult(error: any, shop: string, requestId: string, attempt
     };
 }
 
-async function updateStoreMetadata(shop: string, status: SyncStatus, requestId: string, attempts: number, errorMsg?: string) {
+async function updateStoreMetadata(shop: string, status: SyncStatus, requestId: string, attempts: number, errorMsg?: string, storefrontToken?: string) {
     // Best-effort update of public.vto_stores
     try {
-        await supabaseAdmin.from('vto_stores').update({
+        const updatePayload: Record<string, unknown> = {
             sync_status: status,
             last_sync_at: new Date().toISOString(),
             sync_request_id: requestId,
             sync_attempts: attempts,
             sync_error: errorMsg || null,
-            // Also ensure/create slug if needed, but usually we just update
-        }).eq('shop_domain', shop);
+        };
+        // Write the storefront token so the widget can read it directly from vto_stores
+        if (storefrontToken) {
+            updatePayload.storefront_token = storefrontToken;
+        }
+        await supabaseAdmin.from('vto_stores').update(updatePayload).eq('shop_domain', shop);
     } catch (e) {
         console.warn(`[SyncEngine] Failed to update metadata for ${shop}`, e);
     }

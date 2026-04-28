@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate, sessionStorage } from "../shopify.server";
+import { disableShopifyMerchant } from "../lib/shopify-billing.server";
 // import db from "../db.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -11,6 +12,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // If this webhook already ran, the session may have been deleted previously.
   if (session) {
     await sessionStorage.deleteSessions([session.id]);
+  }
+
+  try {
+    if (shop) {
+      await disableShopifyMerchant(shop);
+      console.log("[Uninstall] Disabled Shopify merchant in Supabase:", shop);
+    }
+  } catch (err) {
+    console.error("[Uninstall] Failed to disable merchant in Supabase:", err);
+    // Do not rethrow — Shopify expects a 200 response
   }
 
   return new Response();

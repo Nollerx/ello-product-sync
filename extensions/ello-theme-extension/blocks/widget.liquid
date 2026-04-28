@@ -2,13 +2,21 @@
 {
   "name": "Ello Virtual Try-On",
   "target": "body",
-  "settings": []
+  "settings": [
+    {
+      "type": "text",
+      "id": "backend_url",
+      "label": "Backend URL",
+      "default": "https://ello-vto-staging-13593516897.us-central1.run.app",
+      "info": "Ello backend URL — auto-set on install, do not change unless instructed."
+    }
+  ]
 }
 {% endschema %}
 
 <!-- Ello Virtual Try-On Widget (Injected via Theme Extension) -->
-<script 
-  src="https://ello-shopify-app-13593516897.us-central1.run.app/widget-loader.js"
+<script
+  src="{{ block.settings.backend_url }}/widget-loader.js"
   data-shop="{{ shop.permanent_domain }}"
   defer
 ></script>

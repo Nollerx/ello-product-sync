@@ -59,7 +59,7 @@ const shopify = shopifyApp({
         //    Uses "custom_distribution" when SKIP_BILLING is enabled (custom distribution — billed via Stripe)
         //    Otherwise uses "developer_free" as the provisional plan (idempotent — billing confirm will upgrade it).
         try {
-          const provisionPlan = process.env.SKIP_BILLING === "true" ? "custom_distribution" : "developer_free";
+          const provisionPlan = process.env.SKIP_BILLING === "true" ? "custom_distribution" : "ello_free";
           const shopQuery = await admin.graphql(`query { shop { email } }`);
           const shopJson = await shopQuery.json();
           const shopEmail = shopJson?.data?.shop?.email ?? shop;
@@ -67,6 +67,67 @@ const shopify = shopifyApp({
           console.log(`[AutoSync:${requestId}] Supabase merchant records provisioned for ${shop} (plan: ${provisionPlan})`);
         } catch (syncErr) {
           console.error(`[AutoSync:${requestId}] Supabase merchant sync failed (non-fatal):`, syncErr);
+        }
+
+        // 4. Activate the Ello conversion pixel for this store (idempotent).
+        //    The pixel cannot fire until webPixelCreate is called — it is not auto-activated.
+        //    backend_url is derived from SHOPIFY_APP_URL so staging and prod resolve automatically.
+        try {
+          const storeSlug = shop.replace(".myshopify.com", "");
+          const backendUrl =
+            (process.env.SHOPIFY_APP_URL ||
+              "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app") +
+            "/api/cart-purchase-event";
+
+          // Check if pixel already exists for this store (prevents duplicates on reinstall)
+          const pixelListResp = await admin.graphql(
+            `query { webPixels(first: 20) { edges { node { id settings } } } }`
+          );
+          const pixelListJson = await pixelListResp.json();
+          const existingPixel = pixelListJson?.data?.webPixels?.edges?.find(
+            (e: { node: { settings: string } }) => {
+              try {
+                return JSON.parse(e.node.settings)?.store_slug === storeSlug;
+              } catch {
+                return false;
+              }
+            }
+          );
+
+          if (!existingPixel) {
+            const pixelResp = await admin.graphql(
+              `mutation webPixelCreate($webPixel: WebPixelInput!) {
+                webPixelCreate(webPixel: $webPixel) {
+                  webPixel { id }
+                  userErrors { field message }
+                }
+              }`,
+              {
+                variables: {
+                  webPixel: {
+                    settings: JSON.stringify({
+                      store_slug: storeSlug,
+                      backend_url: backendUrl,
+                    }),
+                  },
+                },
+              }
+            );
+            const pixelJson = await pixelResp.json();
+            const errors = pixelJson?.data?.webPixelCreate?.userErrors;
+            if (errors?.length) {
+              console.error(`[AutoSync:${requestId}] webPixelCreate errors:`, errors);
+            } else {
+              console.log(
+                `[AutoSync:${requestId}] Conversion pixel activated for ${shop}:`,
+                pixelJson?.data?.webPixelCreate?.webPixel?.id
+              );
+            }
+          } else {
+            console.log(`[AutoSync:${requestId}] Conversion pixel already exists for ${shop}, skipping.`);
+          }
+        } catch (pixelErr) {
+          console.error(`[AutoSync:${requestId}] Pixel activation failed (non-fatal):`, pixelErr);
         }
 
       } catch (err) {

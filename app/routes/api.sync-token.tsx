@@ -1,134 +1,75 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import { supabaseAdmin } from "../lib/supabase.server";
+import { runTokenSync, SYNC_ERRORS } from "../lib/sync.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-    const { admin, session } = await authenticate.admin(request);
-    const shop = session.shop;
-
-    console.log(`👉 Manual Sync Token Triggered for ${shop}`);
+    // Generate Request ID early
+    const requestId = crypto.randomUUID();
 
     try {
+        const { admin, session } = await authenticate.admin(request);
+        const shop = session.shop;
+
+        console.log(`[API:Sync:${requestId}] Triggered for ${shop}`);
+
+        // 1. Mint Token from Shopify
         const mutation = `#graphql
-      mutation CreateStorefrontToken($input: StorefrontAccessTokenInput!) {
-        storefrontAccessTokenCreate(input: $input) {
-          storefrontAccessToken { accessToken }
-          userErrors { field message }
-        }
-      }
-    `;
+          mutation CreateStorefrontToken($input: StorefrontAccessTokenInput!) {
+            storefrontAccessTokenCreate(input: $input) {
+              storefrontAccessToken { accessToken }
+              userErrors { field message }
+            }
+          }
+        `;
 
         const resp = await admin.graphql(mutation, {
-            variables: { input: { title: "Ello VTO Manual Sync" } },
+            variables: { input: { title: "Ello VTO Sync" } },
         });
 
         const jsonResp = await resp.json();
-        const token =
-            jsonResp?.data?.storefrontAccessTokenCreate?.storefrontAccessToken?.accessToken;
+        const token = jsonResp?.data?.storefrontAccessTokenCreate?.storefrontAccessToken?.accessToken;
         const errs = jsonResp?.data?.storefrontAccessTokenCreate?.userErrors;
 
-        if (errs && errs.length > 0) {
-            console.error("❌ Manual Sync call to storefrontAccessTokenCreate failed:", errs);
-            return new Response(JSON.stringify({ success: false, error: "Shopify API Error" }), {
-                status: 500,
-                headers: { "Content-Type": "application/json" },
-            });
-        }
-
-        if (!token) {
-            console.error("❌ No token returned from Shopify Manual Sync:", jsonResp);
-            return new Response(JSON.stringify({ success: false, error: "No Token" }), {
-                status: 500,
-                headers: { "Content-Type": "application/json" },
-            });
-        }
-
-        console.log("✅ Minted Shopify Token (Manual):", token);
-
-        const { error: upsertErr } = await supabaseAdmin
-            .schema('shopify_app')
-            .from("storefront_tokens")
-            .upsert(
-                {
-                    shop,
-                    storefront_access_token: token
-                },
-                { onConflict: "shop" }
-            );
-
-        if (upsertErr) {
-            console.error("❌ Supabase upsert error (Manual):", upsertErr);
-
-            // Helpful error for mission-critical schema exposure
-            let errorMsg = upsertErr.message;
-            if (upsertErr.code === 'PGRST106') {
-                errorMsg = "ACTION REQUIRED: You must expose the 'shopify_app' schema in Supabase Settings -> API -> Exposed Schemas.";
-            }
-
-            return new Response(JSON.stringify({ success: false, error: errorMsg }), {
-                status: 500,
-                headers: { "Content-Type": "application/json" },
-            });
-        }
-
-        console.log("✅ Successfully stored storefront token (Manual) for", shop);
-
-        // 3) Auto-populate vto_stores - Resilient Check-then-Act
-        console.log("👉 Ensuring vto_stores entry exists (Manual)...");
-
-        // Find existing by shop_domain
-        const { data: existing, error: findErr } = await supabaseAdmin
-            .from("vto_stores")
-            .select("id")
-            .eq("shop_domain", shop)
-            .maybeSingle();
-
-        const storePayload = {
-            shop_domain: shop,
-            store_slug: shop.replace('.myshopify.com', ''),
-            storefront_token: token,
-            clothing_population_type: 'shopify',
-            widget_primary_color: '#000000'
-        };
-
-        let vtoErr;
-        if (existing) {
-            console.log("👉 Updating existing vto_stores entry...");
-            const { error } = await supabaseAdmin
-                .from("vto_stores")
-                .update(storePayload)
-                .eq("id", existing.id);
-            vtoErr = error;
-        } else {
-            console.log("👉 Inserting new vto_stores entry...");
-            const { error } = await supabaseAdmin
-                .from("vto_stores")
-                .insert([storePayload]);
-            vtoErr = error;
-        }
-
-        if (vtoErr) {
-            console.error("❌ Supabase vto_stores upsert error (Manual):", vtoErr);
+        if ((errs && errs.length > 0) || !token) {
+            console.error(`[API:Sync:${requestId}] ❌ Shop Mint Failed:`, errs);
             return new Response(JSON.stringify({
                 success: false,
-                error: `Branding initialization failed: ${vtoErr.message}`
-            }), {
+                shop,
+                code: SYNC_ERRORS.SHOPIFY_FETCH_FAILED,
+                message: errs?.[0]?.message || "Shopify returned no token",
+                requestId,
+                retryable: false
+            }), { 
                 status: 500,
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json" }
             });
         }
 
-        console.log("✅ Successfully initialized vto_stores (Manual) for", shop);
-        return new Response(JSON.stringify({ success: true }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
+        // 2. Delegate to Sync Engine
+        const result = await runTokenSync(shop, token, requestId);
+
+        // 3. Return structured result
+        return new Response(JSON.stringify(result), {
+            status: result.success ? 200 : 500,
+            headers: { "Content-Type": "application/json" }
         });
 
-    } catch (err) {
-        console.error("❌ Critical Manual Sync error:", err);
-        return new Response(JSON.stringify({ success: false, error: "Exception" }), {
+    } catch (err: any) {
+        // IMPORTANT: authenticate.admin() throws a Response when redirecting to auth.
+        // Re-throw it so React Router / Shopify can handle the auth flow correctly.
+        if (err instanceof Response) {
+            throw err;
+        }
+        console.error(`[API:Sync:${requestId}] Critical Endpoint Error:`, err);
+        const detailedMessage = `${err.message || err.toString()} | Stack: ${err.stack || ''} | Cause: ${(err.cause as any)?.message || ''}`;
+        return new Response(JSON.stringify({
+            success: false,
+            code: 'INTERNAL_ERROR',
+            message: detailedMessage,
+            requestId
+        }), { 
             status: 500,
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json" }
         });
     }
 };

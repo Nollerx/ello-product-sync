@@ -157,11 +157,17 @@ export default function Index() {
 
   // Usage calculations
   const isDeveloperPlan = planKey === "developer_free" || (includedTryons ?? 0) >= 9999;
+  const isFreePlan = planKey === "ello_free";
+  const showExternalBillingPlaceholder =
+    skipBilling && (!planKey || planKey === "developer_free" || planKey === "custom_distribution");
+  const currentPlanBadgeLabel = showExternalBillingPlaceholder
+    ? "Billed through Stripe"
+    : (planDisplayName ?? "");
   const usagePercent =
     isDeveloperPlan || !includedTryons
       ? 0
       : Math.min(100, Math.round((tryonsUsed / includedTryons) * 100));
-  const isNearLimit = !isDeveloperPlan && !!includedTryons && usagePercent >= 80;
+  const isNearLimit = !isDeveloperPlan && !showExternalBillingPlaceholder && !!includedTryons && usagePercent >= 80;
   const periodEndFormatted = periodEnd
     ? new Date(periodEnd).toLocaleDateString("en-US", { month: "short", day: "numeric" })
     : null;
@@ -309,13 +315,32 @@ export default function Index() {
           </Card>
         )}
 
+        {/* ── Free-plan upgrade CTA (always shown for ello_free) ── */}
+        {isFreePlan && (
+          <Banner tone="info" title="You're on the Free plan">
+            <BlockStack gap="200">
+              <Text as="p" variant="bodyMd">
+                Upgrade to unlock unlimited try-ons and full analytics.
+              </Text>
+              <Box>
+                <Button onClick={() => navigate("/app/billing")} variant="primary">Upgrade plan</Button>
+              </Box>
+            </BlockStack>
+          </Banner>
+        )}
+
         {/* ── Upgrade nudge at 80% (hidden for custom distribution) ── */}
         {isNearLimit && !skipBilling && (
-          <Banner tone="warning" title="Approaching your try-on limit">
+          <Banner
+            tone={isFreePlan ? "critical" : "warning"}
+            title={isFreePlan ? "Monthly try-on limit almost reached" : "Approaching your try-on limit"}
+          >
             <BlockStack gap="200">
               <Text as="p" variant="bodyMd">
                 You&apos;ve used {tryonsUsed.toLocaleString()} of {includedTryons?.toLocaleString()} try-ons ({usagePercent}%).
-                Upgrade now to avoid any interruptions.
+                {isFreePlan
+                  ? " Upgrade to keep try-ons running after you hit 10."
+                  : " Upgrade now to avoid any interruptions."}
               </Text>
               <Box>
                 <Button onClick={() => navigate("/app/billing")} variant="plain">View upgrade options</Button>
@@ -332,12 +357,21 @@ export default function Index() {
                 <BlockStack gap="400">
                   <InlineStack align="space-between" blockAlign="center">
                     <Text as="h2" variant="headingMd">Current Plan</Text>
-                    <Badge tone={isDeveloperPlan ? "info" : "success"}>
-                      {planDisplayName ?? ""}
+                    <Badge tone={showExternalBillingPlaceholder || isDeveloperPlan ? "info" : "success"}>
+                      {currentPlanBadgeLabel}
                     </Badge>
                   </InlineStack>
 
-                  {isDeveloperPlan ? (
+                  {showExternalBillingPlaceholder ? (
+                    <BlockStack gap="200">
+                      <Text as="p" variant="bodyMd" tone="subdued">
+                        Billing for this store is handled outside Shopify.
+                      </Text>
+                      <Text as="p" variant="bodyMd" tone="subdued">
+                        Once we assign your contracted plan in Ello, it will appear here automatically.
+                      </Text>
+                    </BlockStack>
+                  ) : isDeveloperPlan ? (
                     <Text as="p" variant="bodyMd" tone="subdued">
                       Unlimited try-ons — developer / testing plan
                     </Text>
@@ -359,7 +393,10 @@ export default function Index() {
                         tone={usagePercent >= 80 ? "critical" : "highlight"}
                       />
                       <Text as="p" variant="bodySm" tone="subdued">
-                        {usagePercent}% used{!skipBilling && " · $0.15/try-on for overages"}
+                        {usagePercent}% used
+                        {isFreePlan
+                          ? " · Free plan — no overages, upgrade to continue after 10"
+                          : !skipBilling && " · $0.15/try-on for overages"}
                       </Text>
                     </BlockStack>
                   )}

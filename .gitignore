@@ -27,3 +27,10 @@ database.sqlite
 .react-router/
 .env
 env_vars.yaml
+cloud_run_env*.yaml
+deploy.sh
+
+# Local-only tooling
+claude-usage/
+supabase/.temp/
+.vscode/

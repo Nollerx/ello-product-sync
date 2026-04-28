@@ -1,0 +1,21 @@
+api_version = "2024-10"
+
+[[extensions]]
+name = "Ello Conversion Pixel"
+handle = "ello-conversion-pixel"
+uid = "8dde1a11-9bec-f025-62f4-772b31e8e15e78275c37"
+type = "web_pixel"
+runtime_context = "strict"
+
+  [extensions.settings]
+  type = "object"
+
+    [extensions.settings.fields.store_slug]
+    name = "Store Slug"
+    description = "The store's unique identifier in the Ello backend"
+    type = "single_line_text_field"
+
+    [extensions.settings.fields.backend_url]
+    name = "Backend URL"
+    description = "Ello backend URL — auto-set on install, do not change"
+    type = "single_line_text_field"

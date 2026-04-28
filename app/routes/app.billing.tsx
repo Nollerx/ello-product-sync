@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useFetcher } from "react-router";
+import { useLoaderData, useFetcher, useNavigate } from "react-router";
 import {
   Page,
   Layout,
@@ -14,6 +14,7 @@ import {
   Banner,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
+import { syncShopifyMerchantToSupabase } from "../lib/shopify-billing.server";
 
 // ─── Plan display data ────────────────────────────────────────────────────────
 
@@ -95,6 +96,21 @@ export async function action({ request }: ActionFunctionArgs) {
   const planKey = formData.get("planKey") as string;
   const interval = formData.get("interval") as string;
 
+  // ello_free: no Shopify billing — just sync and return a redirect signal
+  // for the client to navigate. (fetcher.submit does not auto-follow redirects.)
+  if (planKey === "ello_free") {
+    try {
+      const shopQuery = await admin.graphql(`query { shop { email } }`);
+      const shopJson = await shopQuery.json();
+      const shopEmail = shopJson?.data?.shop?.email ?? session.shop;
+      await syncShopifyMerchantToSupabase(session.shop, shopEmail, "ello_free", undefined);
+    } catch (err) {
+      console.error(`[Billing] ello_free sync failed for ${session.shop}:`, err);
+      return { error: "Failed to activate free plan. Please try again." };
+    }
+    return { redirectTo: "/app" };
+  }
+
   const fullPlanKey = `${planKey}_${interval}`;
 
   // Determine test mode
@@ -112,19 +128,12 @@ export async function action({ request }: ActionFunctionArgs) {
     return { error: `Unknown plan: ${fullPlanKey}` };
   }
 
-  // Return to our own confirmation route and preserve the embedded-app context
-  // so Shopify can hand the merchant back to the exact post-approval screen.
-  const appBaseUrl = process.env.SHOPIFY_APP_URL || requestUrl.origin;
-  const returnUrl = new URL("/app/billing/confirm", appBaseUrl);
-  returnUrl.searchParams.set("shop", session.shop);
-  for (const key of ["shop", "host", "embedded"]) {
-    const value = requestUrl.searchParams.get(key);
-    if (value) returnUrl.searchParams.set(key, value);
-  }
-  if (!returnUrl.searchParams.has("embedded")) {
-    returnUrl.searchParams.set("embedded", "1");
-  }
-  returnUrl.searchParams.set("plan", fullPlanKey);
+  // Return directly to the Shopify admin embedded app URL.
+  // This avoids the top-level bounce through the Cloud Run URL that causes
+  // a brief login page. The billing gate in app.tsx handles syncing the
+  // subscription to Supabase on the next page load.
+  const storeHandle = session.shop.replace(".myshopify.com", "");
+  const returnUrl = `https://admin.shopify.com/store/${storeHandle}/apps/${process.env.SHOPIFY_API_KEY}/app`;
 
   // Build the GraphQL mutation
   const recurringItem = billingPlan.lineItems[0];
@@ -208,17 +217,24 @@ export async function action({ request }: ActionFunctionArgs) {
 export default function BillingPage() {
   const { billingError } = useLoaderData<typeof loader>();
   const fetcher = useFetcher();
+  const navigate = useNavigate();
   const [interval, setInterval] = useState<"monthly" | "annual">("monthly");
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
 
   // When the action returns a confirmationUrl, redirect the TOP frame to it.
   // This is the correct way to handle billing redirects in embedded Shopify apps —
   // the Shopify billing page must load at the top level, not in the iframe.
-  const actionData = fetcher.data as { confirmationUrl?: string; error?: string } | undefined;
+  const actionData = fetcher.data as { confirmationUrl?: string; error?: string; redirectTo?: string } | undefined;
   useEffect(() => {
     if (!actionData?.confirmationUrl) return;
     window.open(actionData.confirmationUrl, "_top");
   }, [actionData?.confirmationUrl]);
+
+  // ello_free flow: no Shopify billing — navigate to dashboard in-app.
+  useEffect(() => {
+    if (!actionData?.redirectTo) return;
+    navigate(actionData.redirectTo);
+  }, [actionData?.redirectTo, navigate]);
 
   const actionError = actionData?.error;
   const isSubmitting = fetcher.state === "submitting" || fetcher.state === "loading";
@@ -260,6 +276,33 @@ export default function BillingPage() {
             Annual · Save 10%
           </Button>
         </InlineStack>
+
+        {/* Free plan card */}
+        <Card>
+          <BlockStack gap="300">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="h2" variant="headingMd">Ello Free</Text>
+              <Badge tone="info">Free</Badge>
+            </InlineStack>
+            <Text as="p" variant="headingXl">
+              $0<Text as="span" variant="bodySm" tone="subdued"> /month</Text>
+            </Text>
+            <Text as="p" variant="bodyMd">10 try-ons per month · Ello branding on widget</Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              No overages. Upgrade anytime to unlock unlimited try-ons.
+            </Text>
+            <Box paddingBlockStart="200">
+              <Button
+                fullWidth
+                onClick={() => handleSelectPlan("ello_free")}
+                loading={isSubmitting && selectedPlan === "ello_free"}
+                disabled={isSubmitting}
+              >
+                Use Free Plan
+              </Button>
+            </Box>
+          </BlockStack>
+        </Card>
 
         {/* Plan grid */}
         <Layout>

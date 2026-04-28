@@ -1,3 +1,4 @@
+
 import { reactRouter } from "@react-router/dev/vite";
 import { defineConfig, type UserConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -54,6 +55,8 @@ export default defineConfig({
   ],
   build: {
     assetsInlineLimit: 0,
+    sourcemap: false, // SAVE MEMORY
+    minify: false,    // SAVE MEMORY
   },
   optimizeDeps: {
     include: ["@shopify/app-bridge-react"],

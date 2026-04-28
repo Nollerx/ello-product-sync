@@ -1,5 +1,5 @@
 {
-  "name": "ello-product-sync",
+  "name": "ello-vto-public",
   "private": true,
   "scripts": {
     "build": "react-router build",

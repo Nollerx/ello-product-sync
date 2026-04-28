@@ -47,12 +47,35 @@ export async function action({ request }: ActionFunctionArgs) {
         // 2. Fetch Store Config from Supabase
         const { data: storeData, error: storeError } = await supabaseAdmin
             .from("vto_stores")
-            .select("store_slug, shop_domain, storefront_token, clothing_population_type, featured_item_id, quick_picks_ids, widget_primary_color")
+            .select("store_slug, shop_domain, storefront_token, clothing_population_type, featured_item_id, quick_picks_ids, widget_primary_color, account_id")
             .or(`shop_domain.eq.${shop},store_slug.eq.${shop}`)
             .maybeSingle();
 
         if (storeError) {
             console.error("[Bootstrap] DB Error:", storeError);
+        }
+
+        // 2b. Fetch plan + usage via get_store_usage RPC (for free-plan branding + limit gating).
+        //     Fail open — widget still loads if RPC fails.
+        let planCode: string | null = null;
+        let tryonLimit: number | null = null;
+        let tryonsUsed: number | null = null;
+        if (storeData?.store_slug) {
+            try {
+                const { data: usageData, error: usageErr } = await supabaseAdmin.rpc("get_store_usage", {
+                    p_store_slug: storeData.store_slug,
+                });
+                if (usageErr) {
+                    console.error("[Bootstrap] get_store_usage error:", usageErr.message);
+                } else if (usageData && typeof usageData === "object" && !("error" in usageData)) {
+                    const u = usageData as Record<string, unknown>;
+                    planCode = (u.plan_code as string) ?? null;
+                    tryonLimit = (u.included_tryons as number) ?? null;
+                    tryonsUsed = (u.tryons_used as number) ?? null;
+                }
+            } catch (err) {
+                console.error("[Bootstrap] get_store_usage exception:", err);
+            }
         }
 
         // 3. Fallback to shopify_app.storefront_tokens if not found in vto_stores
@@ -79,18 +102,29 @@ export async function action({ request }: ActionFunctionArgs) {
                     store_slug: shop.replace('.myshopify.com', ''),
                     widget_primary_color: '#000000',
                     featured_item_id: null,
-                    quick_picks_ids: []
+                    quick_picks_ids: [],
+                    account_id: null,
                 };
             }
         }
 
         // 4. Detect Hidden Products (Blacklist) using Admin Client
-        let hiddenProductIds: string[] = [];
+        const hiddenProductIds: string[] = [];
         // (Optional: Add logic here to fetch hidden products if you have a table)
 
-        // 4. Return JSON Response with CORS Headers
+        // 5. Build store payload with plan info merged in
+        const storePayload = finalStoreData
+            ? {
+                ...finalStoreData,
+                plan_code: planCode,
+                tryon_limit: tryonLimit,
+                tryons_used: tryonsUsed,
+            }
+            : null;
+
+        // 6. Return JSON Response with CORS Headers
         return new Response(JSON.stringify({
-            store: finalStoreData || null,
+            store: storePayload,
             blacklist: {
                 hiddenProductIds: hiddenProductIds
             },

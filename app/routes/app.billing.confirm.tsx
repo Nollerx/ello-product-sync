@@ -108,6 +108,7 @@ async function fetchActiveSubscription(
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
+  // authenticate.admin can throw a Response for auth redirects — let that propagate.
   const { session, admin } = await authenticate.admin(request);
 
   const url = new URL(request.url);
@@ -142,66 +143,79 @@ export async function loader({ request }: LoaderFunctionArgs) {
     shouldRedirectToApp: attempt >= MAX_CONFIRM_PENDING_ATTEMPTS,
   });
 
-  let activePlanKey: string | null = null;
-  let shopifySubscriptionId: string | null = null;
-  let shopifyUsageLineItemId: string | null = null;
-  let currentPeriodEnd: string | null = null;
-
-  if (intendedPlanKey === "developer_free") {
-    activePlanKey = "developer_free";
-  } else {
-    const activeSubscription = await fetchActiveSubscription(admin, intendedPlanKey, session.shop);
-
-    if (!activeSubscription || !isPaidPlanKey(activeSubscription.name)) {
-      return pendingResponse(normalizedPlanKey);
-    }
-
-    activePlanKey = activeSubscription.name;
-    shopifySubscriptionId = activeSubscription.id ?? null;
-    shopifyUsageLineItemId = extractUsageLineItemId(activeSubscription);
-    currentPeriodEnd = activeSubscription.currentPeriodEnd ?? null;
-  }
-
-  // 1. Get merchant email from Shopify Admin GraphQL
-  const shopResponse = await admin.graphql(`
-    query {
-      shop {
-        email
-        name
-      }
-    }
-  `);
-  const shopJson = await shopResponse.json();
-  const shopEmail = shopJson?.data?.shop?.email ?? session.shop;
-
-  // 2. Sync to Supabase — if Shopify has approved the subscription but our DB is
-  //    still catching up, stay on this confirmation route and retry on refresh.
-  let storeSlug: string = session.shop;
+  // Wrap the core logic in try-catch so unexpected errors (GraphQL failures,
+  // network timeouts, etc.) fall back to the activation flow on the dashboard
+  // instead of rendering a blank page. The resilient sync in the billing gate
+  // (app.tsx) will pick up the un-synced subscription on the next page load.
   try {
-    const result = await syncShopifyMerchantToSupabase(
-      session.shop,
+    let activePlanKey: string | null = null;
+    let shopifySubscriptionId: string | null = null;
+    let shopifyUsageLineItemId: string | null = null;
+    let currentPeriodEnd: string | null = null;
+
+    if (intendedPlanKey === "developer_free") {
+      activePlanKey = "developer_free";
+    } else {
+      const activeSubscription = await fetchActiveSubscription(admin, intendedPlanKey, session.shop);
+
+      if (!activeSubscription || !isPaidPlanKey(activeSubscription.name)) {
+        return pendingResponse(normalizedPlanKey);
+      }
+
+      activePlanKey = activeSubscription.name;
+      shopifySubscriptionId = activeSubscription.id ?? null;
+      shopifyUsageLineItemId = extractUsageLineItemId(activeSubscription);
+      currentPeriodEnd = activeSubscription.currentPeriodEnd ?? null;
+    }
+
+    // 1. Get merchant email from Shopify Admin GraphQL
+    const shopResponse = await admin.graphql(`
+      query {
+        shop {
+          email
+          name
+        }
+      }
+    `);
+    const shopJson = await shopResponse.json();
+    const shopEmail = shopJson?.data?.shop?.email ?? session.shop;
+
+    // 2. Sync to Supabase — if Shopify has approved the subscription but our DB is
+    //    still catching up, stay on this confirmation route and retry on refresh.
+    let storeSlug: string = session.shop;
+    try {
+      const result = await syncShopifyMerchantToSupabase(
+        session.shop,
+        shopEmail,
+        activePlanKey!,
+        shopifySubscriptionId ?? undefined,
+        shopifyUsageLineItemId,
+        { currentPeriodEnd },
+      );
+      storeSlug = result.storeSlug;
+    } catch (err) {
+      console.error(`[BillingConfirm] syncShopifyMerchantToSupabase failed on attempt ${attempt}:`, err);
+      return pendingResponse(isPaidPlanKey(activePlanKey) ? activePlanKey : normalizedPlanKey);
+    }
+
+    // 3. Get plan display info
+    const planConfig = getPlanConfig();
+    const planMeta = planConfig[activePlanKey];
+
+    return {
+      status: "active" as const,
+      storeSlug,
+      planMeta,
       shopEmail,
-      activePlanKey!,
-      shopifySubscriptionId ?? undefined,
-      shopifyUsageLineItemId,
-      { currentPeriodEnd },
-    );
-    storeSlug = result.storeSlug;
+    };
   } catch (err) {
-    console.error(`[BillingConfirm] syncShopifyMerchantToSupabase failed on attempt ${attempt}:`, err);
-    return pendingResponse(isPaidPlanKey(activePlanKey) ? activePlanKey : normalizedPlanKey);
+    // Re-throw Response objects (auth redirects, etc.) so React Router handles them.
+    if (err instanceof Response) throw err;
+    console.error(`[BillingConfirm] Unexpected error in loader for ${session.shop}:`, err);
+    // Fall back to pending → activation URL which sends the user to the dashboard.
+    // The resilient sync in app.tsx will handle syncing the subscription.
+    return pendingResponse(normalizedPlanKey);
   }
-
-  // 3. Get plan display info
-  const planConfig = getPlanConfig();
-  const planMeta = planConfig[activePlanKey];
-
-  return {
-    status: "active" as const,
-    storeSlug,
-    planMeta,
-    shopEmail,
-  };
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────

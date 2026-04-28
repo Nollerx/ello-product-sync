@@ -15,6 +15,7 @@ export type PlanMeta = {
 const PLAN_CONFIG: Record<string, PlanMeta> = {
   custom_distribution:     { displayName: "Custom Plan",      price: 0,         interval: "month", includedTryons: parseInt(process.env.DEFAULT_INCLUDED_TRYONS || "500", 10), planId: "custom-dist-00000000-0000-0000-0000" },
   developer_free:          { displayName: "Developer Free",   price: 0,         interval: "month", includedTryons: 9999,  planId: "a7d8292a-b720-418c-9de7-70191bc9969d" },
+  ello_free:               { displayName: "Ello Free",        price: 0,         interval: "month", includedTryons: 10,    planId: "ab69eb9e-648c-4777-a6f6-6482f8b780a7" },
   starter_monthly:         { displayName: "Ello Starter",     price: 97,        interval: "month", includedTryons: 150,   planId: "acf413dc-bcb0-484a-b914-2d6f6491eb39" },
   starter_annual:          { displayName: "Ello Starter",     price: 1047.60,   interval: "year",  includedTryons: 150,   planId: "acf413dc-bcb0-484a-b914-2d6f6491eb39" },
   launch_monthly:          { displayName: "Ello Launch",      price: 149,       interval: "month", includedTryons: 400,   planId: "75fa2215-7008-4242-aef5-40aa2b278968" },
@@ -342,11 +343,37 @@ export async function syncShopifyMerchantToSupabase(
       .not("shopify_subscription_id", "is", null)
       .neq("shopify_subscription_id", shopifySubscriptionId);
 
-    // Paid plan — upsert on the Shopify subscription ID
-    const { data, error: subError } = await supabaseAdmin
+    // Paid plan — find existing row by shopify_subscription_id, or insert a new one.
+    const { data: existingPaidSub } = await supabaseAdmin
       .from("vto_subscriptions")
-      .upsert(
-        {
+      .select("id")
+      .eq("shopify_subscription_id", shopifySubscriptionId)
+      .maybeSingle();
+
+    if (existingPaidSub) {
+      const { error: updateError } = await supabaseAdmin
+        .from("vto_subscriptions")
+        .update({
+          account_id: accountId,
+          plan_id: plan.planId,
+          status: "active",
+          billing_interval: plan.interval,
+          billing_source: "shopify",
+          current_period_start: billingWindow.currentPeriodStart,
+          current_period_end: billingWindow.currentPeriodEnd,
+          ...(shopifyUsageLineItemId ? { shopify_usage_line_item_id: shopifyUsageLineItemId } : {}),
+        })
+        .eq("id", existingPaidSub.id);
+      if (updateError) {
+        throw new Error(
+          `[ShopifyBilling] Failed to update vto_subscriptions for account "${accountId}": ${updateError.message}`,
+        );
+      }
+      subData = existingPaidSub;
+    } else {
+      const { data, error: insertError } = await supabaseAdmin
+        .from("vto_subscriptions")
+        .insert({
           account_id: accountId,
           plan_id: plan.planId,
           status: "active",
@@ -356,17 +383,16 @@ export async function syncShopifyMerchantToSupabase(
           current_period_start: billingWindow.currentPeriodStart,
           current_period_end: billingWindow.currentPeriodEnd,
           ...(shopifyUsageLineItemId ? { shopify_usage_line_item_id: shopifyUsageLineItemId } : {}),
-        },
-        { onConflict: "shopify_subscription_id", ignoreDuplicates: false },
-      )
-      .select("id")
-      .single();
-    if (subError || !data) {
-      throw new Error(
-        `[ShopifyBilling] Failed to upsert vto_subscriptions for account "${accountId}": ${subError?.message}`,
-      );
+        })
+        .select("id")
+        .single();
+      if (insertError || !data) {
+        throw new Error(
+          `[ShopifyBilling] Failed to insert vto_subscriptions for account "${accountId}": ${insertError?.message}`,
+        );
+      }
+      subData = data;
     }
-    subData = data;
   } else {
     // Free/developer plan — no Shopify subscription ID; select or insert by account
     const { data: existingSub } = await supabaseAdmin
