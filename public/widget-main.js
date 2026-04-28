@@ -2,7 +2,7 @@
 // Generate and persist session ID for tracking (will be set after store config loads)
 // The actual sessionId is now managed via localStorage below
 
-console.log("✅ Ello Widget v2.4.0 - Paginated Supabase Queries");
+console.log("✅ Ello Widget v2.4.1 - has_saved_photo metadata");
 
 // Global activity flag to prevent ReferenceError
 let hasUserActivity = false;
@@ -7706,7 +7706,7 @@ async function showPreview(product) {
     const lastPreviewTime = window._lastPreviewShownTime || 0;
     const now = Date.now();
     if (now - lastPreviewTime > 2000) {
-        trackPreviewEvent('preview_shown', { productId: product.id });
+        trackPreviewEvent('preview_shown', { productId: product.id, hasSavedPhoto: !!window.elloUserImageUrl });
         window._lastPreviewShownTime = now;
     }
 
@@ -7810,7 +7810,7 @@ window.handlePreviewTryOn = async function () {
     window._previewTryOnProcessing = true; // Local lock for preview specifically
 
     previewEngaged = true; // Mark as engaged
-    trackPreviewEvent('tryon_clicked');
+    trackPreviewEvent('tryon_clicked', { hasSavedPhoto: !!window.elloUserImageUrl });
 
     const overlay = document.getElementById('previewProgressOverlay');
     const bar = document.getElementById('previewProgressBar');
