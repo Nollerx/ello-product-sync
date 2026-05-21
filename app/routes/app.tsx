@@ -12,6 +12,11 @@ import {
   syncShopifyMerchantToSupabase,
   type ActiveSubscriptionSnapshot,
 } from "../lib/shopify-billing.server";
+import {
+  ONBOARDING_ROUTE_BY_STEP,
+  getOnboardingState,
+  preserveShopifyQuery,
+} from "../lib/onboarding.server";
 
 const PAID_BILLING_PLANS = [
   "starter_monthly",         "starter_annual",
@@ -32,8 +37,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // so this loader runs for every /app/* URL.
   const url = new URL(request.url);
   const isBillingRoute = url.pathname.startsWith("/app/billing");
+  const isOnboardingRoute = url.pathname.startsWith("/app/onboarding");
   const isBillingActivationRequest =
     url.pathname === "/app" && url.searchParams.get("billing") === "activating";
+
+  // Onboarding gate — new installs walk through /app/onboarding/* before
+  // anything else. Existing merchants have onboarding_step='complete' (set by
+  // the 20260514_onboarding_steps.sql migration), so this is a no-op for them.
+  // eslint-disable-next-line no-undef
+  if (!isOnboardingRoute && !isBillingRoute && process.env.SKIP_BILLING !== "true") {
+    try {
+      const { step } = await getOnboardingState(session.shop);
+      if (step === "welcome" || step === "activate_widget" || step === "configure") {
+        throw redirect(`${ONBOARDING_ROUTE_BY_STEP[step]}${preserveShopifyQuery(url)}`);
+      }
+    } catch (err) {
+      if (err instanceof Response) throw err;
+      console.error("[OnboardingGate] check failed (non-fatal):", err);
+    }
+  }
 
   // eslint-disable-next-line no-undef
   if (!isBillingRoute && process.env.SKIP_BILLING !== "true") {
