@@ -15,28 +15,15 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { syncShopifyMerchantToSupabase } from "../lib/shopify-billing.server";
+import {
+  AOV_DEFAULT,
+  OVERAGE_USD_PER_TRYON,
+  PRICING_PLANS,
+  breakEvenOrders,
+  formatMoney,
+} from "../lib/pricing-plans";
 
-// ─── Plan display data ────────────────────────────────────────────────────────
-
-type PlanDisplay = {
-  key: string;
-  name: string;
-  monthlyPrice: string;
-  annualPrice: string;
-  tryons: number | string;
-  popular?: boolean;
-};
-
-const PLANS: PlanDisplay[] = [
-  { key: "starter",         name: "Ello Starter",      monthlyPrice: "$97",      annualPrice: "$1,047.60",  tryons: 150 },
-  { key: "launch",          name: "Ello Launch",       monthlyPrice: "$149",     annualPrice: "$1,609.20",  tryons: 400 },
-  { key: "growth",          name: "Ello Growth",       monthlyPrice: "$172",     annualPrice: "$1,857.60",  tryons: 750,   popular: true },
-  { key: "growth_plus",     name: "Ello Growth+",      monthlyPrice: "$289",     annualPrice: "$3,121.20",  tryons: 1800 },
-  { key: "pro",             name: "Ello Pro",           monthlyPrice: "$647",     annualPrice: "$6,987.60",  tryons: 4000 },
-  { key: "pro_plus",        name: "Pro Plus",           monthlyPrice: "$1,149",   annualPrice: "$12,409.20", tryons: 9000 },
-  { key: "enterprise",      name: "Ello Enterprise",   monthlyPrice: "$1,897",   annualPrice: "$20,487.60", tryons: 13000 },
-  { key: "enterprise_plus", name: "Ello Enterprise+",  monthlyPrice: "$5,197",   annualPrice: "$56,127.20", tryons: 25000 },
-];
+const TRIAL_DAYS = 7;
 
 // ─── Billing config lookup (mirrors shopify.server.ts) ───────────────────────
 
@@ -48,32 +35,19 @@ type BillingLineItem = {
 };
 
 function getBillingPlan(planKey: string, isTest: boolean): { lineItems: BillingLineItem[]; test: boolean } | null {
-  // Build from the plan config in shopify.server.ts billing section
-  const configs: Record<string, { amount: number; interval: "EVERY_30_DAYS" | "ANNUAL" }> = {
-    starter_monthly:         { amount: 97,        interval: "EVERY_30_DAYS" },
-    starter_annual:          { amount: 1047.60,   interval: "ANNUAL" },
-    launch_monthly:          { amount: 149,       interval: "EVERY_30_DAYS" },
-    launch_annual:           { amount: 1609.20,   interval: "ANNUAL" },
-    growth_monthly:          { amount: 172,       interval: "EVERY_30_DAYS" },
-    growth_annual:           { amount: 1857.60,   interval: "ANNUAL" },
-    growth_plus_monthly:     { amount: 289,       interval: "EVERY_30_DAYS" },
-    growth_plus_annual:      { amount: 3121.20,   interval: "ANNUAL" },
-    pro_monthly:             { amount: 647,       interval: "EVERY_30_DAYS" },
-    pro_annual:              { amount: 6987.60,   interval: "ANNUAL" },
-    pro_plus_monthly:        { amount: 1149,      interval: "EVERY_30_DAYS" },
-    pro_plus_annual:         { amount: 12409.20,  interval: "ANNUAL" },
-    enterprise_monthly:      { amount: 1897,      interval: "EVERY_30_DAYS" },
-    enterprise_annual:       { amount: 20487.60,  interval: "ANNUAL" },
-    enterprise_plus_monthly: { amount: 5197,      interval: "EVERY_30_DAYS" },
-    enterprise_plus_annual:  { amount: 56127.60,  interval: "ANNUAL" },
-  };
+  const configs = Object.fromEntries(
+    PRICING_PLANS.flatMap((plan) => [
+      [`${plan.key}_monthly`, { amount: plan.monthlyPrice, interval: "EVERY_30_DAYS" as const }],
+      [`${plan.key}_annual`, { amount: plan.annualPrice, interval: "ANNUAL" as const }],
+    ]),
+  );
   const cfg = configs[planKey];
   if (!cfg) return null;
   return {
     test: isTest,
     lineItems: [
       { amount: cfg.amount, currencyCode: "USD", interval: cfg.interval },
-      { amount: 15, currencyCode: "USD", interval: "EVERY_30_DAYS", terms: "$0.15 per try-on beyond your plan's included amount" },
+      { amount: 15, currencyCode: "USD", interval: "EVERY_30_DAYS", terms: `$${OVERAGE_USD_PER_TRYON.toFixed(2)} per try-on beyond your plan's included amount` },
     ],
   };
 }
@@ -91,7 +65,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
 export async function action({ request }: ActionFunctionArgs) {
   const { admin, session } = await authenticate.admin(request);
-  const requestUrl = new URL(request.url);
   const formData = await request.formData();
   const planKey = formData.get("planKey") as string;
   const interval = formData.get("interval") as string;
@@ -144,6 +117,7 @@ export async function action({ request }: ActionFunctionArgs) {
       $name: String!,
       $returnUrl: URL!,
       $test: Boolean,
+      $trialDays: Int,
       $lineItems: [AppSubscriptionLineItemInput!]!,
       $replacementBehavior: AppSubscriptionReplacementBehavior
     ) {
@@ -151,6 +125,7 @@ export async function action({ request }: ActionFunctionArgs) {
         name: $name,
         returnUrl: $returnUrl,
         test: $test,
+        trialDays: $trialDays,
         lineItems: $lineItems,
         replacementBehavior: $replacementBehavior
       ) {
@@ -165,6 +140,7 @@ export async function action({ request }: ActionFunctionArgs) {
     name: fullPlanKey,
     returnUrl: returnUrl.toString(),
     test: isTest,
+    trialDays: TRIAL_DAYS,
     replacementBehavior: "APPLY_IMMEDIATELY",
     lineItems: [
       {
@@ -220,6 +196,7 @@ export default function BillingPage() {
   const navigate = useNavigate();
   const [interval, setInterval] = useState<"monthly" | "annual">("monthly");
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
+  const [averageOrderValue, setAverageOrderValue] = useState(AOV_DEFAULT);
 
   // When the action returns a confirmationUrl, redirect the TOP frame to it.
   // This is the correct way to handle billing redirects in embedded Shopify apps —
@@ -238,6 +215,7 @@ export default function BillingPage() {
 
   const actionError = actionData?.error;
   const isSubmitting = fetcher.state === "submitting" || fetcher.state === "loading";
+  const billingIntervalLabel = interval === "monthly" ? "monthly" : "annual";
 
   const handleSelectPlan = (planKey: string) => {
     setSelectedPlan(planKey);
@@ -250,7 +228,7 @@ export default function BillingPage() {
   return (
     <Page
       title="Choose Your Plan"
-      subtitle="Start growing with virtual try-on. Cancel anytime."
+      subtitle="Start with a 7-day free trial. Cancel anytime."
     >
       <BlockStack gap="800">
 
@@ -289,7 +267,7 @@ export default function BillingPage() {
             </Text>
             <Text as="p" variant="bodyMd">10 try-ons per month · Ello branding on widget</Text>
             <Text as="p" variant="bodySm" tone="subdued">
-              No overages. Upgrade anytime to unlock unlimited try-ons.
+              No overages. Upgrade anytime when you are ready for real traffic.
             </Text>
             <Box paddingBlockStart="200">
               <Button
@@ -304,35 +282,89 @@ export default function BillingPage() {
           </BlockStack>
         </Card>
 
+        <Card>
+          <BlockStack gap="300">
+            <Text as="h2" variant="headingMd">Conversion leverage calculator</Text>
+            <InlineStack gap="300" blockAlign="end">
+              <BlockStack gap="100">
+                <label htmlFor="average-order-value">Average order value</label>
+                <input
+                  id="average-order-value"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={averageOrderValue}
+                  onChange={(event) => setAverageOrderValue(Number(event.currentTarget.value))}
+                  style={{
+                    width: "120px",
+                    minHeight: "36px",
+                    padding: "6px 10px",
+                    border: "1px solid #B8BECA",
+                    borderRadius: "6px",
+                  }}
+                />
+              </BlockStack>
+              <Text as="p" variant="bodyMd" tone="subdued">
+                At {formatMoney(averageOrderValue || AOV_DEFAULT)} AOV, each plan only needs a few added purchases to cover itself.
+              </Text>
+            </InlineStack>
+          </BlockStack>
+        </Card>
+
         {/* Plan grid */}
         <Layout>
-          {PLANS.map((plan) => (
+          {PRICING_PLANS.map((plan) => {
+            const monthlyBreakEven = breakEvenOrders(plan.monthlyPrice, averageOrderValue);
+            const activePrice = interval === "monthly" ? plan.monthlyPrice : plan.annualPrice;
+            return (
             <Layout.Section key={plan.key} variant="oneHalf">
               <Card>
                 <BlockStack gap="300">
-                  {plan.popular && (
-                    <Badge tone="success">Most Popular</Badge>
-                  )}
-
-                  <Text as="h2" variant="headingMd">
-                    {plan.name}
-                  </Text>
+                  <InlineStack align="space-between" blockAlign="center">
+                    <Text as="h2" variant="headingMd">
+                      Ello {plan.displayName}
+                    </Text>
+                    {plan.featured && (
+                      <Badge tone="success">Best first plan</Badge>
+                    )}
+                  </InlineStack>
 
                   <Text as="p" variant="headingXl">
-                    {interval === "monthly" ? plan.monthlyPrice : plan.annualPrice}
+                    {formatMoney(activePrice)}
                     <Text as="span" variant="bodySm" tone="subdued">
                       {interval === "monthly" ? " /month" : " /year"}
                     </Text>
                   </Text>
 
+                  <Badge tone="info">7-day free trial</Badge>
+
                   <Text as="p" variant="bodyMd">
-                    {typeof plan.tryons === "number"
-                      ? `${plan.tryons.toLocaleString()} try-ons included per month`
-                      : plan.tryons}
+                    {plan.includedTryons.toLocaleString()} try-ons included per month
                   </Text>
 
                   <Text as="p" variant="bodySm" tone="subdued">
-                    $0.15 per additional try-on
+                    {plan.positioning} · ${OVERAGE_USD_PER_TRYON.toFixed(2)} per additional try-on
+                  </Text>
+
+                  <Box padding="300" background="bg-surface-secondary" borderRadius="200">
+                    <BlockStack gap="100">
+                      <Text as="p" variant="bodyMd" fontWeight="semibold">
+                        Needs {monthlyBreakEven ?? "-"} added {monthlyBreakEven === 1 ? "purchase" : "purchases"} to cover the monthly cost
+                      </Text>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        {formatMoney(plan.monthlyPrice)} / {formatMoney(averageOrderValue || AOV_DEFAULT)} AOV = break-even target
+                      </Text>
+                    </BlockStack>
+                  </Box>
+
+                  {interval === "annual" && (
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Annual billing saves 10% versus paying monthly.
+                    </Text>
+                  )}
+
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Billed {billingIntervalLabel}. Usage resets monthly.
                   </Text>
 
                   <Box paddingBlockStart="200">
@@ -343,13 +375,34 @@ export default function BillingPage() {
                       loading={isSubmitting && selectedPlan === plan.key}
                       disabled={isSubmitting}
                     >
-                      Select Plan
+                      Start 7-day trial
                     </Button>
                   </Box>
                 </BlockStack>
               </Card>
             </Layout.Section>
-          ))}
+            );
+          })}
+          <Layout.Section variant="oneHalf">
+            <Card>
+              <BlockStack gap="300">
+                <InlineStack align="space-between" blockAlign="center">
+                  <Text as="h2" variant="headingMd">Enterprise</Text>
+                  <Badge tone="info">Custom</Badge>
+                </InlineStack>
+                <Text as="p" variant="headingXl">Custom</Text>
+                <Text as="p" variant="bodyMd">Custom try-on volume, pricing, and rollout support.</Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  For brands that need higher included usage, procurement support, or manual account setup.
+                </Text>
+                <Box paddingBlockStart="200">
+                  <Button fullWidth url="mailto:andrew@ello.services?subject=Ello%20Enterprise%20plan">
+                    Contact for Enterprise
+                  </Button>
+                </Box>
+              </BlockStack>
+            </Card>
+          </Layout.Section>
         </Layout>
       </BlockStack>
     </Page>

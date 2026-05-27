@@ -70,14 +70,11 @@ CREATE INDEX IF NOT EXISTS idx_vto_plans_stripe_price_id ON public.vto_plans(str
 INSERT INTO public.vto_plans (id, code, name, monthly_price, annual_price, included_tryons_per_month, overage_usd_per_tryon) VALUES
   ('00000000-0000-0000-0000-000000000000', 'custom_distribution',     'Custom Plan',       0,        0,         500,   0.15),
   ('a7d8292a-b720-418c-9de7-70191bc9969d', 'developer_free',          'Developer Free',    0,        0,         9999,  0.00),
-  ('acf413dc-bcb0-484a-b914-2d6f6491eb39', 'starter',                 'Ello Starter',      97,       1047.60,   150,   0.15),
-  ('75fa2215-7008-4242-aef5-40aa2b278968', 'launch',                  'Ello Launch',       149,      1609.20,   400,   0.15),
-  ('48ce4579-3523-45e1-9cc5-7f2bb0134073', 'growth',                  'Ello Growth',       172,      1857.60,   750,   0.15),
-  ('aa335388-c6f9-4d9d-949c-9a8ee689c5ca', 'growth_plus',             'Ello Growth+',      289,      3121.20,   1800,  0.15),
-  ('6c203206-7f01-4ca2-b1f2-fabda7a6306f', 'pro',                     'Ello Pro',          647,      6987.60,   4000,  0.15),
-  ('4d6cd330-4788-4911-ac72-c7e741b53c54', 'pro_plus',                'Pro Plus',          1149,     12409.20,  9000,  0.15),
-  ('f5bc29c9-e69d-4e46-8442-5d8adb66e11e', 'enterprise',              'Ello Enterprise',   1897,     20487.60,  13000, 0.15),
-  ('b4309e55-2a93-4d12-8185-ea4c8fd5841f', 'enterprise_plus',         'Ello Enterprise+',  5197,     56127.60,  25000, 0.15)
+  ('acf413dc-bcb0-484a-b914-2d6f6491eb39', 'starter',                 'Ello Starter',      49,       529.20,    75,    0.15),
+  ('75fa2215-7008-4242-aef5-40aa2b278968', 'launch',                  'Ello Launch',       97,       1047.60,   300,   0.15),
+  ('48ce4579-3523-45e1-9cc5-7f2bb0134073', 'growth',                  'Ello Growth',       249,      2689.20,   1500,  0.15),
+  ('6c203206-7f01-4ca2-b1f2-fabda7a6306f', 'scale',                   'Ello Scale',        649,      7009.20,   5000,  0.15),
+  ('f5bc29c9-e69d-4e46-8442-5d8adb66e11e', 'enterprise',              'Ello Enterprise',   0,        0,         0,     0.15)
 ON CONFLICT (id) DO NOTHING;
 
 -- ─── vto_stores ──────────────────────────────────────────────────────────────

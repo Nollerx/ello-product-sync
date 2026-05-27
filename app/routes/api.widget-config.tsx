@@ -12,7 +12,14 @@ export async function loader() {
     }),
     {
       status: 200,
-      headers: { "Content-Type": "application/json", ...CORS },
+      headers: {
+        "Content-Type": "application/json",
+        // Values here (Supabase URL + anon key) only change when env vars change,
+        // which only happens on a redeploy. Safe to cache aggressively. Browser
+        // honors max-age; CDN/edge honors s-maxage.
+        "Cache-Control": "public, max-age=86400, s-maxage=86400, immutable",
+        ...CORS,
+      },
     }
   );
 }

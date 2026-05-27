@@ -9,10 +9,16 @@ import {
 import { SupabaseSessionStorage } from "./lib/supabase-session-storage.server";
 import { runTokenSync } from "./lib/sync.server";
 import { syncShopifyMerchantToSupabase } from "./lib/shopify-billing.server";
+import { OVERAGE_USD_PER_TRYON, PRICING_PLANS, type PricingPlan } from "./lib/pricing-plans";
 import dns from "node:dns";
 
 // Fix for Node 18+ "fetch failed" errors in Cloud Run due to IPv6 prioritization issues
 dns.setDefaultResultOrder("ipv4first");
+
+const PLANS_BY_KEY = Object.fromEntries(
+  PRICING_PLANS.map((plan) => [plan.key, plan]),
+) as Record<PricingPlan["key"], PricingPlan>;
+const OVERAGE_TERMS = `$${OVERAGE_USD_PER_TRYON.toFixed(2)} per try-on beyond your plan's included amount`;
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -140,22 +146,14 @@ const shopify = shopifyApp({
   billing: {
     // Each paid plan has: (1) recurring subscription charge + (2) usage-based overage at $0.15/try-on
     // The usage line item cappedAmount is set to $0.01 (minimum Shopify allows). Merchants can increase via auto top-up settings.
-    starter_monthly:         { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 97,        currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    starter_annual:          { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1047.60,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    launch_monthly:          { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 149,       currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    launch_annual:           { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1609.20,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    growth_monthly:          { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 172,       currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    growth_annual:           { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1857.60,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    growth_plus_monthly:     { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 289,       currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    growth_plus_annual:      { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 3121.20,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    pro_monthly:             { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 647,       currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    pro_annual:              { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 6987.60,   currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    pro_plus_monthly:        { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1149,      currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    pro_plus_annual:         { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 12409.20,  currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    enterprise_monthly:      { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 1897,      currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    enterprise_annual:       { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 20487.60,  currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    enterprise_plus_monthly: { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 5197,      currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
-    enterprise_plus_annual:  { trialDays: 0, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: 56127.60,  currencyCode: "USD", interval: BillingInterval.Annual      }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: "$0.15 per try-on beyond your plan's included amount" }] },
+    starter_monthly: { trialDays: 7, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: PLANS_BY_KEY.starter.monthlyPrice, currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: OVERAGE_TERMS }] },
+    starter_annual: { trialDays: 7, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: PLANS_BY_KEY.starter.annualPrice, currencyCode: "USD", interval: BillingInterval.Annual }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: OVERAGE_TERMS }] },
+    launch_monthly: { trialDays: 7, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: PLANS_BY_KEY.launch.monthlyPrice, currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: OVERAGE_TERMS }] },
+    launch_annual: { trialDays: 7, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: PLANS_BY_KEY.launch.annualPrice, currencyCode: "USD", interval: BillingInterval.Annual }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: OVERAGE_TERMS }] },
+    growth_monthly: { trialDays: 7, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: PLANS_BY_KEY.growth.monthlyPrice, currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: OVERAGE_TERMS }] },
+    growth_annual: { trialDays: 7, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: PLANS_BY_KEY.growth.annualPrice, currencyCode: "USD", interval: BillingInterval.Annual }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: OVERAGE_TERMS }] },
+    scale_monthly: { trialDays: 7, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: PLANS_BY_KEY.scale.monthlyPrice, currencyCode: "USD", interval: BillingInterval.Every30Days }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: OVERAGE_TERMS }] },
+    scale_annual: { trialDays: 7, replacementBehavior: BillingReplacementBehavior.ApplyImmediately, lineItems: [{ amount: PLANS_BY_KEY.scale.annualPrice, currencyCode: "USD", interval: BillingInterval.Annual }, { amount: 0.01, currencyCode: "USD", interval: BillingInterval.Usage, terms: OVERAGE_TERMS }] },
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }

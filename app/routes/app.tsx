@@ -9,25 +9,15 @@ import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
 import {
   extractUsageLineItemId,
+  PAID_PLAN_KEYS,
   syncShopifyMerchantToSupabase,
   type ActiveSubscriptionSnapshot,
 } from "../lib/shopify-billing.server";
 import {
-  ONBOARDING_ROUTE_BY_STEP,
   getOnboardingState,
+  onboardingRouteForStep,
   preserveShopifyQuery,
 } from "../lib/onboarding.server";
-
-const PAID_BILLING_PLANS = [
-  "starter_monthly",         "starter_annual",
-  "launch_monthly",          "launch_annual",
-  "growth_monthly",          "growth_annual",
-  "growth_plus_monthly",     "growth_plus_annual",
-  "pro_monthly",             "pro_annual",
-  "pro_plus_monthly",        "pro_plus_annual",
-  "enterprise_monthly",      "enterprise_annual",
-  "enterprise_plus_monthly", "enterprise_plus_annual",
-] as const;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing, session, admin } = await authenticate.admin(request);
@@ -44,12 +34,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Onboarding gate — new installs walk through /app/onboarding/* before
   // anything else. Existing merchants have onboarding_step='complete' (set by
   // the 20260514_onboarding_steps.sql migration), so this is a no-op for them.
-  // eslint-disable-next-line no-undef
-  if (!isOnboardingRoute && !isBillingRoute && process.env.SKIP_BILLING !== "true") {
+  if (!isOnboardingRoute && !isBillingRoute) {
     try {
       const { step } = await getOnboardingState(session.shop);
-      if (step === "welcome" || step === "activate_widget" || step === "configure") {
-        throw redirect(`${ONBOARDING_ROUTE_BY_STEP[step]}${preserveShopifyQuery(url)}`);
+      const onboardingRoute = onboardingRouteForStep(step);
+      if (onboardingRoute) {
+        throw redirect(`${onboardingRoute}${preserveShopifyQuery(url)}`);
       }
     } catch (err) {
       if (err instanceof Response) throw err;
@@ -93,7 +83,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Always check Shopify for the current active subscription.
     // This single check handles: initial activation, plan changes, and resilient sync.
     try {
-      const billingCheck = await billing.check({ plans: [...PAID_BILLING_PLANS] });
+      const billingCheck = await billing.check({ plans: [...PAID_PLAN_KEYS] });
       const shopifySub = billingCheck?.appSubscriptions?.[0] as ActiveSubscriptionSnapshot | undefined;
 
       if (shopifySub?.name) {

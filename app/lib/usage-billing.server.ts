@@ -26,6 +26,15 @@ export type PageContext = {
   in_catalog?: boolean | null;
 } | null | undefined;
 
+// entry_source values mirror the CHECK constraint added in 20260524_inline_tryon_button.sql.
+// 'unknown' is intentionally allowed so we don't drop events from older widget
+// versions that haven't been updated to tag the source.
+export type EntrySource =
+  | "inline_button"
+  | "floating_widget"
+  | "preview_popup"
+  | "unknown";
+
 export async function checkAndRecordUsage(
   storeSlug: string,
   success: boolean = true,
@@ -33,6 +42,7 @@ export async function checkAndRecordUsage(
   variantId?: string | null,
   sessionId?: string | null,
   pageContext?: PageContext,
+  entrySource?: EntrySource | null,
 ): Promise<UsageCheckResult> {
   try {
     const { data, error } = await supabaseAdmin.rpc("record_tryon_event", {
@@ -45,6 +55,7 @@ export async function checkAndRecordUsage(
       p_page_path: pageContext?.path ?? null,
       p_page_handle: pageContext?.handle ?? null,
       p_page_in_catalog: pageContext?.in_catalog ?? null,
+      p_entry_source: entrySource ?? null,
     });
 
     if (error) {

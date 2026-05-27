@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "./supabase.server";
+import { PRICING_PLANS, type PricingPlan } from "./pricing-plans";
 
 // ─── Plan Config ──────────────────────────────────────────────────────────────
 
@@ -12,52 +13,53 @@ export type PlanMeta = {
   planId: string;
 };
 
+const PLAN_IDS: Record<PricingPlan["key"], string> = {
+  starter: "acf413dc-bcb0-484a-b914-2d6f6491eb39",
+  launch: "75fa2215-7008-4242-aef5-40aa2b278968",
+  growth: "48ce4579-3523-45e1-9cc5-7f2bb0134073",
+  scale: "6c203206-7f01-4ca2-b1f2-fabda7a6306f",
+};
+
 const PLAN_CONFIG: Record<string, PlanMeta> = {
-  custom_distribution:     { displayName: "Custom Plan",      price: 0,         interval: "month", includedTryons: parseInt(process.env.DEFAULT_INCLUDED_TRYONS || "500", 10), planId: "custom-dist-00000000-0000-0000-0000" },
-  developer_free:          { displayName: "Developer Free",   price: 0,         interval: "month", includedTryons: 9999,  planId: "a7d8292a-b720-418c-9de7-70191bc9969d" },
-  ello_free:               { displayName: "Ello Free",        price: 0,         interval: "month", includedTryons: 10,    planId: "ab69eb9e-648c-4777-a6f6-6482f8b780a7" },
-  starter_monthly:         { displayName: "Ello Starter",     price: 97,        interval: "month", includedTryons: 150,   planId: "acf413dc-bcb0-484a-b914-2d6f6491eb39" },
-  starter_annual:          { displayName: "Ello Starter",     price: 1047.60,   interval: "year",  includedTryons: 150,   planId: "acf413dc-bcb0-484a-b914-2d6f6491eb39" },
-  launch_monthly:          { displayName: "Ello Launch",      price: 149,       interval: "month", includedTryons: 400,   planId: "75fa2215-7008-4242-aef5-40aa2b278968" },
-  launch_annual:           { displayName: "Ello Launch",      price: 1609.20,   interval: "year",  includedTryons: 400,   planId: "75fa2215-7008-4242-aef5-40aa2b278968" },
-  growth_monthly:          { displayName: "Ello Growth",      price: 172,       interval: "month", includedTryons: 750,   planId: "48ce4579-3523-45e1-9cc5-7f2bb0134073" },
-  growth_annual:           { displayName: "Ello Growth",      price: 1857.60,   interval: "year",  includedTryons: 750,   planId: "48ce4579-3523-45e1-9cc5-7f2bb0134073" },
-  growth_plus_monthly:     { displayName: "Ello Growth+",     price: 289,       interval: "month", includedTryons: 1800,  planId: "aa335388-c6f9-4d9d-949c-9a8ee689c5ca" },
-  growth_plus_annual:      { displayName: "Ello Growth+",     price: 3121.20,   interval: "year",  includedTryons: 1800,  planId: "aa335388-c6f9-4d9d-949c-9a8ee689c5ca" },
-  pro_monthly:             { displayName: "Ello Pro",         price: 647,       interval: "month", includedTryons: 4000,  planId: "6c203206-7f01-4ca2-b1f2-fabda7a6306f" },
-  pro_annual:              { displayName: "Ello Pro",         price: 6987.60,   interval: "year",  includedTryons: 4000,  planId: "6c203206-7f01-4ca2-b1f2-fabda7a6306f" },
-  pro_plus_monthly:        { displayName: "Pro Plus",         price: 1149,      interval: "month", includedTryons: 9000,  planId: "4d6cd330-4788-4911-ac72-c7e741b53c54" },
-  pro_plus_annual:         { displayName: "Pro Plus",         price: 12409.20,  interval: "year",  includedTryons: 9000,  planId: "4d6cd330-4788-4911-ac72-c7e741b53c54" },
-  enterprise_monthly:      { displayName: "Ello Enterprise",  price: 1897,      interval: "month", includedTryons: 13000, planId: "f5bc29c9-e69d-4e46-8442-5d8adb66e11e" },
-  enterprise_annual:       { displayName: "Ello Enterprise",  price: 20487.60,  interval: "year",  includedTryons: 13000, planId: "f5bc29c9-e69d-4e46-8442-5d8adb66e11e" },
-  enterprise_plus_monthly: { displayName: "Ello Enterprise+", price: 5197,      interval: "month", includedTryons: 25000, planId: "b4309e55-2a93-4d12-8185-ea4c8fd5841f" },
-  enterprise_plus_annual:  { displayName: "Ello Enterprise+", price: 56127.60,  interval: "year",  includedTryons: 25000, planId: "b4309e55-2a93-4d12-8185-ea4c8fd5841f" },
+  custom_distribution: { displayName: "Custom Plan", price: 0, interval: "month", includedTryons: parseInt(process.env.DEFAULT_INCLUDED_TRYONS || "500", 10), planId: "custom-dist-00000000-0000-0000-0000" },
+  developer_free: { displayName: "Developer Free", price: 0, interval: "month", includedTryons: 9999, planId: "a7d8292a-b720-418c-9de7-70191bc9969d" },
+  ello_free: { displayName: "Ello Free", price: 0, interval: "month", includedTryons: 10, planId: "ab69eb9e-648c-4777-a6f6-6482f8b780a7" },
+  ...Object.fromEntries(
+    PRICING_PLANS.flatMap((plan) => [
+      [
+        `${plan.key}_monthly`,
+        {
+          displayName: `Ello ${plan.displayName}`,
+          price: plan.monthlyPrice,
+          interval: "month",
+          includedTryons: plan.includedTryons,
+          planId: PLAN_IDS[plan.key],
+        },
+      ],
+      [
+        `${plan.key}_annual`,
+        {
+          displayName: `Ello ${plan.displayName}`,
+          price: plan.annualPrice,
+          interval: "year",
+          includedTryons: plan.includedTryons,
+          planId: PLAN_IDS[plan.key],
+        },
+      ],
+    ]),
+  ) as Record<string, PlanMeta>,
 };
 
 export function getPlanConfig(): Record<string, PlanMeta> {
   return PLAN_CONFIG;
 }
 
-export const PAID_PLAN_KEYS = [
-  "starter_monthly",
-  "starter_annual",
-  "launch_monthly",
-  "launch_annual",
-  "growth_monthly",
-  "growth_annual",
-  "growth_plus_monthly",
-  "growth_plus_annual",
-  "pro_monthly",
-  "pro_annual",
-  "pro_plus_monthly",
-  "pro_plus_annual",
-  "enterprise_monthly",
-  "enterprise_annual",
-  "enterprise_plus_monthly",
-  "enterprise_plus_annual",
-] as const;
+export type PaidPlanKey = `${PricingPlan["key"]}_${"monthly" | "annual"}`;
 
-export type PaidPlanKey = typeof PAID_PLAN_KEYS[number];
+export const PAID_PLAN_KEYS = PRICING_PLANS.flatMap((plan) => [
+  `${plan.key}_monthly`,
+  `${plan.key}_annual`,
+]) as PaidPlanKey[];
 
 export function isPaidPlanKey(planKey: string | null | undefined): planKey is PaidPlanKey {
   return Boolean(planKey && PAID_PLAN_KEYS.includes(planKey as PaidPlanKey));

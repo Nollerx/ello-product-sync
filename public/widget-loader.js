@@ -1,11 +1,80 @@
 (function () {
-    // Prevent duplicate initialization
+    // Debug logger — silenced in production. Flip window.__ELLO_DEBUG__ = true in
+    // your own browser to see verbose logs. console.warn / console.error stay live.
+    var elloLog = function () {
+        if (typeof window !== 'undefined' && window.__ELLO_DEBUG__ === true) {
+            console.log.apply(console, arguments);
+        }
+    };
+
+    // ─── window.Ello public API ─────────────────────────────────────────────
+    // Multi-loader race protection: when both blocks (floating + inline) are
+    // installed on the same page, two copies of THIS script can execute in
+    // sequence. Each IIFE has its own closure with its own __elloInlineQueue +
+    // __elloDrained. If we naively let the second IIFE overwrite window.Ello,
+    // window.Ello.openTryOn closes over the SECOND IIFE's __elloDrained —
+    // which never flips to true because widget-main.js's load callback fires
+    // on the FIRST IIFE's __elloTryFlush.
+    //
+    // Fix: keep window.Ello shared across IIFE instances by attaching the
+    // queue to window directly, and have openTryOn forward whenever
+    // elloOpenTryOnFromInline exists on window (no closure-local "drained"
+    // flag to get out of sync between loaders).
+    window.__elloInlineQueue = window.__elloInlineQueue || [];
+
+    function __elloTryFlush() {
+        if (typeof window.elloOpenTryOnFromInline !== 'function') return;
+        while (window.__elloInlineQueue.length) {
+            try { window.elloOpenTryOnFromInline(window.__elloInlineQueue.shift()); }
+            catch (e) { console.error('[Ello] openTryOn from queue failed:', e); }
+        }
+    }
+
+    // Adopt any pre-queue created by the inline-button block's shim. The shim
+    // runs synchronously when the block renders — possibly before this script.
+    if (window.Ello && Array.isArray(window.Ello.__elloPreQueue)) {
+        window.__elloInlineQueue = window.__elloInlineQueue.concat(window.Ello.__elloPreQueue);
+        window.Ello.__elloPreQueue.length = 0;
+    } else if (Array.isArray(window.__elloPreQueue)) {
+        window.__elloInlineQueue = window.__elloInlineQueue.concat(window.__elloPreQueue);
+        window.__elloPreQueue.length = 0;
+    }
+
+    // Only install the real Ello API once — subsequent loader executions reuse
+    // the first one's queue and forwarding function via window-level state.
+    if (typeof window.Ello?.__drain !== 'function') {
+        window.Ello = {
+            openTryOn: function (ctx) {
+                // Tag the surface so widget-main.js can attribute the event correctly
+                // even if the caller forgot to pass source.
+                if (ctx && !ctx.source) ctx.source = 'inline_button';
+                // Check window-level binding at call time — survives multi-loader races.
+                if (typeof window.elloOpenTryOnFromInline === 'function') {
+                    window.elloOpenTryOnFromInline(ctx);
+                } else {
+                    window.__elloInlineQueue.push(ctx);
+                    // User explicitly asked for try-on — don't wait for requestIdleCallback.
+                    if (typeof window.__elloKickInitNow === 'function') {
+                        window.__elloKickInitNow();
+                    }
+                }
+            },
+            __drain: __elloTryFlush,
+            __queueDepth: function () { return window.__elloInlineQueue.length; }
+        };
+    }
+
+    // Prevent duplicate initialization (must come AFTER window.Ello setup
+    // so a second loader script doesn't blow away the queue).
     if (document.getElementById("virtual-tryon-widget-container")) {
-        console.log("⚠️ Ello Widget already loaded - skipping duplicate initialization");
+        elloLog("⚠️ Ello Widget already loaded - skipping duplicate initialization");
+        // If widget-main.js already loaded in the first invocation, drain any
+        // queue items that landed between then and now.
+        __elloTryFlush();
         return;
     }
 
-    console.log("✅ Ello Widget Loader v2.2 - Environment-aware");
+    elloLog("✅ Ello Widget Loader v2.7 - Three-surface placement (inline + floating + preview)");
 
     // Derive WIDGET_BASE_URL from this script's own src — automatically matches
     // whichever Cloud Run (staging or production) served the file.
@@ -13,7 +82,7 @@
     const _loaderScript = document.currentScript;
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         WIDGET_BASE_URL = "http://localhost:5173";
-        console.log("🔧 Ello Widget: Running in Local Development Mode");
+        elloLog("🔧 Ello Widget: Running in Local Development Mode");
     } else if (_loaderScript && _loaderScript.src) {
         try {
             WIDGET_BASE_URL = new URL(_loaderScript.src).origin;
@@ -23,13 +92,14 @@
     } else {
         WIDGET_BASE_URL = "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app";
     }
-    console.log("[Ello Loader] WIDGET_BASE_URL:", WIDGET_BASE_URL);
+    elloLog("[Ello Loader] WIDGET_BASE_URL:", WIDGET_BASE_URL);
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
-    // Version for caching — update this when major changes occur to force refresh
-    // Also acts as the localStorage cache version key (mismatch invalidates cached config)
-    const WIDGET_VERSION = '2.4.5';
-    const CONFIG_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+    // Version string used to cache-bust widget-main.js across deploys.
+    const WIDGET_VERSION = '2.7.3';
+    // Legacy localStorage cache prefix — older versions stored config here.
+    // We sweep any leftover entry on load so returning visitors see fresh config.
+    const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
 
     // Get store configuration from script tag or window context
     const currentScript = document.currentScript;
@@ -64,11 +134,11 @@
     window.ELLO_SHOP = shop; // NEW: Strict shop domain for bootstrap/tracking
 
     // Fetch Supabase config from the server (env-aware — staging vs production auto-resolved)
-    console.log("[Ello Loader] Fetching supabase config from:", WIDGET_BASE_URL + "/api/widget-config");
+    elloLog("[Ello Loader] Fetching supabase config from:", WIDGET_BASE_URL + "/api/widget-config");
     let supabaseConfigPromise = fetch(`${WIDGET_BASE_URL}/api/widget-config`, { credentials: 'omit' })
         .then(function (r) { return r.json(); })
         .then(function (cfg) {
-            console.log("[Ello Loader] Supabase config loaded:", cfg.supabaseUrl);
+            elloLog("[Ello Loader] Supabase config loaded:", cfg.supabaseUrl);
             window.ELLO_SUPABASE_CONFIG = cfg;
             return cfg;
         })
@@ -83,9 +153,25 @@
             return fallback;
         });
 
-    // ─── Store config cache (localStorage, 1hr TTL, stale-while-revalidate) ──
-    // Cuts Supabase egress: cached page-loads skip the get_widget_config RPC entirely.
-    // Version-keyed: bumping WIDGET_VERSION invalidates all cached configs.
+    // ─── Store config loading ───────────────────────────────────────────
+    // Caching strategy (v2.6.0):
+    //   1. Read localStorage synchronously — apply widget config instantly with
+    //      zero network wait on repeat visits. Skipped on page reload and when
+    //      ?ello_preview=1 is in the URL.
+    //   2. Always background-fetch the resolved endpoint (/api/widget-config-resolved)
+    //      which proxies the Supabase RPC and adds Cache-Control: max-age=30,
+    //      stale-while-revalidate=300. Fresh data is persisted to localStorage
+    //      for the next pageview.
+    //   3. Page-reload detection (any of Ctrl+R / Cmd+R / hard refresh) bypasses
+    //      localStorage AND adds a cache-bust query param so the merchant sees
+    //      fresh config on refresh — this is the primary "merchant edited something"
+    //      escape hatch.
+    //   4. ?ello_preview=1 (used by dashboard "View store" link) triggers the same
+    //      bypass for dashboard-driven previews.
+    //   5. If the new resolved endpoint errors, falls back to the legacy direct
+    //      Supabase RPC call (preserves previous behavior on infra failure).
+    // Merchant changes propagate within ~30s for fresh shoppers and instantly on
+    // any merchant-side refresh. DB load drops ~60% from amortized session reads.
     function buildConfigFromRow(storeConfig) {
         return {
             storeSlug: storeConfig.store_slug || storeSlug,
@@ -103,7 +189,21 @@
             desktopPreviewDelay: storeConfig.preview_delay_seconds || 3,
             previewTheme: storeConfig.preview_theme || 'light',
             widgetPosition: storeConfig.widget_position === 'left' ? 'left' : 'right',
-            widgetVisibilityMode: storeConfig.widget_visibility_mode === 'smart' ? 'smart' : 'always'
+            widgetVisibilityMode: storeConfig.widget_visibility_mode === 'smart' ? 'smart' : 'always',
+            // ─── Three-surface placement settings ───────────────────────────
+            // inline_button_enabled is a hard kill switch — dashboard-side off
+            // even hides the button when the merchant has dragged the block in.
+            // The seven new columns originate in vto_stores via get_widget_config.
+            inlineButtonEnabled: storeConfig.inline_button_enabled !== false,
+            inlineButtonText: storeConfig.inline_button_text || 'Try On',
+            inlineButtonColor: storeConfig.inline_button_color || null,
+            inlineButtonTextColor: storeConfig.inline_button_text_color || null,
+            inlineButtonHideWhenOos: storeConfig.inline_button_hide_when_oos === true,
+            // Default-off on PDP for new installs (inline button handles PDPs).
+            // Migration preserves true for any pre-existing merchant.
+            floatingWidgetPdpEnabled: storeConfig.floating_widget_pdp_enabled === true,
+            // Default-on off-PDP — bubble is still the discovery tool for home/collections.
+            floatingWidgetNonPdpEnabled: storeConfig.floating_widget_non_pdp_enabled !== false
         };
     }
 
@@ -124,7 +224,15 @@
             desktopPreviewDelay: 3,
             previewTheme: 'light',
             widgetPosition: 'right',
-            widgetVisibilityMode: 'always'
+            widgetVisibilityMode: 'always',
+            // Three-surface defaults match the "new install" column in the plan.
+            inlineButtonEnabled: true,
+            inlineButtonText: 'Try On',
+            inlineButtonColor: null,
+            inlineButtonTextColor: null,
+            inlineButtonHideWhenOos: false,
+            floatingWidgetPdpEnabled: false,
+            floatingWidgetNonPdpEnabled: true
         };
     }
 
@@ -135,69 +243,152 @@
             name: cfg.storeName,
             shopDomain: cfg.shopDomain,
         };
-    }
-
-    function getCachedConfigRow(cacheKey) {
+        // Notify the inline-button block (and anything else listening) so it
+        // can restyle from dashboard config now that ELLO_STORE_CONFIG is set.
+        // Fires on every applyConfig — both the localStorage fast-path and the
+        // fresh fetch — so the button updates instantly when merchant changes
+        // settings and propagates within ~30s on the next pageview.
         try {
-            const raw = window.localStorage.getItem(cacheKey);
-            if (!raw) return null;
-            const parsed = JSON.parse(raw);
-            if (!parsed || parsed.v !== WIDGET_VERSION || !parsed.ts || !parsed.config) return null;
-            return parsed;
+            window.dispatchEvent(new CustomEvent('ello:config-resolved', { detail: cfg }));
         } catch (e) {
-            return null;
+            // CustomEvent constructor not supported in some legacy browsers —
+            // the inline block has its own readiness polling as a backstop.
         }
     }
 
-    function setCachedConfigRow(cacheKey, configRow) {
+    // Sweep any leftover config cache from earlier widget versions so returning
+    // visitors don't accidentally render stale colors/positions on first load
+    // after the upgrade.
+    function clearLegacyConfigCache(cacheKeyId) {
         try {
-            window.localStorage.setItem(cacheKey, JSON.stringify({
-                v: WIDGET_VERSION,
-                ts: Date.now(),
-                config: configRow,
-            }));
+            window.localStorage.removeItem(LEGACY_CONFIG_CACHE_PREFIX + cacheKeyId);
         } catch (e) {
-            // Quota / private mode / disabled storage — silently skip
+            // Private mode / disabled storage — nothing to clean up anyway
         }
     }
 
-    // Create a promise to handle store configuration loading
+    // Create a promise to handle store configuration loading with smart caching
     let storeConfigPromise = new Promise((resolve) => {
-        function fetchStoreConfiguration() {
+        const cacheKeyId = shop || storeSlug;
+        const SHOP_KEY = 'ello_config_' + cacheKeyId;
+
+        // Sweep any leftover cache from earlier widget versions on every load.
+        clearLegacyConfigCache(cacheKeyId);
+
+        // ─── Detect when we should skip localStorage and force-fresh fetch ───
+        // Page reload (Ctrl+R, Cmd+R, hard refresh Ctrl+Shift+R) → merchant likely
+        // wants fresh data. ?ello_preview=1 → dashboard preview link, force-fresh.
+        let isReload = false;
+        try {
+            const navEntries = performance.getEntriesByType?.('navigation');
+            isReload = navEntries?.[0]?.type === 'reload';
+        } catch (e) {
+            // Legacy Performance.navigation API fallback for older browsers
+            try { isReload = performance.navigation?.type === 1; } catch (_) {}
+        }
+        let isPreview = false;
+        try {
+            isPreview = new URLSearchParams(window.location.search).get('ello_preview') === '1';
+        } catch (e) {}
+        const shouldBypassCache = isReload || isPreview;
+        elloLog('[Ello Loader] Cache strategy:', { isReload, isPreview, shouldBypassCache });
+
+        // ─── Promise resolution guard — resolve exactly once ─────────────────
+        let promiseResolved = false;
+        function applyAndResolveOnce(row) {
+            applyConfig(buildConfigFromRow(row));
+            if (!promiseResolved) {
+                promiseResolved = true;
+                resolve(window.ELLO_STORE_CONFIG);
+            }
+        }
+
+        function persistToLocalStorage(row, version) {
+            try {
+                window.localStorage.setItem(SHOP_KEY, JSON.stringify({
+                    config: row,
+                    version: version,
+                    cachedAt: Date.now()
+                }));
+            } catch (e) {
+                // Private mode / quota exceeded — non-fatal, just no persistence
+            }
+        }
+
+        function buildResolvedUrl(cacheBust) {
+            const params = new URLSearchParams();
+            const explicitSlug = currentScript?.dataset?.storeSlug || currentScript?.dataset?.storeId;
+            if (explicitSlug)      params.set('store_slug', storeSlug);
+            else if (shop)         params.set('shop', shop);
+            else                   params.set('store_slug', storeSlug);
+            if (cacheBust)         params.set('_t', String(Date.now()));
+            return `${WIDGET_BASE_URL}/api/widget-config-resolved?${params.toString()}`;
+        }
+
+        // ─── Fast path: apply localStorage instantly (if not reload/preview) ──
+        let cachedVersion = -1;
+        if (!shouldBypassCache) {
+            try {
+                const raw = window.localStorage.getItem(SHOP_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed?.config) {
+                        cachedVersion = Number(parsed.version) || 0;
+                        elloLog('[Ello Loader] Using cached config v' + cachedVersion);
+                        applyAndResolveOnce(parsed.config);
+                    }
+                }
+            } catch (e) {
+                elloLog('[Ello Loader] localStorage read failed:', e);
+            }
+        }
+
+        // ─── Always background-fetch from the resolved endpoint ──────────────
+        fetch(buildResolvedUrl(shouldBypassCache), {
+            method: 'GET',
+            credentials: 'omit',
+            cache: shouldBypassCache ? 'reload' : 'default',
+        })
+            .then(function (r) {
+                if (!r.ok) throw new Error('Resolved endpoint HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function (payload) {
+                if (!payload || !payload.config) {
+                    if (!promiseResolved) {
+                        applyConfig(buildDefaultConfig());
+                        elloLog('⚠️ Store not found, using default configuration');
+                        promiseResolved = true;
+                        resolve(window.ELLO_STORE_CONFIG);
+                    }
+                    return;
+                }
+                const freshVersion = Number(payload.version) || 0;
+                if (cachedVersion === freshVersion) {
+                    elloLog('[Ello Loader] Cache already current (v' + freshVersion + ')');
+                    return;
+                }
+                elloLog('[Ello Loader] Persisting fresh config v' + freshVersion + ' (was v' + cachedVersion + ')');
+                persistToLocalStorage(payload.config, freshVersion);
+                applyAndResolveOnce(payload.config);
+            })
+            .catch(function (err) {
+                console.warn('[Ello Loader] Resolved endpoint failed, using direct RPC fallback:', err);
+                fetchStoreConfigurationLegacy();
+            });
+
+        // ─── Legacy fallback: direct Supabase RPC (preserves prior behavior) ──
+        // Only invoked if the new resolved endpoint errors. Mirrors the original
+        // implementation so any Cloud Run outage still lets widgets boot.
+        function fetchStoreConfigurationLegacy() {
             supabaseConfigPromise.then(function (sbConfig) {
                 let rpcBody = {};
-                let cacheKeyId;
                 const explicitSlug = currentScript?.dataset?.storeSlug || currentScript?.dataset?.storeId;
+                if (explicitSlug)      rpcBody = { p_store_slug: storeSlug };
+                else if (shop)         rpcBody = { p_shop_domain: shop };
+                else                   rpcBody = { p_store_slug: storeSlug };
 
-                if (explicitSlug) {
-                    rpcBody = { p_store_slug: storeSlug };
-                    cacheKeyId = storeSlug;
-                } else if (shop) {
-                    rpcBody = { p_shop_domain: shop };
-                    cacheKeyId = shop;
-                } else {
-                    rpcBody = { p_store_slug: storeSlug };
-                    cacheKeyId = storeSlug;
-                }
-                const cacheKey = 'ello_widget_config_' + cacheKeyId;
-
-                // ── Cache check ─────────────────────────────────────────
-                const cached = getCachedConfigRow(cacheKey);
-                let resolved = false;
-                if (cached) {
-                    const ageMs = Date.now() - cached.ts;
-                    applyConfig(buildConfigFromRow(cached.config));
-                    resolve(window.ELLO_STORE_CONFIG);
-                    resolved = true;
-                    if (ageMs < CONFIG_CACHE_TTL_MS) {
-                        console.log('[Ello Loader] Using cached config (fresh, age=' + Math.round(ageMs / 1000) + 's)');
-                        return; // fresh — no network
-                    }
-                    console.log('[Ello Loader] Using cached config (stale, age=' + Math.round(ageMs / 1000) + 's), revalidating in background');
-                }
-
-                const url = `${sbConfig.supabaseUrl}/rest/v1/rpc/get_widget_config`;
-                fetch(url, {
+                fetch(`${sbConfig.supabaseUrl}/rest/v1/rpc/get_widget_config`, {
                     method: 'POST',
                     credentials: 'omit',
                     headers: {
@@ -208,38 +399,32 @@
                     body: JSON.stringify(rpcBody)
                 })
                     .then(function (response) {
-                        if (!response.ok) throw new Error('HTTP error! status: ' + response.status);
+                        if (!response.ok) throw new Error('Legacy RPC HTTP ' + response.status);
                         return response.json();
                     })
                     .then(function (data) {
                         if (data && data.length > 0) {
                             const row = data[0];
-                            setCachedConfigRow(cacheKey, row);
-                            if (!resolved) {
-                                applyConfig(buildConfigFromRow(row));
-                                resolve(window.ELLO_STORE_CONFIG);
-                            }
-                            // If already resolved from cache, the in-memory config stays as the
-                            // cached version for this pageview; next pageview reads the fresh cache.
-                        } else {
-                            if (!resolved) {
-                                applyConfig(buildDefaultConfig());
-                                console.log('⚠️ Store not found in Supabase vto_stores, using default configuration:', window.ELLO_STORE_CONFIG);
-                                resolve(window.ELLO_STORE_CONFIG);
-                            }
+                            const version = Number(row.config_version) || 0;
+                            persistToLocalStorage(row, version);
+                            applyAndResolveOnce(row);
+                        } else if (!promiseResolved) {
+                            applyConfig(buildDefaultConfig());
+                            elloLog('⚠️ Store not found via legacy RPC, using default configuration');
+                            promiseResolved = true;
+                            resolve(window.ELLO_STORE_CONFIG);
                         }
                     })
                     .catch(function (error) {
-                        console.error('❌ Error fetching store configuration:', error);
-                        if (!resolved) {
+                        console.error('❌ Both resolved endpoint and legacy RPC failed:', error);
+                        if (!promiseResolved) {
                             applyConfig(buildDefaultConfig());
+                            promiseResolved = true;
                             resolve(window.ELLO_STORE_CONFIG);
                         }
                     });
             });
         }
-
-        fetchStoreConfiguration();
     });
 
     // Helper to call widget-bootstrap edge function
@@ -303,7 +488,7 @@
 
             // Run bootstrap in parallel
             // pass strict shop if available, else fall back to legacy shopDomain
-            console.log("Loader: bootstrapping for shop:", shop || shopDomain);
+            elloLog("Loader: bootstrapping for shop:", shop || shopDomain);
             const bootstrapPromise = fetchBootstrap(shop || shopDomain).catch((e) => {
                 console.warn("⚠️ bootstrap failed (continuing legacy)", e);
                 return null;
@@ -387,11 +572,19 @@
             if (widgetEl && window.ELLO_STORE_CONFIG) {
                 const cfg = window.ELLO_STORE_CONFIG;
                 const inlineStyles = [];
+                const onPdp = window.location.pathname.includes('/products/');
 
-                // Smart visibility — on a PDP we can't yet know if the product is
-                // in the catalog (catalog loads async), so born-hide. Off-PDP
-                // pages (home, collections, cart) are safe to show immediately.
-                if (cfg.widgetVisibilityMode === 'smart' && window.location.pathname.includes('/products/')) {
+                // Three-surface placement: respect the per-page-type kill switches.
+                // PDP-off / non-PDP-off both hide the bubble on first paint so the
+                // shopper never sees it flicker in before JS reads the config.
+                if (onPdp && cfg.floatingWidgetPdpEnabled === false) {
+                    inlineStyles.push('display: none !important');
+                } else if (!onPdp && cfg.floatingWidgetNonPdpEnabled === false) {
+                    inlineStyles.push('display: none !important');
+                } else if (cfg.widgetVisibilityMode === 'smart' && onPdp) {
+                    // Legacy smart-visibility (kept for back-compat) — born-hide
+                    // on PDP until the catalog loads and confirms the product is
+                    // enabled. Only runs when floating PDP itself is on.
                     inlineStyles.push('display: none !important');
                 }
 
@@ -419,6 +612,11 @@
                 window.initializeWidget();
             }
 
+            // Drain any clicks the inline button queued before widget-main.js
+            // was ready. window.elloOpenTryOnFromInline is defined inside
+            // widget-main.js — it exists by this line.
+            __elloTryFlush();
+
         } catch (error) {
             console.error("Virtual Try-On Widget failed to load:", error);
             container.innerHTML = '<p style="color: red;">Widget failed to load</p>';
@@ -428,10 +626,26 @@
     // Defer initialization until the browser is idle to protect merchant LCP.
     // The widget is a floating button — it doesn't need to render before the page's
     // main content, so yielding to the browser here is safe.
+    //
+    // __elloKickInitNow lets the inline button short-circuit this wait when a
+    // shopper has explicitly clicked Try On — no point yielding to idle when
+    // the user is already waiting on us. Idempotent; safe to call multiple times.
+    let __initStarted = false;
+    let __idleHandle = null;
+    function __elloStartInit() {
+        if (__initStarted) return;
+        __initStarted = true;
+        if (__idleHandle != null && typeof cancelIdleCallback === 'function') {
+            try { cancelIdleCallback(__idleHandle); } catch (e) { /* noop */ }
+        }
+        initializeWidget();
+    }
+    window.__elloKickInitNow = __elloStartInit;
+
     if (typeof requestIdleCallback === 'function') {
-        requestIdleCallback(() => initializeWidget(), { timeout: 3000 });
+        __idleHandle = requestIdleCallback(__elloStartInit, { timeout: 3000 });
     } else {
         // Safari fallback — requestIdleCallback not supported
-        setTimeout(initializeWidget, 0);
+        setTimeout(__elloStartInit, 0);
     }
 })();

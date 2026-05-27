@@ -48,10 +48,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const url = new URL(request.url);
-  // Both "continue" and "skip" advance to billing; skip simply leaves
+  // Both "continue" and "skip" advance to placements; skip simply leaves
   // widget_enabled_at null so the merchant can come back to enable it later.
-  await setOnboardingStep(session.shop, "billing");
-  return redirect(`/app/billing${preserveShopifyQuery(url)}`);
+  await setOnboardingStep(session.shop, "placements");
+  return redirect(`/app/onboarding/placements${preserveShopifyQuery(url)}`);
 };
 
 export default function OnboardingActivateWidget() {
@@ -90,8 +90,8 @@ export default function OnboardingActivateWidget() {
       >
         <Box>
           <BlockStack gap="200">
-            <Text as="p" variant="bodySm" tone="subdued">Step 3 of 4</Text>
-            <ProgressBar progress={75} size="small" />
+            <Text as="p" variant="bodySm" tone="subdued">Step 3 of 5</Text>
+            <ProgressBar progress={60} size="small" />
           </BlockStack>
         </Box>
 

@@ -15,6 +15,15 @@
 {% endschema %}
 
 <!-- Ello Virtual Try-On Widget (Injected via Theme Extension) -->
+
+<!-- Warm DNS + TLS connections in parallel with HTML parsing so the first
+     widget asset request doesn't pay handshake latency. crossorigin is
+     required for preconnects that will be used for fetch/CORS requests. -->
+<link rel="preconnect" href="{{ block.settings.backend_url }}" crossorigin>
+<link rel="preconnect" href="https://rwmvgwnebnsqcyhhurti.supabase.co" crossorigin>
+<link rel="dns-prefetch" href="{{ block.settings.backend_url }}">
+<link rel="dns-prefetch" href="https://rwmvgwnebnsqcyhhurti.supabase.co">
+
 <script
   src="{{ block.settings.backend_url }}/widget-loader.js"
   data-shop="{{ shop.permanent_domain }}"

@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { supabaseAdmin } from "../lib/supabase.server";
+import { markWidgetEnabled } from "../lib/onboarding.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
     if (request.method === "OPTIONS") {
@@ -44,10 +45,17 @@ export async function action({ request }: ActionFunctionArgs) {
 
         console.log(`[Bootstrap] Fetching config for shop: ${shop}`);
 
+        // First widget call from this store means the merchant enabled the
+        // theme block. Stamp widget_enabled_at if not yet set — onboarding
+        // step 2 uses this to detect activation. Fire and forget.
+        markWidgetEnabled(shop).catch((err) =>
+            console.error("[Bootstrap] markWidgetEnabled failed (non-fatal):", err),
+        );
+
         // 2. Fetch Store Config from Supabase
         const { data: storeData, error: storeError } = await supabaseAdmin
             .from("vto_stores")
-            .select("store_slug, shop_domain, storefront_token, clothing_population_type, featured_item_id, quick_picks_ids, widget_primary_color, account_id")
+            .select("store_slug, shop_domain, storefront_token, clothing_population_type, featured_item_id, quick_picks_ids, widget_primary_color, minimized_color, widget_position, account_id")
             .or(`shop_domain.eq.${shop},store_slug.eq.${shop}`)
             .maybeSingle();
 
@@ -101,6 +109,8 @@ export async function action({ request }: ActionFunctionArgs) {
                     clothing_population_type: 'shopify',
                     store_slug: shop.replace('.myshopify.com', ''),
                     widget_primary_color: '#000000',
+                    minimized_color: '#000000',
+                    widget_position: 'right',
                     featured_item_id: null,
                     quick_picks_ids: [],
                     account_id: null,

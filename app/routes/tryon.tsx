@@ -29,6 +29,18 @@ export async function action({ request }: ActionFunctionArgs) {
         // 2. Check usage limits and record the try-on attempt
         //    pageContext: { type, path, handle, in_catalog } — sent by widget so the
         //    dashboard's Page-Type Breakdown can bucket each try-on by surface.
+        //    entrySource: 'inline_button' | 'floating_widget' | 'preview_popup' | 'unknown' —
+        //    which UI surface fired this try-on. Lets the dashboard A/B placements.
+        //    Defaults to null (RPC stores NULL) when widget version pre-dates the field.
+        const rawEntrySource = body.entrySource || body.entry_source;
+        const allowedSources = new Set([
+            "inline_button",
+            "floating_widget",
+            "preview_popup",
+            "unknown",
+        ]);
+        const entrySource = allowedSources.has(rawEntrySource) ? rawEntrySource : null;
+
         const usageResult = await checkAndRecordUsage(
             storeSlug,
             true,
@@ -36,6 +48,7 @@ export async function action({ request }: ActionFunctionArgs) {
             body.variantId || body.variant_id || null,
             body.sessionId || body.session_id || null,
             body.pageContext || null,
+            entrySource,
         );
 
         if (!usageResult.allowed) {

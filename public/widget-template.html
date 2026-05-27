@@ -1056,26 +1056,6 @@
             background: rgba(0, 0, 0, 0.95);
         }
 
-        .widget-preview.theme-dark .preview-progress-text {
-            color: #fff;
-        }
-
-        .widget-preview.theme-dark .preview-eta-text {
-            color: #9ca3af;
-        }
-
-        .widget-preview.theme-dark .preview-progress-track {
-            background: #333;
-            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);
-        }
-
-        .widget-preview.theme-dark .preview-progress-fill {
-            /* Light liquid metal for dark mode */
-            background: linear-gradient(90deg, #ffffff 0%, #d1d5db 25%, #f3f4f6 50%, #d1d5db 75%, #ffffff 100%);
-            background-size: 200% 100%;
-            box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
-        }
-
         @media (max-width: 1023px) {
             .widget-preview {
                 display: none !important;
@@ -1265,83 +1245,222 @@
             color: #000;
         }
 
-        /* Progress Overlay */
+        /* Rich try-on loading state */
         .preview-progress-overlay {
             position: absolute;
-            top: 0;
-            left: 0;
+            inset: 0;
             width: 100%;
             height: 100%;
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(5px);
             z-index: 20;
             display: none;
-            /* Flex when active */
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 15px;
             border-radius: 24px;
-            /* Matches parent widget-preview */
-            padding: 20px;
+            padding: 24px;
             text-align: center;
             animation: fadeIn 0.3s ease;
+            box-sizing: border-box;
         }
 
-        .preview-progress-text {
-            font-size: 14px;
-            font-weight: 600;
-            color: #333;
+        .widget-preview.preview-loading {
+            width: min(520px, calc(100vw - 40px)) !important;
+            min-height: 560px;
+            padding: 32px !important;
         }
 
-        .preview-eta-text {
-            font-size: 11px;
-            color: #888;
+        .tryon-generation-loader {
+            width: 100%;
+            max-width: 360px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            color: #111827;
         }
 
-        .preview-progress-track {
-            width: 100% !important;
-            height: 8px !important;
-            /* Taller */
-            background: #f3f4f6;
-            border-radius: 8px;
+        .tryon-generation-images {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        .tryon-generation-card {
+            width: 92px;
+            height: 118px;
+            border-radius: 14px;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
             overflow: hidden;
             position: relative;
-            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.08);
-            /* Inner depth */
-            display: block !important;
-            /* Force block to avoid flex shrink/grow issues */
-            flex: none !important;
-            max-width: 100% !important;
-            box-sizing: border-box !important;
+            flex: 0 0 auto;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
         }
 
-        .preview-progress-fill {
-            height: 100% !important;
-            display: block !important;
-            /* Premium dark gradient */
-            background: linear-gradient(90deg, #000000 0%, #1a1a1a 25%, #2d2d2d 50%, #1a1a1a 75%, #000000 100%);
-            background-size: 200% 100%;
-            border-radius: 8px;
-            width: 0%;
-            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            animation: loadingBarShimmer 2.5s ease-in-out infinite;
-            box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.1);
+        .tryon-generation-card.product-card {
+            transform: rotate(-4deg);
+        }
+
+        .tryon-generation-card.person-card {
+            transform: rotate(4deg);
+        }
+
+        .tryon-generation-card img {
+            width: 100%;
+            height: 100%;
+            display: block;
+            object-fit: cover;
+        }
+
+        .tryon-generation-combine {
+            width: 46px;
+            height: 46px;
+            border-radius: 50%;
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 8px 22px rgba(15, 23, 42, 0.14);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
             position: relative;
         }
 
-        .preview-progress-fill::after {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: linear-gradient(90deg,
-                    transparent 0%,
-                    rgba(255, 255, 255, 0.1) 50%,
-                    transparent 100%);
-            animation: loadingBarGlow 2s ease-in-out infinite;
+        .tryon-generation-combine-icon {
+            width: 22px;
+            height: 22px;
+            color: #111827;
+            animation: spin 1s linear infinite;
+        }
+
+        .tryon-generation-status {
+            min-height: 24px;
+            font-size: 20px;
+            font-weight: 700;
+            line-height: 1.2;
+            color: #000000;
+        }
+
+        .tryon-generation-progress {
+            width: 72%;
+            height: 6px;
+            margin-top: -6px;
+            background: #000000;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .tryon-generation-progress-fill {
+            width: 0%;
+            height: 100%;
+            border-radius: inherit;
+            background: #3B63D4;
+            transition: width 0.35s ease;
+        }
+
+        .tryon-generation-percent {
+            min-height: 18px;
+            margin-top: -10px;
+            font-size: 14px;
+            line-height: 1;
+            font-weight: 700;
+            color: #9ca3af;
+            text-align: center;
+        }
+
+        .tryon-generation-tip {
+            width: 100%;
+            min-height: 84px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 16px 18px;
+            border: 1px solid #e5e7eb;
+            border-radius: 14px;
+            background: rgba(249, 250, 251, 0.86);
+            box-sizing: border-box;
+        }
+
+        .tryon-generation-tip-label {
+            font-size: 11px;
+            line-height: 1;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            font-weight: 800;
+            color: #9ca3af;
+        }
+
+        .tryon-generation-tip-text {
+            min-height: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            line-height: 1.35;
+            font-weight: 600;
+            color: #4b5563;
+            text-align: center;
+            width: 100%;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-loader,
+        .theme-black .tryon-generation-loader {
+            color: #f9fafb;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-combine,
+        .theme-black .tryon-generation-combine {
+            background: #111827;
+            border-color: #374151;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-combine-icon,
+        .theme-black .tryon-generation-combine-icon {
+            color: #f9fafb;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-status,
+        .theme-black .tryon-generation-status {
+            color: #f9fafb;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-progress,
+        .theme-black .tryon-generation-progress {
+            background: #374151;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-progress-fill,
+        .theme-black .tryon-generation-progress-fill {
+            background: #f9fafb;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-card,
+        .theme-black .tryon-generation-card {
+            background: #1f2937;
+            border-color: #374151;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-tip,
+        .theme-black .tryon-generation-tip {
+            background: rgba(17, 24, 39, 0.9);
+            border-color: #374151;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-tip-text,
+        .theme-black .tryon-generation-tip-text {
+            color: #d1d5db;
+        }
+
+        .widget-preview.theme-dark .tryon-generation-tip-label,
+        .theme-black .tryon-generation-tip-label {
+            color: #9ca3af;
         }
 
         @keyframes fadeIn {
@@ -1468,6 +1587,7 @@
             color: #1a1a1a;
             /* Ensure proper flex layout for fixed buttons at bottom */
             min-height: 0;
+            position: relative;
         }
 
         /* Mobile: Ensure widget-content doesn't interfere with sticky positioning */
@@ -2865,8 +2985,13 @@
                 gap: 12px;
             }
 
-            .tryon-loading-bar {
-                height: 7px;
+            .tryon-loading-bar-container {
+                padding: 18px 14px;
+            }
+
+            .tryon-loading-bar-container .tryon-generation-card {
+                width: 72px;
+                height: 96px;
             }
         }
 
@@ -2948,52 +3073,40 @@
             margin-right: 6px;
         }
 
-        /* Loading Bar Styles - Premium Design */
+        /* Full widget rich loading state */
         .tryon-loading-bar-container {
-            width: 100% !important;
-            margin-top: 0;
-            padding-top: 0;
-            margin-bottom: 0;
-            flex-basis: 100% !important;
-            max-width: 100% !important;
-            flex-shrink: 0 !important;
-        }
-
-        .tryon-loading-bar {
-            width: 100%;
-            height: 8px;
-            background: #f3f4f6;
-            border-radius: 8px;
-            overflow: hidden;
-            position: relative;
-            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.08);
-        }
-
-        .tryon-loading-bar-fill {
-            height: 100% !important;
-            display: block !important;
-            background: linear-gradient(90deg, #000000 0%, #1a1a1a 25%, #2d2d2d 50%, #1a1a1a 75%, #000000 100%);
-            background-size: 200% 100%;
-            border-radius: 8px;
-            width: 0%;
-            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            animation: loadingBarShimmer 2.5s ease-in-out infinite;
-            box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 2px 4px rgba(0, 0, 0, 0.1);
-            position: relative;
-        }
-
-        .tryon-loading-bar-fill::after {
-            content: '';
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: linear-gradient(90deg,
-                    transparent 0%,
-                    rgba(255, 255, 255, 0.1) 50%,
-                    transparent 100%);
-            animation: loadingBarGlow 2s ease-in-out infinite;
+            inset: 0;
+            width: 100% !important;
+            height: 100% !important;
+            max-width: 100% !important;
+            padding: 28px 24px;
+            border: 0;
+            border-radius: 0;
+            background: rgba(255, 255, 255, 0.98);
+            box-shadow: none;
+            box-sizing: border-box;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 60;
+        }
+
+        .tryon-loading-bar-container .tryon-generation-card {
+            width: 98px;
+            height: 128px;
+        }
+
+        .tryon-loading-bar-container .tryon-generation-status {
+            font-size: 22px;
+        }
+
+        .tryon-loading-bar-container .tryon-generation-tip-text {
+            font-size: 15px;
+        }
+
+        .virtual-tryon-widget.tryon-loading-active .change-photo-btn {
+            display: none !important;
         }
 
         @keyframes loadingBarShimmer {
@@ -3562,6 +3675,44 @@
             width: 100%;
         }
 
+        /* Subtle attribution shown directly under the Add to Cart button
+           after a try-on completes. Kept small/low-contrast so it doesn't
+           compete with the CTA, and tight margins so it doesn't add scroll. */
+        .tryon-attribution {
+            margin-top: 8px;
+            margin-bottom: 0;
+            text-align: center;
+            font-size: 11px;
+            line-height: 1.2;
+            color: #888;
+            opacity: 0.85;
+            letter-spacing: 0.3px;
+        }
+
+        .tryon-attribution a {
+            color: #555;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.2s ease;
+        }
+
+        .tryon-attribution a:hover {
+            color: #111;
+            text-decoration: underline;
+        }
+
+        .theme-black .tryon-attribution {
+            color: #aaa;
+        }
+
+        .theme-black .tryon-attribution a {
+            color: #fff;
+        }
+
+        .theme-black .tryon-attribution a:hover {
+            color: #10b981;
+        }
+
         .buy-now-btn {
             background: linear-gradient(135deg, #333 0%, #555 100%);
             color: #fff;
@@ -3911,24 +4062,6 @@
 
         .theme-black .tryon-loading-progress-bar {
             background: linear-gradient(90deg, #fff 0%, #ccc 100%);
-        }
-
-        .theme-black .tryon-loading-bar {
-            background: #1a1a1a;
-            box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
-        }
-
-        .theme-black .tryon-loading-bar-fill {
-            background: linear-gradient(90deg, #ffffff 0%, #e5e5e5 25%, #cccccc 50%, #e5e5e5 75%, #ffffff 100%);
-            background-size: 200% 100%;
-            box-shadow: 0 0 12px rgba(255, 255, 255, 0.15);
-        }
-
-        .theme-black .tryon-loading-bar-fill::after {
-            background: linear-gradient(90deg,
-                    transparent 0%,
-                    rgba(255, 255, 255, 0.2) 50%,
-                    transparent 100%);
         }
 
         /* Hidden Elements */
@@ -6639,13 +6772,36 @@
             </button>
         </div>
 
-        <!-- Progress Overlay (Hidden by default) -->
-        <div id="previewProgressOverlay" class="preview-progress-overlay">
-            <div class="preview-progress-text">Creating your look...</div>
-            <div class="preview-progress-track">
-                <div id="previewProgressBar" class="preview-progress-fill"></div>
+        <!-- Rich Loading Overlay (Hidden by default) -->
+        <div id="previewProgressOverlay" class="preview-progress-overlay" aria-live="polite">
+            <div class="tryon-generation-loader">
+                <div class="tryon-generation-images">
+                    <div class="tryon-generation-card product-card">
+                        <img data-loading-product alt="Selected product">
+                    </div>
+                    <div class="tryon-generation-combine" aria-hidden="true">
+                        <svg class="tryon-generation-combine-icon" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M17 1l4 4-4 4"></path>
+                            <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                            <path d="M7 23l-4-4 4-4"></path>
+                            <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                        </svg>
+                    </div>
+                    <div class="tryon-generation-card person-card">
+                        <img data-loading-person alt="Your photo">
+                    </div>
+                </div>
+                <div class="tryon-generation-status" data-loading-step>Applying the outfit...</div>
+                <div class="tryon-generation-progress" aria-hidden="true">
+                    <div class="tryon-generation-progress-fill" data-loading-progress></div>
+                </div>
+                <div class="tryon-generation-percent" data-loading-percent>0%</div>
+                <div class="tryon-generation-tip">
+                    <div class="tryon-generation-tip-label">Tip</div>
+                    <div class="tryon-generation-tip-text" data-loading-tip>Use a clear, well-lit photo for best results.</div>
+                </div>
             </div>
-            <div class="preview-eta-text">~8 seconds</div>
         </div>
     </div>
 
@@ -6894,10 +7050,36 @@
                     <span>✨</span>
                     Try On
                 </button>
-                <!-- Loading Bar -->
-                <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;">
-                    <div class="tryon-loading-bar">
-                        <div class="tryon-loading-bar-fill" id="tryOnLoadingBarFill"></div>
+                <!-- Rich Loading State -->
+                <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;" aria-live="polite">
+                    <div class="tryon-generation-loader">
+                        <div class="tryon-generation-images">
+                            <div class="tryon-generation-card product-card">
+                                <img data-loading-product alt="Selected product">
+                            </div>
+                            <div class="tryon-generation-combine" aria-hidden="true">
+                                <svg class="tryon-generation-combine-icon" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                                    stroke-linejoin="round">
+                                    <path d="M17 1l4 4-4 4"></path>
+                                    <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                                    <path d="M7 23l-4-4 4-4"></path>
+                                    <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                                </svg>
+                            </div>
+                            <div class="tryon-generation-card person-card">
+                                <img data-loading-person alt="Your photo">
+                            </div>
+                        </div>
+                        <div class="tryon-generation-status" data-loading-step>Applying the outfit...</div>
+                        <div class="tryon-generation-progress" aria-hidden="true">
+                            <div class="tryon-generation-progress-fill" data-loading-progress></div>
+                        </div>
+                        <div class="tryon-generation-percent" data-loading-percent>0%</div>
+                        <div class="tryon-generation-tip">
+                            <div class="tryon-generation-tip-label">Tip</div>
+                            <div class="tryon-generation-tip-text" data-loading-tip>Use a clear, well-lit photo for best results.</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -7124,8 +7306,6 @@
                 <div class="best-practices-note">
                     <p>Note: Body shapes and personal features may not be accurately represented in virtual try-on
                         results.</p>
-                    <p style="margin-top: 12px;">Privacy: Images uploaded are only used for the try-on process and are
-                        deleted after use. They are not stored or held for any other reason.</p>
                 </div>
             </div>
             <div class="best-practices-footer">
@@ -7133,15 +7313,23 @@
                     <input type="checkbox" id="dontShowAgainCheckbox">
                     <span>Don't show this again</span>
                 </label>
-                <button class="upload-photo-btn" onclick="handleBestPracticesUpload()">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-                        style="margin-right: 8px;">
-                        <path d="M10 2V13M10 13L6 9M10 13L14 9" stroke="currentColor" stroke-width="2"
-                            stroke-linecap="round" stroke-linejoin="round" />
-                        <path d="M2 18H18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                    </svg>
-                    Upload photo
-                </button>
+                <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+                    <button class="upload-photo-btn" onclick="handleBestPracticesUpload()">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
+                            style="margin-right: 8px;">
+                            <path d="M10 2V13M10 13L6 9M10 13L14 9" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" />
+                            <path d="M2 18H18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+                        </svg>
+                        Continue
+                    </button>
+                    <p style="font-size: 11px; color: #6b7280; margin: 0; text-align: right; line-height: 1.4; max-width: 260px;">
+                        By clicking Continue, you agree to our
+                        <a href="https://ello.services/legal?tab=terms" target="_blank" rel="noopener noreferrer" style="color: #3B63D4;">Terms</a>
+                        &amp;
+                        <a href="https://ello.services/legal?tab=privacy" target="_blank" rel="noopener noreferrer" style="color: #3B63D4;">Privacy Policy</a>.
+                    </p>
+                </div>
             </div>
         </div>
     </div>

@@ -15,7 +15,7 @@ This single repo (`Nollerx/ello-product-sync`, branch `main`) builds **one Docke
 | Shopify config file | `shopify.app.toml` | `shopify.app.custom.toml` |
 | Cloud Run env file | `cloud_run_env.yaml` | `cloud_run_env_custom.yaml` |
 | Cloud Run service | `ello-vto-public-13593516897` | `custom-ello-app-13593516897` |
-| Billing | Shopify Billing API (`BILLING_TEST_MODE=true` currently) | None — Stripe-billed externally (`SKIP_BILLING=true`, `APP_DISTRIBUTION=SingleMerchant`) |
+| Billing | Shopify Billing API (`BILLING_TEST_MODE=false` — real charges live as of 2026-05-16) | None — Stripe-billed externally (`SKIP_BILLING=true`, `APP_DISTRIBUTION=SingleMerchant`) |
 | Live merchants | App Store installs (no paying merchants yet) | **Marcos Rivera / Kaizen Marketing** (Squarespace shop) — real paying merchant |
 
 A parallel Cloud Run service `custom-ello-app-13593516897-13593516897` (doubled suffix) also exists and has received deploys recently. It responds at `https://custom-ello-app-13593516897-13593516897-13593516897.us-central1.run.app` (triple-suffix URL). Shopify routes the Custom Ello App to the **single-suffix** service via `shopify.app.custom.toml`'s `application_url`, so the doubled one is **not** what Marcos hits. Don't deploy to it without investigating where its existing deploys came from.
@@ -105,11 +105,26 @@ There is no `test` script in this repo.
    - **Custom app** — Marcos is a real paying merchant. Re-state this before asking for "go".
    - **Public app** — live on the App Store.
    - **ML service** — hits every merchant.
-4. **Public-app billing flag:** `cloud_run_env.yaml` has `BILLING_TEST_MODE: "true"`. Do not flip this without an explicit instruction. Surface its current value before each public deploy and ask whether to keep or flip.
+4. **Public-app billing flag:** `cloud_run_env.yaml` has `BILLING_TEST_MODE: "false"` — real Shopify charges are live (as of 2026-05-16). Do not flip this without an explicit instruction. Surface its current value before each public deploy and ask whether to keep or flip.
 5. **SQL:** Draft the statement, hand it to Andrew to paste into the Supabase SQL editor. Do not run via MCP unless Andrew explicitly authorizes per-statement.
 6. **Dashboard:** Produce a Lovable prompt; do not edit the dashboard repo directly.
 7. **Git:** Direct commits to `main` and push (solo workflow). No PR/branch flow unless Andrew asks.
 8. **Accuracy bar:** If you're not 100% sure of a fact, say so and verify (read the file, run the gcloud command, curl the URL). Never guess about deploy targets, service names, or URLs.
+
+## Brand palette (authoritative)
+
+**Source of truth:** `~/Desktop/Vault/02-Areas/Ello/_context/Brand-Palette.md`. Read this before styling ANY surface — marketing site, app dashboard, Shopify app UI, anything user-facing.
+
+Quick reference (do not memorize from here — always reconcile against the doc):
+- **Primary Blue** `#3B63D4` — CTAs, links, accents (logo-sampled)
+- **Ink** `#0B1220` — headings, dark surfaces
+- **Default backgrounds** — White `#FFFFFF` or Off-white `#FAFBFC`
+- **Overall feel** — crisp blue + near-black + lots of white. Light-mode-first. Avoid heavy dark hero gradients — they conflict with the brand identity.
+
+**Rules:**
+1. Never invent hex values. If you need a color not in the palette doc, propose it as an addition and wait for approval.
+2. Never save palette decisions to ephemeral agent memory. Palette state lives in `Brand-Palette.md` — update the doc, don't carry it in your head.
+3. If a hero, gradient, or color choice in the existing code looks off-brand, flag it to Andrew before changing it — don't make stylistic judgment calls unilaterally.
 
 ## Env-var names (yaml files in repo root, plaintext secrets)
 

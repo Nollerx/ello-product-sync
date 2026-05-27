@@ -34,19 +34,30 @@ function normalizeHex(input: string): string {
   return DEFAULT_COLOR;
 }
 
+function readableTextColor(hex: string): "#000000" | "#FFFFFF" {
+  const normalized = normalizeHex(hex).replace("#", "");
+  const r = Number.parseInt(normalized.slice(0, 2), 16);
+  const g = Number.parseInt(normalized.slice(2, 4), 16);
+  const b = Number.parseInt(normalized.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.62 ? "#000000" : "#FFFFFF";
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { data } = await supabaseAdmin
     .from("vto_stores")
-    .select("widget_position, minimized_color, widget_primary_color")
+    .select("widget_position, minimized_color, widget_primary_color, inline_button_color")
     .eq("shop_domain", session.shop)
     .maybeSingle();
-  // The storefront button is painted from `minimized_color` (read by the
-  // widget). `widget_primary_color` is a separate brand-color field used
-  // elsewhere; we keep it in sync so dashboard surfaces stay consistent.
+
   return {
     widgetPosition: (data?.widget_position as "left" | "right" | null) ?? "right",
-    widgetColor: data?.minimized_color ?? data?.widget_primary_color ?? DEFAULT_COLOR,
+    brandColor:
+      data?.inline_button_color ??
+      data?.minimized_color ??
+      data?.widget_primary_color ??
+      DEFAULT_COLOR,
   };
 };
 
@@ -55,22 +66,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const url = new URL(request.url);
   const form = await request.formData();
   const widgetPosition = form.get("widget_position") === "left" ? "left" : "right";
-  const widgetColor = normalizeHex(String(form.get("widget_color") ?? DEFAULT_COLOR));
+  const brandColor = normalizeHex(String(form.get("brand_color") ?? DEFAULT_COLOR));
 
   await supabaseAdmin
     .from("vto_stores")
     .update({
       widget_position: widgetPosition,
-      minimized_color: widgetColor,
-      widget_primary_color: widgetColor,
+      minimized_color: brandColor,
+      widget_primary_color: brandColor,
+      inline_button_color: brandColor,
+      inline_button_text_color: readableTextColor(brandColor),
     })
     .eq("shop_domain", session.shop);
 
-  await setOnboardingStep(session.shop, "activate_widget");
-  return redirect(`/app/onboarding/activate-widget${preserveShopifyQuery(url)}`);
+  await setOnboardingStep(session.shop, "placements");
+  return redirect(`/app/onboarding/placements${preserveShopifyQuery(url)}`);
 };
 
 function StorefrontPreview({ position, color }: { position: "left" | "right"; color: string }) {
+  const textColor = readableTextColor(color);
+
   return (
     <div
       style={{
@@ -116,6 +131,26 @@ function StorefrontPreview({ position, color }: { position: "left" | "right"; co
           <div style={{ height: 8, width: "40%", background: "#E1E3E5", borderRadius: 3 }} />
           <div style={{ height: 8, width: "55%", background: "#E1E3E5", borderRadius: 3, marginTop: 6 }} />
           <div style={{ height: 28, width: "70%", background: "#111827", borderRadius: 6, marginTop: 10 }} />
+          <div
+            style={{
+              height: 28,
+              width: "70%",
+              background: color,
+              color: textColor,
+              borderRadius: 6,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 11,
+              fontWeight: 700,
+            }}
+          >
+            Try On
+          </div>
+          <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 5 }}>
+            <div style={{ height: 6, width: "92%", background: "#E1E3E5", borderRadius: 3 }} />
+            <div style={{ height: 6, width: "78%", background: "#E1E3E5", borderRadius: 3 }} />
+          </div>
         </div>
       </div>
 
@@ -133,12 +168,13 @@ function StorefrontPreview({ position, color }: { position: "left" | "right"; co
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          color: "#fff",
-          fontSize: "18px",
+          color: textColor,
+          fontSize: "16px",
+          fontWeight: 800,
           transition: "left 220ms ease, right 220ms ease, background 220ms ease",
         }}
       >
-        ✨
+        Try
       </div>
     </div>
   );
@@ -174,7 +210,7 @@ function ColorSwatch({
 }
 
 export default function OnboardingConfigure() {
-  const { widgetPosition: initialPosition, widgetColor: initialColor } = useLoaderData<typeof loader>();
+  const { widgetPosition: initialPosition, brandColor: initialColor } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const submitting = navigation.state !== "idle";
   const [position, setPosition] = useState<"left" | "right">(initialPosition);
@@ -212,9 +248,9 @@ export default function OnboardingConfigure() {
               <Card>
               <BlockStack gap="600">
                 <BlockStack gap="200">
-                  <Text as="h1" variant="headingXl">Customize your widget</Text>
+                  <Text as="h1" variant="headingXl">Customize your experience</Text>
                   <Text as="p" variant="bodyMd" tone="subdued">
-                    Set the position and color of the Try-On button. You can change these anytime.
+                    Choose one brand color for your inline Try-On button and floating widget. You can fine-tune each one later.
                   </Text>
                 </BlockStack>
 
@@ -227,7 +263,7 @@ export default function OnboardingConfigure() {
 
                 {/* Position */}
                 <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">Widget position</Text>
+                  <Text as="h2" variant="headingMd">Floating widget position</Text>
                   <ButtonGroup variant="segmented">
                     <Button
                       pressed={position === "left"}
@@ -246,7 +282,12 @@ export default function OnboardingConfigure() {
 
                 {/* Color */}
                 <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">Widget color</Text>
+                  <BlockStack gap="100">
+                    <Text as="h2" variant="headingMd">Brand color</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Used for both the inline Try-On button and the floating widget.
+                    </Text>
+                  </BlockStack>
                   <InlineStack gap="300" blockAlign="center" wrap>
                     {COLOR_PRESETS.map((preset) => (
                       <ColorSwatch
@@ -296,7 +337,7 @@ export default function OnboardingConfigure() {
                 </BlockStack>
 
                 <Text as="p" variant="bodySm" tone="subdued">
-                  Storefront updates appear within a minute.
+                  Ello automatically uses readable text on the inline button based on this color.
                 </Text>
               </BlockStack>
               </Card>
@@ -306,7 +347,7 @@ export default function OnboardingConfigure() {
             <InlineStack align="end">
               <Form method="post">
                 <input type="hidden" name="widget_position" value={position} />
-                <input type="hidden" name="widget_color" value={color} />
+                <input type="hidden" name="brand_color" value={color} />
                 <Button submit variant="primary" size="large" loading={submitting}>
                   Continue
                 </Button>

@@ -2,7 +2,15 @@
 // Generate and persist session ID for tracking (will be set after store config loads)
 // The actual sessionId is now managed via localStorage below
 
-console.log("✅ Ello Widget v2.4.1 - has_saved_photo metadata");
+// Debug logger — silenced in production. Flip window.__ELLO_DEBUG__ = true in
+// your own browser to see verbose logs. console.warn / console.error stay live.
+var elloLog = function () {
+    if (typeof window !== 'undefined' && window.__ELLO_DEBUG__ === true) {
+        console.log.apply(console, arguments);
+    }
+};
+
+elloLog("✅ Ello Widget v2.5.0 - silent logs by default");
 
 // Global activity flag to prevent ReferenceError
 let hasUserActivity = false;
@@ -211,8 +219,8 @@ let isPreviewVisible = false;
 const _sbCfg = window.ELLO_SUPABASE_CONFIG || {};
 const SUPABASE_URL = _sbCfg.supabaseUrl || 'https://rwmvgwnebnsqcyhhurti.supabase.co';
 const SUPABASE_ANON_KEY = _sbCfg.supabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3bXZnd25lYm5zcWN5aGh1cnRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDg0MDc1MTgsImV4cCI6MjA2Mzk4MzUxOH0.OYTXiUBDN5IBlFYDHN3MyCwFUkSb8sgUOewBeSY01NY';
-console.log("[Ello Widget] SUPABASE_URL:", SUPABASE_URL);
-console.log("[Ello Widget] Config source:", _sbCfg.supabaseUrl ? "server (widget-config)" : "fallback (hardcoded)");
+elloLog("[Ello Widget] SUPABASE_URL:", SUPABASE_URL);
+elloLog("[Ello Widget] Config source:", _sbCfg.supabaseUrl ? "server (widget-config)" : "fallback (hardcoded)");
 
 
 
@@ -224,6 +232,16 @@ const WIDGET_CONFIG = {
     RETRY_ATTEMPTS: 3,
     RETRY_DELAY: 1000
 };
+
+// Only the columns the widget actually reads — avoids serializing wide row data.
+// Cuts each clothing_items request payload by roughly 70% vs SELECT *.
+const CLOTHING_SELECT_COLUMNS = 'id,item_id,name,price,category,tags,color,image_url,product_url,data_source,active,shopify_product_id,variants';
+
+// Legacy localStorage key — older versions of the widget cached the clothing
+// list here. We removed caching so merchant changes appear instantly, but we
+// proactively delete any leftover cache from returning visitors so they don't
+// get stuck on a stale entry.
+const LEGACY_CLOTHING_CACHE_KEY_PREFIX = 'ello_clothing_items_v1_';
 
 // Improved Clothing Categories Configuration
 const CLOTHING_CATEGORIES = {
@@ -465,6 +483,136 @@ function hasClothingContext(product) {
 let sampleClothing = [];
 let _elloClothingDataLoaded = false; // Set to true once loadClothingData() completes
 
+// ─── Lazy full-catalog state ───────────────────────────────────────────────
+// sampleClothing only holds the small preview set (featured + quick picks +
+// current product) after loadClothingData resolves. The FULL catalog — every
+// enabled product on the store — is fetched lazily the first time the
+// shopper engages with the widget (opens it OR searches). These flags + the
+// in-flight promise prevent us from kicking off multiple parallel full-load
+// requests if both triggers fire.
+let _elloFullCatalogLoaded = false;
+let _elloFullCatalogPromise = null;
+
+/**
+ * Fetches the small page-load payload: enabled-handles list + featured +
+ * quick picks + current PDP product. Replaces the prior loadClothingFromShopify
+ * / loadClothingFromSupabase call at page load.
+ *
+ * Side effects (matching what the prior full-catalog loaders did):
+ *   - window.elloEnabledHandles  ← Set of enabled product handles
+ *   - sampleClothing             ← [featured, ...quickPicks, currentProduct]
+ *   - window.elloHiddenProductIds ← Set (empty until full catalog loads —
+ *     the handles endpoint already filters hidden products server-side)
+ */
+async function loadHandlesAndPreview(storeConfig) {
+    const baseUrl = window.ELLO_WIDGET_BASE_URL || '';
+    const slug = storeConfig.storeSlug || storeConfig.storeId || window.ELLO_STORE_SLUG || window.ELLO_STORE_ID;
+    const shop = storeConfig.shopDomain || storeConfig.storeName || window.ELLO_SHOP_DOMAIN;
+
+    if (!slug && !shop) {
+        console.warn('[Ello] loadHandlesAndPreview: no slug/shop — falling back to full catalog load');
+        return loadFullCatalogNow(storeConfig);
+    }
+
+    // Pass either slug or shop — endpoints accept either.
+    const params = new URLSearchParams();
+    if (slug) params.set('store_slug', slug);
+    if (shop) params.set('shop', shop);
+
+    // Current PDP product handle (if any) so the preview endpoint can include
+    // it. detectCurrentProduct relies on the current product being in
+    // sampleClothing — without this, the visibility gate wouldn't find it.
+    const currentHandle = getProductIdFromUrl(window.location.pathname);
+    const previewParams = new URLSearchParams(params);
+    if (currentHandle) previewParams.set('handle', currentHandle);
+
+    const handlesUrl = `${baseUrl}/api/catalog-handles?${params.toString()}`;
+    const previewUrl = `${baseUrl}/api/widget-preview?${previewParams.toString()}`;
+
+    try {
+        const [handlesRes, previewRes] = await Promise.all([
+            fetch(handlesUrl, { credentials: 'omit' }),
+            fetch(previewUrl, { credentials: 'omit' }),
+        ]);
+
+        // Handles → Set for O(1) elloIsProductEnabled lookups.
+        if (handlesRes.ok) {
+            const { handles } = await handlesRes.json();
+            window.elloEnabledHandles = new Set(Array.isArray(handles) ? handles : []);
+            elloLog(`[Ello] Loaded ${window.elloEnabledHandles.size} enabled handles`);
+        } else {
+            console.warn(`[Ello] catalog-handles ${handlesRes.status} — elloIsProductEnabled will fall back to sampleClothing`);
+            window.elloEnabledHandles = new Set();
+        }
+
+        // Preview → sampleClothing (small array, fully-formed products).
+        if (previewRes.ok) {
+            const { featured, quickPicks, currentProduct } = await previewRes.json();
+            const seenIds = new Set();
+            const preview = [];
+            const pushUnique = (p) => {
+                if (!p || !p.id || seenIds.has(p.id)) return;
+                seenIds.add(p.id);
+                preview.push(p);
+            };
+            pushUnique(featured);
+            (Array.isArray(quickPicks) ? quickPicks : []).forEach(pushUnique);
+            pushUnique(currentProduct);
+            sampleClothing = preview;
+            elloLog(`[Ello] Loaded ${preview.length} preview products`);
+        } else {
+            console.warn(`[Ello] widget-preview ${previewRes.status} — sampleClothing left empty until full catalog loads`);
+            sampleClothing = [];
+        }
+
+        // Blacklist gets populated when the full catalog loads via the
+        // existing fetchHiddenProductIds path. The handles endpoint already
+        // excludes hidden products server-side, so an empty set here is
+        // correct for the preview phase.
+        if (!(window.elloHiddenProductIds instanceof Set)) {
+            window.elloHiddenProductIds = new Set();
+        }
+    } catch (err) {
+        console.error('[Ello] loadHandlesAndPreview failed:', err);
+        // Soft fallback: try the original full-catalog path so the widget
+        // doesn't end up totally empty for the shopper.
+        return loadFullCatalogNow(storeConfig);
+    }
+}
+
+/**
+ * Triggers the full catalog load (every enabled product, with images +
+ * variants — what sampleClothing held under the old pre-Tier-2 behavior).
+ * Used lazily on widget open and as a fallback if the small-payload endpoints
+ * fail at page load. Idempotent — returns the in-flight promise if a load is
+ * already running.
+ */
+function loadFullCatalogIfNeeded(storeConfig) {
+    if (_elloFullCatalogLoaded) return Promise.resolve();
+    if (_elloFullCatalogPromise) return _elloFullCatalogPromise;
+    _elloFullCatalogPromise = loadFullCatalogNow(storeConfig).then(() => {
+        _elloFullCatalogLoaded = true;
+    }).catch((err) => {
+        console.error('[Ello] Full catalog load failed:', err);
+        _elloFullCatalogPromise = null; // Allow retry on next trigger.
+    });
+    return _elloFullCatalogPromise;
+}
+
+async function loadFullCatalogNow(storeConfig) {
+    const cfg = storeConfig || window.ELLO_STORE_CONFIG || {};
+    if ((cfg.clothingPopulationType || cfg.clothing_population_type) === 'supabase') {
+        await loadClothingFromSupabase(cfg);
+    } else {
+        await loadClothingFromShopify(cfg);
+    }
+    // After the full catalog populates sampleClothing, repopulate
+    // featured/quick picks from the now-richer pool (variety picks need it).
+    if (widgetOpen && currentMode === 'tryon' && Array.isArray(sampleClothing) && sampleClothing.length > 0) {
+        try { await populateFeaturedAndQuickPicks(); } catch (e) { console.warn('[Ello] populate refresh failed:', e); }
+    }
+}
+
 
 // Load clothing data from active_clothing_items view
 // Load clothing data based on store configuration
@@ -492,7 +640,7 @@ async function loadClothingData() {
 
         // ⚡️ CHECK FOR BOOTSTRAP DATA (PRIORITY WITH PROMISE)
         if (window.ELLO_BOOTSTRAP_PROMISE) {
-            console.log("⏳ Main: awaiting bootstrap promise...");
+            elloLog("⏳ Main: awaiting bootstrap promise...");
 
             // Create a timeout promise (e.g., 8 seconds) to prevent hanging
             const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), 8000));
@@ -506,7 +654,7 @@ async function loadClothingData() {
 
                     // New Object Format: { store: {...}, blacklist: {...}, products: [...] }
                     if (bootstrap.store) {
-                        console.log("🚀 Main: synced store config from bootstrap:", bootstrap.store.clothing_population_type, "plan:", bootstrap.store.plan_code);
+                        elloLog("🚀 Main: synced store config from bootstrap:", bootstrap.store.clothing_population_type, "plan:", bootstrap.store.plan_code);
                         window.ELLO_STORE_CONFIG = {
                             ...window.ELLO_STORE_CONFIG,
                             ...bootstrap.store
@@ -527,7 +675,7 @@ async function loadClothingData() {
                     }
 
                     if (products && products.length > 0) {
-                        console.log("🚀 Main: using bootstrapped catalog:", products.length);
+                        elloLog("🚀 Main: using bootstrapped catalog:", products.length);
 
                         // Initialize Blacklists
                         window.elloHiddenProductIds = new Set();
@@ -574,15 +722,26 @@ async function loadClothingData() {
             }
         }
 
-        if (storeConfig.clothingPopulationType === 'supabase') {
-            await loadClothingFromSupabase(storeConfig);
-        } else {
-            await loadClothingFromShopify(storeConfig);
-        }
+        // ─── PAGE LOAD: minimal fetch only ────────────────────────────────
+        // Previously this fetched the entire Shopify catalog (~2.5 MB Brotli
+        // for a 1,600-product store) on every page view, just so the inline
+        // button could answer "is this product enabled?". Now we fetch two
+        // small server endpoints in parallel:
+        //   /api/catalog-handles   → ~10 KB list of enabled handles, powers
+        //                            elloIsProductEnabled + smart-visibility
+        //   /api/widget-preview    → ~30-80 KB featured + quick picks +
+        //                            current PDP product, populates
+        //                            sampleClothing so the widget opens
+        //                            instantly to its initial view
+        //
+        // The full catalog (sampleClothing populated with EVERY product) is
+        // deferred — loaded lazily when widgetOpen=true is set, or on the
+        // first browse/search action. See loadFullCatalogIfNeeded below.
+        await loadHandlesAndPreview(storeConfig);
 
-        // If no clothing items were loaded, leave empty (no fallback)
+        // If preview returned nothing useful, log it (but don't fail open).
         if (!sampleClothing || sampleClothing.length === 0) {
-            console.warn('⚠️ No clothing items found.');
+            console.warn('⚠️ Widget preview returned no products.');
         }
 
         // Refresh UI if widget is open AND we actually have data (prevents infinite loop with populateFeaturedAndQuickPicks)
@@ -602,6 +761,57 @@ async function loadClothingData() {
         sampleClothing = [];
     } finally {
         _elloClothingDataLoaded = true;
+
+        // ─── Public catalog-membership API ─────────────────────────────────
+        // Used by the inline-button theme block to inverse-hide the button on
+        // products that aren't in the merchant's try-on catalog. Returns:
+        //   true  → product is enabled (button stays visible)
+        //   false → product is disabled (button hides itself)
+        //   null  → catalog not loaded yet (button stays visible — the
+        //           inverse pattern means we'd rather show wrongly for ~1s
+        //           than hide wrongly for the same window)
+        // Match by handle. Backed by window.elloEnabledHandles (Set populated by
+        // /api/catalog-handles in loadHandlesAndPreview), not by sampleClothing
+        // — sampleClothing only holds the small preview set on page load, and
+        // is filled with the full catalog only after the user opens the widget.
+        // Falling back to sampleClothing keeps wardrobe re-matching working
+        // even if the handles fetch fails for some reason.
+        window.elloIsProductEnabled = function (handle) {
+            if (!_elloClothingDataLoaded) return null;
+            if (!handle) return null;
+            if (window.elloEnabledHandles instanceof Set) {
+                return window.elloEnabledHandles.has(handle);
+            }
+            return sampleClothing.some(function (item) { return item && item.id === handle; });
+        };
+        // Notify any listeners (currently the inline button block) that the
+        // catalog has resolved and they can now run their membership check.
+        try {
+            window.dispatchEvent(new CustomEvent('ello:catalog-loaded', {
+                detail: { count: sampleClothing.length }
+            }));
+        } catch (e) { /* CustomEvent not supported on ancient browsers — ignore */ }
+
+        // ─── Belt-and-suspenders inline-button hide ──────────────────────
+        // The inline-tryon-button theme block registers an `ello:catalog-loaded`
+        // listener and hides itself if its product is disabled. Under the
+        // Tier 2 fast-load model the catalog can resolve before the inline
+        // block's script finishes its async-loader injection, which means the
+        // block's listener can register AFTER our event fires and never hear
+        // it. To eliminate that race we ALSO sweep the DOM here and hide any
+        // inline buttons for products not in the enabled-handles set.
+        // Idempotent with the block's own logic — both produce the same
+        // outcome, so doing both is safe.
+        try {
+            if (window.elloEnabledHandles instanceof Set) {
+                document.querySelectorAll('[data-ello-inline-btn]').forEach(function (btn) {
+                    var handle = btn && btn.dataset && btn.dataset.productHandle;
+                    if (handle && !window.elloEnabledHandles.has(handle)) {
+                        btn.style.setProperty('display', 'none', 'important');
+                    }
+                });
+            }
+        } catch (e) { /* defensive sweep — never let this throw */ }
     }
 }
 
@@ -817,7 +1027,7 @@ async function loadClothingFromShopify(storeConfig) {
     }
 
 
-    console.log(`[Ello Widget] Fetched ${allGraphQLProducts.length} products across ${pageCount} page(s) from Shopify Storefront API`);
+    elloLog(`[Ello Widget] Fetched ${allGraphQLProducts.length} products across ${pageCount} page(s) from Shopify Storefront API`);
 
     // Remove any potential duplicates
     const uniqueProducts = [];
@@ -918,7 +1128,7 @@ async function loadClothingFromShopifyLegacy(storeConfig) {
         // Extract 'vengeance-designs-3336' from 'vengeance-designs-3336.myshopify.com'
         const extractedHandle = storeConfig.shopDomain.replace('.myshopify.com', '').replace('https://', '').split(/[/?#]/)[0];
         if (extractedHandle && extractedHandle !== 'default-name') {
-            console.log("🛠 [LEGACY] Extracted shop handle from domain:", extractedHandle);
+            elloLog("🛠 [LEGACY] Extracted shop handle from domain:", extractedHandle);
             shopifyStoreId = extractedHandle;
         }
     }
@@ -1142,7 +1352,7 @@ async function fetchHiddenProductIds(storeSlug) {
         };
 
         const data = await fetchAllPages(url, reqHeaders);
-        console.log(`Ello: loaded ${data.length} hidden overrides`);
+        elloLog(`Ello: loaded ${data.length} hidden overrides`);
 
         // Extract item_id values into a Set that holds BOTH the raw value and the
         // numeric portion, because clothing_items stores full GIDs
@@ -1161,7 +1371,7 @@ async function fetchHiddenProductIds(storeSlug) {
         });
 
         if (hiddenIds.size > 0) {
-            console.log(`🔒 Filtering out ${hiddenIds.size} hidden product(s) from Supabase`);
+            elloLog(`🔒 Filtering out ${hiddenIds.size} hidden product(s) from Supabase`);
         }
 
         return hiddenIds;
@@ -1207,116 +1417,136 @@ function getProductId(product) {
     return null;
 }
 
-// Load clothing from Supabase
+// Clear any leftover cached clothing data from older widget versions.
+// Returning visitors might have a stale entry from when caching was enabled —
+// removing it ensures they always see fresh data on their next pageview.
+function clearLegacyClothingCache(storeSlug) {
+    try {
+        window.localStorage.removeItem(LEGACY_CLOTHING_CACHE_KEY_PREFIX + storeSlug);
+    } catch (e) {
+        // Private mode / disabled storage — nothing to clean up anyway
+    }
+}
+
+// Convert raw Supabase rows into sampleClothing + populate hidden-product blacklist.
+// Identical logic to what loadClothingFromSupabase used to do inline — extracted
+// so it can run for both cached and freshly-fetched data.
+function processClothingRows(data) {
+    // Initialize hidden products blacklist (Global)
+    window.elloHiddenProductIds = new Set();
+    window.elloHiddenTitles = new Set();
+    window.elloHiddenHandles = new Set();
+
+    // Convert Supabase products to widget format
+    const allProducts = data
+        .filter(item => {
+            const isValid = item && item.name && item.image_url;
+            if (!isValid) {
+            }
+            return isValid;
+        })
+        .map(item => {
+            const converted = {
+                id: item.item_id || item.id || `supabase_${item.name.toLowerCase().replace(/\s+/g, '_')}`,
+                name: item.name,
+                price: parseFloat(item.price || 0),
+                category: item.category?.toLowerCase() || 'clothing',
+                tags: item.tags || [],
+                color: item.color || 'multicolor',
+                image_url: item.image_url,
+                product_url: item.product_url || '#',
+                // Supabase products don't have Shopify GIDs, set to null
+                shopify_product_gid: null,
+                // Preserve original data_source from database ('manual' or 'shopify')
+                data_source: item.data_source || 'supabase',
+                active: item.active !== false, // Default to true if missing
+                shopify_product_id: item.shopify_product_id || null, // Ensure field exists
+                variants: (item.variants || [{
+                    id: item.item_id || item.id,
+                    title: 'Default',
+                    price: parseFloat(item.price || 0),
+                    available: true,
+                    size: 'M'
+                }]).map(variant => ({
+                    ...variant,
+                    // Supabase variants don't have Shopify GIDs, set to null
+                    shopify_variant_gid: null
+                }))
+            };
+            return converted;
+        });
+
+    // FILTER TO ONLY CLOTHING ITEMS & POPULATE BLACKLIST
+    sampleClothing = allProducts.filter(product => {
+        // Check if hidden (active === false)
+        if (!product.active) {
+            // Add to blacklist (IDs)
+            if (product.id) window.elloHiddenProductIds.add(String(product.id));
+
+            // Add Clean Shopify ID (remove gid://)
+            if (product.shopify_product_id) {
+                const cleanId = String(product.shopify_product_id).split('/').pop();
+                window.elloHiddenProductIds.add(cleanId);
+                window.elloHiddenProductIds.add(String(product.shopify_product_id)); // Add full version too
+            }
+
+            // Add Title (Lowercase)
+            if (product.name) window.elloHiddenTitles.add(product.name.trim().toLowerCase());
+
+            // Add Handle (from URL or Name)
+            if (product.product_url && product.product_url !== '#') {
+                // Extract handle from URL (e.g. /products/my-handle)
+                const handle = product.product_url.split('/').pop().split('?')[0];
+                if (handle) window.elloHiddenHandles.add(handle.toLowerCase());
+            } else if (product.name) {
+                // Fallback: Slugify name
+                const slug = product.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                window.elloHiddenHandles.add(slug);
+            }
+
+            // Do not include in sampleClothing
+            return false;
+        }
+
+        const isClothing = isClothingItem(product);
+        if (!isClothing) {
+        }
+        return isClothing;
+    });
+
+    // If no items found, leave empty (no fallback)
+    if (sampleClothing.length === 0) {
+        console.warn('⚠️ No clothing items found in Supabase.');
+    }
+}
+
+// Load clothing from Supabase. No client-side caching — every pageview fetches
+// fresh so merchant changes appear instantly. Egress savings come from the
+// `select=` clause restricting the response to the columns the widget actually
+// reads (avoids serializing wide row data).
 async function loadClothingFromSupabase(storeConfig) {
     // Use store_slug (preferred) or fall back to storeId for backward compatibility
     const storeSlug = storeConfig.storeSlug || storeConfig.storeId || 'default_store';
 
+    // Sweep any leftover cache from earlier widget versions so returning visitors
+    // don't accidentally render stale data on first load after the upgrade.
+    clearLegacyClothingCache(storeSlug);
+
+    // Query clothing_items table: WHERE store_id = store_slug ORDER BY created_at DESC
+    // 'active=eq.true' is intentionally NOT applied — we need hidden items for the blacklist.
+    const url = `${SUPABASE_URL}/rest/v1/clothing_items?store_id=eq.${storeSlug}&order=created_at.desc&select=${CLOTHING_SELECT_COLUMNS}`;
+
+    const reqHeaders = {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+    };
+
     try {
-        // Query clothing_items table: WHERE store_id = store_slug ORDER BY created_at DESC
-        // REMOVED 'active=eq.true' to allow fetching hidden items for blacklist
-        const url = `${SUPABASE_URL}/rest/v1/clothing_items?store_id=eq.${storeSlug}&order=created_at.desc`;
-
-        const reqHeaders = {
-            'apikey': SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-            'Content-Type': 'application/json',
-        };
-
         // Paginate through all results (PostgREST caps at 1,000 per response)
         const data = await fetchAllPages(url, reqHeaders);
-        console.log(`Ello: loaded ${data.length} clothing items from Supabase`);
-
-        // Initialize hidden products blacklist (Global)
-        window.elloHiddenProductIds = new Set();
-        window.elloHiddenTitles = new Set();
-        window.elloHiddenHandles = new Set();
-
-
-        // Convert Supabase products to widget format
-        const allProducts = data
-            .filter(item => {
-                const isValid = item && item.name && item.image_url;
-                if (!isValid) {
-                }
-                return isValid;
-            })
-            .map(item => {
-                const converted = {
-                    id: item.item_id || item.id || `supabase_${item.name.toLowerCase().replace(/\s+/g, '_')}`,
-                    name: item.name,
-                    price: parseFloat(item.price || 0),
-                    category: item.category?.toLowerCase() || 'clothing',
-                    tags: item.tags || [],
-                    color: item.color || 'multicolor',
-                    image_url: item.image_url,
-                    product_url: item.product_url || '#',
-                    // Supabase products don't have Shopify GIDs, set to null
-                    shopify_product_gid: null,
-                    // Preserve original data_source from database ('manual' or 'shopify')
-                    data_source: item.data_source || 'supabase',
-                    active: item.active !== false, // Default to true if missing
-                    shopify_product_id: item.shopify_product_id || null, // Ensure field exists
-                    variants: (item.variants || [{
-                        id: item.item_id || item.id,
-                        title: 'Default',
-                        price: parseFloat(item.price || 0),
-                        available: true,
-                        size: 'M'
-                    }]).map(variant => ({
-                        ...variant,
-                        // Supabase variants don't have Shopify GIDs, set to null
-                        shopify_variant_gid: null
-                    }))
-                };
-                return converted;
-            });
-
-
-        // FILTER TO ONLY CLOTHING ITEMS & POPULATE BLACKLIST
-        sampleClothing = allProducts.filter(product => {
-            // Check if hidden (active === false)
-            if (!product.active) {
-                // Add to blacklist (IDs)
-                if (product.id) window.elloHiddenProductIds.add(String(product.id));
-
-                // Add Clean Shopify ID (remove gid://)
-                if (product.shopify_product_id) {
-                    const cleanId = String(product.shopify_product_id).split('/').pop();
-                    window.elloHiddenProductIds.add(cleanId);
-                    window.elloHiddenProductIds.add(String(product.shopify_product_id)); // Add full version too
-                }
-
-                // Add Title (Lowercase)
-                if (product.name) window.elloHiddenTitles.add(product.name.trim().toLowerCase());
-
-                // Add Handle (from URL or Name)
-                if (product.product_url && product.product_url !== '#') {
-                    // Extract handle from URL (e.g. /products/my-handle)
-                    const handle = product.product_url.split('/').pop().split('?')[0];
-                    if (handle) window.elloHiddenHandles.add(handle.toLowerCase());
-                } else if (product.name) {
-                    // Fallback: Slugify name
-                    const slug = product.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-                    window.elloHiddenHandles.add(slug);
-                }
-
-                // Do not include in sampleClothing
-                return false;
-            }
-
-            const isClothing = isClothingItem(product);
-            if (!isClothing) {
-            }
-            return isClothing;
-        });
-
-
-        // If no items found, leave empty (no fallback)
-        if (sampleClothing.length === 0) {
-            console.warn('⚠️ No clothing items found in Supabase.');
-        }
-
+        elloLog(`Ello: loaded ${data.length} clothing items from Supabase`);
+        processClothingRows(data);
     } catch (error) {
         console.error('❌ Error loading from Supabase:', error);
         // Leave empty on error - no fallback to mock data
@@ -1473,7 +1703,7 @@ function detectCurrentProduct() {
     if (product) {
         const livePrice = scrapePrice();
         if (livePrice) {
-            console.log(`[Ello VTO] Updated price for ${product.name} from DOM: $${livePrice}`);
+            elloLog(`[Ello VTO] Updated price for ${product.name} from DOM: $${livePrice}`);
             product.price = livePrice;
             // Also update variants prices if they exist and are default/zero
             if (product.variants) {
@@ -1534,6 +1764,10 @@ let currentMode = 'tryon';
 let selectedClothing = null;
 let userPhoto = null;
 let userPhotoFileId = null;
+const PHOTO_BODY_REJECTION_MESSAGE = "Hey, you have to upload another one because there was no body detected in this image.";
+let activePhotoValidationId = null;
+let activePhotoValidationStatus = 'idle';
+let lastRejectedPhotoValidationId = null;
 
 // Storage keys for photo persistence
 const USER_PHOTO_STORAGE_KEY = 'vtow_user_photo';
@@ -1617,6 +1851,9 @@ function loadSavedPhoto() {
         if (savedPhoto) {
             userPhoto = savedPhoto;
             userPhotoFileId = savedFileId || 'photo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            activePhotoValidationId = userPhotoFileId;
+            activePhotoValidationStatus = 'valid';
+            lastRejectedPhotoValidationId = null;
 
             // Update both Full Widget and Preview UI
             updatePhotoPreview(savedPhoto);
@@ -1725,6 +1962,87 @@ function clearSavedPhoto() {
         console.error('Error clearing saved photo:', error);
     }
 }
+
+function resetActivePhotoValidation() {
+    activePhotoValidationId = null;
+    activePhotoValidationStatus = 'idle';
+}
+
+function isActivePhotoValidation(photoId) {
+    return photoId && photoId === activePhotoValidationId && photoId === userPhotoFileId;
+}
+
+function clearPreviewUserPhoto() {
+    const previewTile = document.getElementById('previewUploadTile');
+    const previewImg = document.getElementById('previewUserPhoto');
+    const previewTryBtn = document.getElementById('previewTryBtn');
+    const previewAnalysisOverlay = document.getElementById('previewAnalysisOverlay');
+
+    if (previewImg) {
+        previewImg.removeAttribute('src');
+    }
+    if (previewTile) {
+        previewTile.classList.remove('has-photo');
+    }
+    if (previewTryBtn) {
+        previewTryBtn.disabled = true;
+        previewTryBtn.style.cursor = '';
+    }
+    if (previewAnalysisOverlay) {
+        previewAnalysisOverlay.style.display = 'none';
+    }
+}
+
+function rejectActivePhotoAfterBodyCheck(photoId) {
+    if (!isActivePhotoValidation(photoId)) {
+        return;
+    }
+
+    activePhotoValidationStatus = 'invalid';
+    lastRejectedPhotoValidationId = photoId;
+    resetPhotoUploadArea();
+    resetPreviewUI();
+    clearPreviewUserPhoto();
+    clearSavedPhoto();
+    showError(PHOTO_BODY_REJECTION_MESSAGE);
+
+    if (dedupeWindow('photo_upload_fail_no_body', 2000)) {
+        trackEvent('photo_upload_fail', {
+            reason: 'no_body_detected',
+            error: PHOTO_BODY_REJECTION_MESSAGE,
+            after_upload: true,
+        });
+    }
+
+    showSuccessNotification('Upload Another Photo', PHOTO_BODY_REJECTION_MESSAGE, 6000, true);
+}
+
+function runBackgroundBodyValidation(imageDataUrl, photoId) {
+    // The photo is already saved at upload time. This pass only downgrades:
+    // a hard rejection clears the persisted copy and warns; anything else leaves it saved.
+    detectBodyInImage(imageDataUrl).then((bodyResult) => {
+        if (!isActivePhotoValidation(photoId)) {
+            return;
+        }
+
+        if (bodyResult && bodyResult.state === 'reject') {
+            rejectActivePhotoAfterBodyCheck(photoId);
+            return;
+        }
+
+        activePhotoValidationStatus = 'valid';
+
+        if (bodyResult && bodyResult.state === 'warning' && bodyResult.message) {
+            showSuccessNotification('Quality Tips', bodyResult.message, 4000, false);
+        }
+    }).catch((error) => {
+        elloLog('Background body validation error:', error);
+        if (!isActivePhotoValidation(photoId)) {
+            return;
+        }
+        activePhotoValidationStatus = 'valid';
+    });
+}
 // Generate or retrieve persistent sessionId from localStorage (per store)
 // This ensures rate limiting works across tabs/windows for the same browser
 const ELLO_STORE_SLUG_FOR_KEY = window.ELLO_STORE_ID || window.ELLO_STORE_SLUG || 'default_store';
@@ -1758,7 +2076,7 @@ try {
 try {
     document.cookie = `ello_session_id=${sessionId}; path=/; max-age=604800; SameSite=Lax`;
 } catch (e) { }
-console.log("[Ello Widget] Session ID:", sessionId);
+elloLog("[Ello Widget] Session ID:", sessionId);
 
 /**
  * Updates the session activity timestamp to prevent premature rotation
@@ -2029,6 +2347,11 @@ function takePicture() {
         return;
     }
 
+    if (dedupeWindow('photo_upload_start', 2000)) {
+        uploadAttemptId = `${window.ELLO_SESSION_ID}-${Date.now()}`;
+        trackEvent('photo_upload_start', { method: 'camera' });
+    }
+
     // Show best practices modal if not dismissed
     if (checkShouldShowBestPractices()) {
         pendingPhotoAction = proceedWithTakePicture;
@@ -2078,6 +2401,11 @@ function chooseFromGallery() {
     if (!isMobile) {
         handlePhotoUploadClick();
         return;
+    }
+
+    if (dedupeWindow('photo_upload_start', 2000)) {
+        uploadAttemptId = `${window.ELLO_SESSION_ID}-${Date.now()}`;
+        trackEvent('photo_upload_start', { method: 'gallery' });
     }
 
     // Show best practices modal if not dismissed
@@ -2404,6 +2732,15 @@ function openWidget() {
     // Reset analytics state for this widget view
     hadMeaningfulAction = false;
 
+    // Default surface attribution — if no upstream caller set this (e.g., the
+    // bubble click handler at initializeWidget time, or any future entry path),
+    // fall back to 'floating_widget'. The inline button and preview popup both
+    // set this BEFORE calling openWidget(), so this fallback only fires for the
+    // floating bubble path.
+    if (!window.ELLO_PENDING_ENTRY_SOURCE) {
+        window.ELLO_PENDING_ENTRY_SOURCE = 'floating_widget';
+    }
+
     // If opening full widget, close preview if it's open (use temporary dismiss so it user preference isn't permanent)
     if (isPreviewVisible) {
         dismissPreview(true);
@@ -2412,6 +2749,17 @@ function openWidget() {
     }
 
     const widget = document.getElementById('virtualTryonWidget');
+
+    // Inline mode — focused PDP experience. CSS hides featured/quick-picks/
+    // wardrobe sections and centers the selected product. Class is added on
+    // every open (in case the merchant alternates between surfaces) and
+    // removed on closeWidget(). Stylesheet is injected lazily on first use.
+    if (window.ELLO_INLINE_MODE) {
+        widget.classList.add('inline-mode');
+        ensureInlineModeStyles();
+    } else {
+        widget.classList.remove('inline-mode');
+    }
 
     // Mobile animation handling
     if (isMobile) {
@@ -2435,6 +2783,16 @@ function openWidget() {
         widget.classList.remove('widget-minimized');
     }
     widgetOpen = true;
+
+    // ─── Tier 2: lazy full-catalog load on first widget engagement ───────
+    // Page load only fetches the small handles list + featured/quick picks
+    // preview (~50 KB). The full catalog (every enabled product, full image
+    // + variant data — what search/browse depends on) is fetched HERE, the
+    // first time the shopper actually opens the widget. Fire-and-forget —
+    // populateFeaturedAndQuickPicks below uses sampleClothing's current
+    // state; when the full catalog resolves it refreshes the view from the
+    // richer pool. Idempotent: subsequent opens no-op.
+    loadFullCatalogIfNeeded(window.ELLO_STORE_CONFIG || {});
 
     // Reset widget view context
     widgetViewId = Date.now();
@@ -2470,12 +2828,40 @@ function openWidget() {
             if (currentProduct) {
                 selectedClothing = currentProduct.id;
                 const featuredContainer = document.getElementById('featuredItem');
-                featuredContainer.classList.add('selected');
+                if (featuredContainer) featuredContainer.classList.add('selected');
 
-                // Don't show preview - auto-selected product is visible in featured section
-                updateSelectedClothingPreview(null);
+                if (window.ELLO_INLINE_MODE) {
+                    // Inline mode: the featured-section is hidden by CSS, so we
+                    // need the dedicated #selectedClothingPreview to be the
+                    // visible "what you're trying on" indicator. Populate its
+                    // image from elloSelectedGarment (set by populate above) or
+                    // fall back to currentProduct.image_url so it never renders
+                    // blank — the bug Andrew screenshotted.
+                    setupInlineModeProductPreview(currentProduct);
+                } else {
+                    // Normal floating-widget UX: featured-section IS visible and
+                    // already shows the product, so suppress the duplicate.
+                    updateSelectedClothingPreview(null);
+                }
 
                 updateTryOnButton();
+
+                // ─── Auto-fire path A: returning user (saved photo exists) ───
+                // If the inline-button click set ELLO_AUTO_FIRE and we already
+                // have a userPhoto loaded from localStorage by loadSavedPhoto()
+                // above, skip the redundant "Try On" button click and go
+                // straight to the try-on call. Loading bar appears immediately,
+                // result follows — the one-tap magic moment for repeat shoppers.
+                // If no saved photo: don't auto-fire here. The startTryOn()
+                // call below would re-open the file picker, but we want the
+                // picker to fire only via the Try On button or via the
+                // first-time auto-fire hook in the upload handler. So we let
+                // ELLO_AUTO_FIRE stay set and the upload-success handler picks
+                // it up after the user picks their photo.
+                if (window.ELLO_AUTO_FIRE && userPhoto && window.elloUserImageUrl) {
+                    window.ELLO_AUTO_FIRE = false;
+                    setTimeout(() => { window.startTryOn && window.startTryOn(); }, 50);
+                }
             }
 
             // Update wardrobe button count
@@ -2505,6 +2891,29 @@ function closeWidget() {
     if (dedupeOnce(`widget_close_${widgetViewId}`)) {
         trackEvent('widget_close', { had_meaningful_action: hadMeaningfulAction });
     }
+
+    // Clear inline-mode state. If the shopper re-opens via the floating
+    // bubble next, we want them to land in the full browse UX — not in the
+    // focused PDP experience that was tied to the previous inline click.
+    if (window.ELLO_INLINE_MODE) {
+        window.ELLO_INLINE_MODE = false;
+        window.ELLO_INLINE_CTX = null;
+        window.ELLO_AUTO_FIRE = false; // cancel any pending auto-fire
+        widget.classList.remove('inline-mode');
+    }
+
+    // Always tear down result-stage CTAs and success state on close, since
+    // they're rendered in every mode now. Re-opening mid-load was producing
+    // a duplicate (small) Add-to-Cart button because stale markup survived.
+    widget.classList.remove('inline-mode-result-ready', 'inline-mode-cart-success');
+    const staleCtas = document.getElementById('ello-inline-result-ctas');
+    if (staleCtas) staleCtas.remove();
+    const staleSuccess = document.getElementById('ello-inline-cart-success');
+    if (staleSuccess) staleSuccess.remove();
+    const staleBuy = document.querySelector('.buy-now-container');
+    if (staleBuy) staleBuy.remove();
+    const staleAttr = document.querySelector('.tryon-attribution');
+    if (staleAttr) staleAttr.remove();
 
     // Apply the minimized visual state — adds the .widget-minimized class
     // and re-applies the saved/default minimized background color.
@@ -2555,21 +2964,12 @@ function closeWidget() {
     if (inputArea) inputArea.classList.remove('chat-mode');
     if (chatContainer) chatContainer.style.display = 'none';
 
-    // Reset user data
+    // Reset clothing selection only — the user's photo must persist across close/open
+    // so they don't have to re-upload every time the panel is minimized.
+    // Photo is cleared on rejection or explicit reset, never on close.
     selectedClothing = null;
-    userPhoto = null;
-    userPhotoFileId = null;
 
-    // Clear photo preview
-    const preview = document.getElementById('photoPreview');
-    if (preview) {
-        preview.style.display = 'none';
-    }
-
-    // Reset upload area
-    resetPhotoUploadArea();
-
-    // Clear clothing selections
+    // Clear clothing selections in UI
     document.querySelectorAll('.quick-pick-item').forEach(item => {
         item.classList.remove('selected');
     });
@@ -2589,7 +2989,10 @@ function closeWidget() {
 function resetPhotoUploadArea() {
     // Reset internal state
     userPhoto = null;
+    userPhotoFileId = null;
     window.elloUserImageUrl = null;
+    resetActivePhotoValidation();
+    clearSavedPhoto();
     if (typeof localStorage !== 'undefined') {
         localStorage.removeItem('userPhoto');
         localStorage.removeItem('userPhotoFileId');
@@ -2605,6 +3008,7 @@ function resetPhotoUploadArea() {
     if (workspace) workspace.classList.remove('visible');
     if (photoContainer) photoContainer.style.display = 'none';
     if (activePhoto) activePhoto.src = '';
+    clearPreviewUserPhoto();
 
     // Show photo instruction again
     const instruction = document.querySelector('.photo-instruction');
@@ -2704,7 +3108,7 @@ const SAMPLE_MODELS = [
 ];
 
 function populateModelBrowser() {
-    console.log("👉 Populating Model Browser...");
+    elloLog("👉 Populating Model Browser...");
     const grid = document.getElementById('modelBrowserGrid');
     if (!grid) {
         console.error("❌ modelBrowserGrid not found");
@@ -2735,7 +3139,7 @@ async function selectModel(modelId) {
     const model = SAMPLE_MODELS.find(m => m.id === modelId);
     if (!model) return;
 
-    console.log("✅ Selected Model:", model.name);
+    elloLog("✅ Selected Model:", model.name);
 
     // Use the embedded base64 data directly
     const base64 = model.base64;
@@ -2747,6 +3151,10 @@ async function selectModel(modelId) {
         // Update global photo state with base64
         userPhoto = base64;
         window.elloUserImageUrl = base64;
+        userPhotoFileId = 'model_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        activePhotoValidationId = userPhotoFileId;
+        activePhotoValidationStatus = 'valid';
+        lastRejectedPhotoValidationId = null;
 
         // Close the browser modal
         closeModelBrowser();
@@ -2762,7 +3170,7 @@ async function selectModel(modelId) {
         }
         updateTryOnButton();
 
-        console.log("✅ Model prepared (embedded base64)");
+        elloLog("✅ Model prepared (embedded base64)");
     } else {
         console.error("❌ Model missing base64 data");
         alert("Unable to load model. Please try another.");
@@ -2872,7 +3280,7 @@ function isProductHidden(product) {
         const idStr = String(product.id);
         const cleanId = idStr.split('/').pop();
         if (window.elloHiddenProductIds && (window.elloHiddenProductIds.has(idStr) || window.elloHiddenProductIds.has(cleanId))) {
-            console.log(`[Ello Debug] Hidden by ID: ${idStr}`);
+            elloLog(`[Ello Debug] Hidden by ID: ${idStr}`);
             return true;
         }
     }
@@ -2881,7 +3289,7 @@ function isProductHidden(product) {
     if (product.name || product.title) {
         const name = (product.name || product.title).toLowerCase().trim();
         if (window.elloHiddenTitles && window.elloHiddenTitles.has(name)) {
-            console.log(`[Ello Debug] Hidden by Title: ${name}`);
+            elloLog(`[Ello Debug] Hidden by Title: ${name}`);
             return true;
         }
     }
@@ -2895,7 +3303,7 @@ function isProductHidden(product) {
     if (handle) {
         const cleanHandle = handle.toLowerCase();
         if (window.elloHiddenHandles && window.elloHiddenHandles.has(cleanHandle)) {
-            console.log(`[Ello Debug] Hidden by Handle: ${cleanHandle}`);
+            elloLog(`[Ello Debug] Hidden by Handle: ${cleanHandle}`);
             return true;
         }
     }
@@ -2993,7 +3401,7 @@ async function populateFeaturedAndQuickPicks() {
         }
     } else {
         if (currentProduct && isProductHidden(currentProduct)) {
-            console.log("🚫 Current Page Product is HIDDEN. Falling back to Featured/Trending.");
+            elloLog("🚫 Current Page Product is HIDDEN. Falling back to Featured/Trending.");
         }
         // Priority 2: Custom featured item (if no current product)
         if (customCuration && customCuration.featuredItemId) {
@@ -3306,6 +3714,8 @@ function resetSelection() {
     selectedClothing = null;
     userPhoto = null;
     userPhotoFileId = null;
+    window.elloUserImageUrl = null;
+    resetActivePhotoValidation();
 
     // Clear saved photo from storage when resetting
     clearSavedPhoto();
@@ -3642,78 +4052,28 @@ async function handlePhotoUpload(event) {
     reader.onload = async function (e) {
         try {
             const imageDataUrl = e.target.result;
-
-            // Immediately show the photo in the workspace with the analyzing loader
-            updatePhotoPreview(imageDataUrl);
-            const activeLoader = document.getElementById('activePhotoLoader');
-            if (activeLoader) {
-                activeLoader.style.display = 'flex';
-            }
-
-            // Mirror the same analyzing state in the preview tile (PDP mini-widget)
-            // so merchants/customers see body-check progress instead of a blank tile.
-            const previewTile = document.getElementById('previewUploadTile');
-            const previewImg = document.getElementById('previewUserPhoto');
-            const previewAnalysisOverlay = document.getElementById('previewAnalysisOverlay');
-            if (previewTile && previewImg) {
-                previewImg.src = imageDataUrl;
-                previewTile.classList.add('has-photo');
-            }
-            if (previewAnalysisOverlay) {
-                previewAnalysisOverlay.style.display = 'flex';
-            }
-
-            // Show analyzing state
-            const uploadText = uploadArea?.querySelector('.upload-text:not(#changePhotoText)');
-            if (uploadText) {
-                const originalText = uploadText.textContent;
-                uploadText.textContent = 'First upload may take a moment';
-            }
-
-            // Enhanced quality validation
-            const qualityResult = await validateImageQuality(imageDataUrl);
-
-            if (!qualityResult.isValid) {
-                // Hide loader and reset if invalid
-                if (activeLoader) activeLoader.style.display = 'none';
-                // Clear the preview tile too so the rejected photo doesn't linger
-                if (previewTile && previewImg) {
-                    previewImg.removeAttribute('src');
-                    previewTile.classList.remove('has-photo');
-                }
-                resetPhotoUploadArea();
-
-                if (dedupeWindow('photo_upload_fail_quality', 2000)) {
-                    trackEvent('photo_upload_fail', { reason: 'quality_fail', error: qualityResult.error });
-                }
-
-                showSuccessNotification('Image Quality Issue', qualityResult.error, 5000, true);
-                if (uploadArea) {
-                    uploadArea.classList.remove('uploading');
-                }
-                return;
-            }
-
-            // Show warnings if any (non-blocking)
-            if (qualityResult.warnings && qualityResult.warnings.length > 0) {
-                const warningMessage = qualityResult.warnings.join(' ');
-                showSuccessNotification('Quality Tips', warningMessage, 4000, false);
-            }
-
-            // Image passed all checks
+            const photoId = 'photo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             userPhoto = imageDataUrl;
             window.elloUserImageUrl = imageDataUrl;
-            userPhotoFileId = 'photo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            userPhotoFileId = photoId;
+            activePhotoValidationId = photoId;
+            activePhotoValidationStatus = 'pending';
+            lastRejectedPhotoValidationId = null;
 
-            // Save photo to localStorage for persistence (async with compression)
-            await savePhotoToStorage(imageDataUrl, userPhotoFileId);
-
-            // Update UI
-            updatePhotoPreview(e.target.result);
-            updatePreviewUserPhoto(e.target.result); // Update preview if open
-            if (uploadArea) uploadArea.classList.remove('uploading'); // Clear uploading state without resetting preview
-
+            clearError?.();
+            updatePhotoPreview(imageDataUrl);
+            updatePreviewUserPhoto(imageDataUrl);
             updateTryOnButton();
+
+            const activeLoader = document.getElementById('activePhotoLoader');
+            if (activeLoader) {
+                activeLoader.style.display = 'none';
+            }
+            const previewAnalysisOverlay = document.getElementById('previewAnalysisOverlay');
+            if (previewAnalysisOverlay) {
+                previewAnalysisOverlay.style.display = 'none';
+            }
+            if (uploadArea) uploadArea.classList.remove('uploading'); // Clear uploading state without resetting preview
 
             // Haptic feedback on mobile
             if (isMobile && navigator.vibrate) {
@@ -3726,6 +4086,59 @@ async function handlePhotoUpload(event) {
             markMeaningfulAction(); // Successfully uploading a photo is meaningful
 
             showSuccessNotification('Photo Uploaded', 'Your photo has been uploaded successfully!', 2000);
+
+            // Persist immediately so the photo survives reloads and pending background validation.
+            // Rejection (no body detected) clears it via rejectActivePhotoAfterBodyCheck → clearSavedPhoto.
+            savePhotoToStorage(imageDataUrl, photoId).catch(error => {
+                console.error('Error saving uploaded photo:', error);
+            });
+
+            // ─── Auto-fire path B: first-time user just picked their photo ───
+            // The inline button set ELLO_AUTO_FIRE before opening the popup.
+            // Now that upload is complete and userPhoto/elloUserImageUrl are
+            // populated, fire startTryOn() so the shopper goes straight to the
+            // loading bar without having to click a second "Try On" button.
+            // Quality validation (called below in .then) runs in parallel and
+            // does NOT gate the try-on — Andrew's call: if validation rejects
+            // the photo, the error surfaces in the result panel rather than
+            // making the shopper wait on a spinner that might feel hung.
+            if (window.ELLO_AUTO_FIRE) {
+                window.ELLO_AUTO_FIRE = false;
+                setTimeout(() => { window.startTryOn && window.startTryOn(); }, 100);
+            }
+
+            validateImageQuality(imageDataUrl, {
+                includeFaceDetection: false,
+                includeBodyDetection: false,
+            }).then((qualityResult) => {
+                if (!isActivePhotoValidation(photoId)) {
+                    return;
+                }
+
+                if (!qualityResult.isValid) {
+                    resetPhotoUploadArea();
+
+                    if (dedupeWindow('photo_upload_fail_quality', 2000)) {
+                        trackEvent('photo_upload_fail', {
+                            reason: 'quality_fail',
+                            error: qualityResult.error,
+                            after_upload: true,
+                        });
+                    }
+
+                    showSuccessNotification('Image Quality Issue', qualityResult.error, 5000, true);
+                    return;
+                }
+
+                if (qualityResult.warnings && qualityResult.warnings.length > 0) {
+                    const warningMessage = qualityResult.warnings.join(' ');
+                    showSuccessNotification('Quality Tips', warningMessage, 4000, false);
+                }
+            }).catch(error => {
+                elloLog('Image quality validation error:', error);
+            });
+
+            runBackgroundBodyValidation(imageDataUrl, photoId);
 
         } catch (error) {
             console.error('Error processing uploaded image:', error);
@@ -3975,7 +4388,7 @@ async function detectFaceInImage(imageSrc) {
                         if (!resolved) {
                             resolved = true;
                             clearTimeout(timeoutId);
-                            console.log('Image load error in face detection');
+                            elloLog('Image load error in face detection');
                             reject(new Error('Image failed to load'));
                         }
                     };
@@ -4003,7 +4416,7 @@ async function detectFaceInImage(imageSrc) {
             warning: detections.length === 0 ? 'No face detected. For best results, use a photo with your face clearly visible.' : null
         };
     } catch (error) {
-        console.log('Face detection error:', error);
+        elloLog('Face detection error:', error);
         return { detected: false, warning: null }; // Silent fail
     }
 }
@@ -4084,7 +4497,7 @@ async function loadMoveNetModel() {
             await tf.ready();
         }
     } catch (error) {
-        console.log('TensorFlow ready check failed in loadMoveNetModel:', error);
+        elloLog('TensorFlow ready check failed in loadMoveNetModel:', error);
         return null;
     }
 
@@ -4103,7 +4516,7 @@ async function loadMoveNetModel() {
                     setTimeout(resolve, 500);
                 };
                 script.onerror = () => {
-                    console.log('Pose-detection library failed to load');
+                    elloLog('Pose-detection library failed to load');
                     resolve(); // Don't reject, just continue
                 };
                 document.head.appendChild(script);
@@ -4120,14 +4533,14 @@ async function loadMoveNetModel() {
             );
             // Store the detector as the model
             movenetModel = detector;
-            console.log('✅ MoveNet detector loaded successfully via pose-detection library');
+            elloLog('✅ MoveNet detector loaded successfully via pose-detection library');
             return movenetModel;
         } else {
-            console.log('⚠️ pose-detection library not available after loading');
+            elloLog('⚠️ pose-detection library not available after loading');
             return null;
         }
     } catch (error) {
-        console.log('MoveNet loading failed:', error);
+        elloLog('MoveNet loading failed:', error);
         return null;
     }
 
@@ -4145,7 +4558,7 @@ async function detectBodyInImage(imageSrc) {
                 await tf.ready();
             }
         } catch (error) {
-            console.log('TensorFlow ready check failed in detectBodyInImage:', error);
+            elloLog('TensorFlow ready check failed in detectBodyInImage:', error);
         }
         tfLoaded = true; // Mark as loaded if it's already available
     }
@@ -4224,7 +4637,7 @@ async function detectBodyInImage(imageSrc) {
             }
 
             // Debug: log all keypoint names to help troubleshoot
-            console.log('Available keypoints:', keypoints.map(kp => ({ name: kp.name, score: kp.score })));
+            elloLog('Available keypoints:', keypoints.map(kp => ({ name: kp.name, score: kp.score })));
 
             // Configuration: Confidence thresholds
             const SHOULDER_CONFIDENCE_THRESHOLD = 0.5;
@@ -4273,7 +4686,7 @@ async function detectBodyInImage(imageSrc) {
 
             const detectedKeypoints = [leftShoulder, rightShoulder, leftHip, rightHip].filter(conf => conf > 0.5).length;
 
-            console.log('Body detection details (pose-detection):', {
+            elloLog('Body detection details (pose-detection):', {
                 leftShoulder,
                 rightShoulder,
                 leftHip,
@@ -4326,7 +4739,7 @@ async function detectBodyInImage(imageSrc) {
                 predictions.dispose();
             }
         } catch (e) {
-            console.log('Error getting array from predictions:', e);
+            elloLog('Error getting array from predictions:', e);
             // Dispose of predictions tensor even on error
             if (predictions && predictions.dispose) {
                 predictions.dispose();
@@ -4341,7 +4754,7 @@ async function detectBodyInImage(imageSrc) {
             // MoveNet can return different shapes depending on the model version
             // Common formats: [1, 17, 3], [1, 1, 17, 3], or [17, 3]
             if (!Array.isArray(keypointsArray)) {
-                console.log('Output is not an array, type:', typeof keypointsArray);
+                elloLog('Output is not an array, type:', typeof keypointsArray);
                 return { detected: false, warning: null };
             }
 
@@ -4384,11 +4797,11 @@ async function detectBodyInImage(imageSrc) {
             }
 
             if (!keypoints) {
-                console.log('Failed to extract keypoints from MoveNet output');
+                elloLog('Failed to extract keypoints from MoveNet output');
                 return { detected: false, warning: null };
             }
         } catch (e) {
-            console.log('Error extracting keypoints structure:', e);
+            elloLog('Error extracting keypoints structure:', e);
             return { detected: false, warning: null };
         }
 
@@ -4421,7 +4834,7 @@ async function detectBodyInImage(imageSrc) {
                     keypointConfidences.push(0);
                 }
             } catch (e) {
-                console.log(`Error extracting keypoint ${i}:`, e, keypoints[i]);
+                elloLog(`Error extracting keypoint ${i}:`, e, keypoints[i]);
                 keypointConfidences.push(0);
             }
         }
@@ -4478,7 +4891,7 @@ async function detectBodyInImage(imageSrc) {
 
         const detectedKeypoints = [leftShoulder, rightShoulder, leftHip, rightHip].filter(conf => conf > 0.5).length;
 
-        console.log('Body detection details:', {
+        elloLog('Body detection details:', {
             leftShoulder,
             rightShoulder,
             leftHip,
@@ -4498,7 +4911,7 @@ async function detectBodyInImage(imageSrc) {
             warning: state === 'warning' ? message : (state === 'reject' ? message : null)
         };
     } catch (error) {
-        console.log('Body detection error:', error);
+        elloLog('Body detection error:', error);
         // On error, don't block - gracefully fail (silent fail)
         return { detected: false, state: null, warning: null, message: null };
     }
@@ -4530,7 +4943,9 @@ function validateImageFile(file) {
 }
 
 // Enhanced validation with quality checks
-async function validateImageQuality(imageSrc) {
+async function validateImageQuality(imageSrc, options = {}) {
+    const includeFaceDetection = options.includeFaceDetection !== false;
+    const includeBodyDetection = options.includeBodyDetection !== false;
     const warnings = [];
     const errors = [];
 
@@ -4577,27 +4992,24 @@ async function validateImageQuality(imageSrc) {
         warnings.push('Image contrast is low. Better contrast will improve try-on results.');
     }
 
-    // Optional face detection (non-blocking, warning only)
-    const faceResult = await detectFaceInImage(imageSrc);
-    if (faceResult.warning && !faceResult.detected) {
-        warnings.push(faceResult.warning);
-    }
-
-    // Body detection with three-tier system: reject, warning, or success
-    const bodyResult = await detectBodyInImage(imageSrc);
-
-    // Handle body detection states (only act if state is not null - null means silent fail)
-    if (bodyResult && bodyResult.state) {
-        if (bodyResult.state === 'reject') {
-            // REJECT: Block upload - no body detected
-            errors.push(bodyResult.message || 'No body detected in photo. Please upload a full-body photo with you standing clearly visible.');
-        } else if (bodyResult.state === 'warning') {
-            // WARNING: Show notification but allow upload - partial body detected
-            warnings.push(bodyResult.message || 'Partial body detected. For best try-on results, use a full-body photo with both your shoulders and hips clearly visible.');
+    if (includeFaceDetection) {
+        const faceResult = await detectFaceInImage(imageSrc);
+        if (faceResult.warning && !faceResult.detected) {
+            warnings.push(faceResult.warning);
         }
-        // SUCCESS: No action needed - full body detected, allow silently
     }
-    // If state is null, silent fail - don't block or warn (graceful degradation)
+
+    if (includeBodyDetection) {
+        const bodyResult = await detectBodyInImage(imageSrc);
+
+        if (bodyResult && bodyResult.state) {
+            if (bodyResult.state === 'reject') {
+                errors.push(bodyResult.message || 'No body detected in photo. Please upload a full-body photo with you standing clearly visible.');
+            } else if (bodyResult.state === 'warning') {
+                warnings.push(bodyResult.message || 'Partial body detected. For best try-on results, use a full-body photo with both your shoulders and hips clearly visible.');
+            }
+        }
+    }
 
     return {
         isValid: errors.length === 0,
@@ -4651,7 +5063,7 @@ function openClothingBrowser() {
     browserCurrentPage = 1;
     filteredClothing = [...sampleClothing];
 
-    console.log('Opening clothing browser, sampleClothing length:', sampleClothing.length);
+    elloLog('Opening clothing browser, sampleClothing length:', sampleClothing.length);
     renderBrowserGrid();
 }
 
@@ -4670,20 +5082,37 @@ function closeClothingBrowser() {
 function renderBrowserGrid() {
     const grid = document.getElementById('browserGrid');
 
-    console.log('renderBrowserGrid called, sampleClothing length:', sampleClothing.length);
-    console.log('Grid element found:', !!grid);
+    elloLog('renderBrowserGrid called, sampleClothing length:', sampleClothing.length);
+    elloLog('Grid element found:', !!grid);
 
     if (!grid) {
         console.error('Browser grid element not found!');
         return;
     }
 
+    // Tier 2: under the new loading model sampleClothing only holds the small
+    // preview (~7 items) at page load. The full catalog is fetched lazily on
+    // widget open. The browser/search view needs the full catalog to feel
+    // populated, so wait on it here before rendering. The trigger was already
+    // fired in openWidget — this just blocks on the in-flight promise.
+    if (!_elloFullCatalogLoaded && _elloFullCatalogPromise) {
+        elloLog('Browse view waiting on full catalog…');
+        grid.innerHTML = '<div style="text-align: center; padding: 40px; color: #666;">Loading products…</div>';
+        _elloFullCatalogPromise.then(() => {
+            filteredClothing = [...sampleClothing];
+            renderBrowserGrid();
+        });
+        return;
+    }
+
     // Check if clothing data is loaded
     if (!sampleClothing || sampleClothing.length === 0) {
-        console.log('No clothing data available, loading...');
+        elloLog('No clothing data available, loading...');
         grid.innerHTML = '<div style="text-align: center; padding: 40px; color: #666;">Loading products...</div>';
-        loadClothingData().then(() => {
-            console.log('Data loaded, re-rendering grid...');
+        // Fall back to a full load if neither page-load preview nor widget-open
+        // lazy load populated anything (e.g. both fetches failed).
+        loadFullCatalogIfNeeded(window.ELLO_STORE_CONFIG || {}).then(() => {
+            elloLog('Data loaded, re-rendering grid...');
             filteredClothing = [...sampleClothing];
             renderBrowserGrid();
         });
@@ -4928,6 +5357,15 @@ async function callElloTryOn(personImageUrl, productImageUrl) {
         throw new Error("Store slug is required for try-on API call");
     }
 
+    // Surface attribution — which UI fired this try-on. Set by:
+    //   • elloOpenTryOnFromInline → 'inline_button'
+    //   • preview-popup CTA → 'preview_popup'
+    //   • openWidget() (everything else) → 'floating_widget'
+    // We consume-and-clear here so a subsequent try-on without a fresh open
+    // doesn't get mis-attributed to the last surface.
+    const entrySource = window.ELLO_PENDING_ENTRY_SOURCE || 'floating_widget';
+    window.ELLO_PENDING_ENTRY_SOURCE = null;
+
     const payload = {
         personImageUrl,
         productImageUrl,
@@ -4937,6 +5375,7 @@ async function callElloTryOn(personImageUrl, productImageUrl) {
         variantId: variantId || null,
         sessionId: sessionId || null,
         pageContext: getPageContext(),
+        entrySource,
     };
 
 
@@ -4944,7 +5383,7 @@ async function callElloTryOn(personImageUrl, productImageUrl) {
     // Staging widget → staging /tryon proxy → ML service.
     // Production widget → production /tryon proxy → ML service.
     const _tryonBase = window.ELLO_WIDGET_BASE_URL || "https://ello-shopify-app-13593516897.us-central1.run.app";
-    console.log("[Ello Widget] callElloTryOn ->", _tryonBase + "/tryon", "store:", storeSlug);
+    elloLog("[Ello Widget] callElloTryOn ->", _tryonBase + "/tryon", "store:", storeSlug);
 
     const res = await fetch(
         _tryonBase + "/tryon",
@@ -5026,71 +5465,139 @@ function showLoader(show) {
     el.style.display = show ? "flex" : "none";
 }
 
-// Loading bar control functions
-let loadingBarInterval = null;
-let loadingBarProgress = 0;
+const TRYON_LOADING_STATUS = "Applying the outfit...";
+
+const TRYON_LOADING_TIPS = [
+    "Use a clear, well-lit photo for best results.",
+    "Stand facing the camera when possible.",
+    "Avoid baggy layers over the outfit area.",
+    "Full-body photos usually work better than close crops.",
+    "Results may vary based on pose, lighting, and product angle."
+];
+
+const tryOnLoadingIntervals = {};
+
+function getTryOnLoadingRoot(surface) {
+    return document.getElementById(surface === 'preview' ? 'previewProgressOverlay' : 'tryOnLoadingBar');
+}
+
+function setTryOnLoadingImage(img, src) {
+    if (!img) return;
+
+    if (src) {
+        img.src = src;
+        img.style.visibility = 'visible';
+    } else {
+        img.removeAttribute('src');
+        img.style.visibility = 'hidden';
+    }
+}
+
+function refreshTryOnLoadingImages(root) {
+    if (!root) return;
+
+    const garment = window.elloSelectedGarment || {};
+    const productImageUrl = garment.image_url || document.getElementById('previewProductImg')?.src || '';
+    const personImageUrl = window.elloUserImageUrl || userPhoto || '';
+
+    setTryOnLoadingImage(root.querySelector('[data-loading-product]'), productImageUrl);
+    setTryOnLoadingImage(root.querySelector('[data-loading-person]'), personImageUrl);
+}
+
+function updateTryOnLoadingCopy(root, index) {
+    if (!root) return;
+
+    const stepEl = root.querySelector('[data-loading-step]');
+    const tipEl = root.querySelector('[data-loading-tip]');
+
+    if (stepEl) {
+        stepEl.textContent = TRYON_LOADING_STATUS;
+    }
+    if (tipEl) {
+        tipEl.textContent = TRYON_LOADING_TIPS[index % TRYON_LOADING_TIPS.length];
+    }
+}
+
+function updateTryOnLoadingProgress(root, percent) {
+    if (!root) return;
+
+    const boundedPercent = Math.max(0, Math.min(100, Math.round(percent)));
+    const progressEl = root.querySelector('[data-loading-progress]');
+    const percentEl = root.querySelector('[data-loading-percent]');
+
+    if (progressEl) {
+        progressEl.style.width = `${boundedPercent}%`;
+    }
+    if (percentEl) {
+        percentEl.textContent = `${boundedPercent}%`;
+    }
+}
+
+function startTryOnLoadingState(surface) {
+    const root = getTryOnLoadingRoot(surface);
+    if (!root) return;
+
+    stopTryOnLoadingState(surface);
+    refreshTryOnLoadingImages(root);
+    updateTryOnLoadingCopy(root, 0);
+    updateTryOnLoadingProgress(root, 8);
+
+    let index = 0;
+    let lastTipUpdate = 0;
+    const startTime = Date.now();
+    const estimatedDuration = surface === 'preview' ? 12000 : 15000;
+
+    tryOnLoadingIntervals[surface] = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / estimatedDuration, 0.95);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        updateTryOnLoadingProgress(root, 8 + eased * 84);
+        refreshTryOnLoadingImages(root);
+
+        if (elapsed - lastTipUpdate >= 2600) {
+            index += 1;
+            lastTipUpdate = elapsed;
+            updateTryOnLoadingCopy(root, index);
+        }
+    }, 120);
+}
+
+function stopTryOnLoadingState(surface) {
+    if (tryOnLoadingIntervals[surface]) {
+        clearInterval(tryOnLoadingIntervals[surface]);
+        delete tryOnLoadingIntervals[surface];
+    }
+}
 
 function showLoadingBar(show) {
     const container = document.getElementById("tryOnLoadingBar");
-    const fill = document.getElementById("tryOnLoadingBarFill");
+    const widget = document.getElementById("virtualTryonWidget");
 
-    if (!container || !fill) {
+    if (!container) {
         return;
     }
 
     if (show) {
-        container.style.display = "block";
-        // FORCE visibility against themes
-        container.style.setProperty('display', 'block', 'important');
-
-        loadingBarProgress = 0;
-        fill.style.width = "0%";
-
-        console.log("🚀 Starting Loading Bar Animation...");
-
-        // Start animated progress
-        let startTime = Date.now();
-        const estimatedDuration = 15000; // 15 seconds estimated
-
-        loadingBarInterval = setInterval(() => {
-            const elapsed = Date.now() - startTime;
-            // Use easing function to make it feel natural
-            // Progress quickly to 80%, then slow down
-            if (elapsed < estimatedDuration) {
-                const progress = Math.min(elapsed / estimatedDuration, 0.95);
-                // Ease out cubic for smooth deceleration
-                const eased = 1 - Math.pow(1 - progress, 3);
-                loadingBarProgress = Math.min(eased * 90, 90); // Cap at 90% until done
-                fill.style.setProperty('width', loadingBarProgress + "%", 'important');
-            }
-        }, 50); // Update every 50ms for smooth animation
-    } else {
-        // Complete the bar to 100% quickly, then hide
-        if (loadingBarInterval) {
-            clearInterval(loadingBarInterval);
-            loadingBarInterval = null;
+        if (widget) {
+            widget.classList.add('tryon-loading-active');
         }
-
-        // Animate to 100%
-        fill.style.setProperty('width', "100%", 'important');
-
-        // Hide after a brief moment
-        setTimeout(() => {
-            if (container) {
-                container.style.display = "none";
-            }
-            loadingBarProgress = 0;
-        }, 300);
+        container.style.display = "flex";
+        container.style.setProperty('display', 'flex', 'important');
+        startTryOnLoadingState('full');
+    } else {
+        stopTryOnLoadingState('full');
+        if (widget) {
+            widget.classList.remove('tryon-loading-active');
+        }
+        container.style.setProperty('display', 'none', 'important');
     }
 }
 
 function completeLoadingBar() {
-    const fill = document.getElementById("tryOnLoadingBarFill");
-    if (fill && loadingBarInterval) {
-        clearInterval(loadingBarInterval);
-        loadingBarInterval = null;
-        fill.style.width = "100%";
-    }
+    const container = document.getElementById("tryOnLoadingBar");
+    updateTryOnLoadingCopy(container, TRYON_LOADING_TIPS.length - 1);
+    updateTryOnLoadingProgress(container, 100);
+    stopTryOnLoadingState('full');
 }
 
 // Helper function to show error messages
@@ -5141,6 +5648,9 @@ function showFreeLimitReached() {
 }
 
 // Inject "Powered by Ello VTO" branding for ello_free merchants. Idempotent.
+// Renders as a hyperlink to the Shopify App Store listing and adapts its text
+// color to whatever background it ends up sitting on (merchant-chosen widget
+// colors, dark/light themes, etc.) via WCAG luminance sampling.
 function injectElloBranding() {
     if (document.getElementById("ello-branding-footer")) return;
     const widget = document.getElementById("virtualTryonWidget");
@@ -5148,8 +5658,67 @@ function injectElloBranding() {
     const footer = document.createElement("div");
     footer.id = "ello-branding-footer";
     footer.className = "ello-branding";
-    footer.textContent = "Powered by Ello VTO";
+    const link = document.createElement("a");
+    link.href = "https://apps.shopify.com/ello";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "Powered by Ello VTO";
+    footer.appendChild(link);
     widget.appendChild(footer);
+
+    // Adaptive contrast — compute now and re-run when the widget's appearance
+    // changes (theme toggle, merchant color update, resize/layout shift).
+    applyBrandingContrast(footer);
+    const reapply = () => applyBrandingContrast(footer);
+    window.addEventListener("resize", reapply);
+    if (typeof MutationObserver !== "undefined") {
+        const mo = new MutationObserver(reapply);
+        mo.observe(widget, { attributes: true, attributeFilter: ["class", "style"] });
+    }
+}
+
+// Walk up from `el` until we hit an ancestor with a non-transparent
+// background, then pick foreground colors that contrast against it.
+function applyBrandingContrast(el) {
+    const rgb = getEffectiveBackgroundColor(el);
+    if (!rgb) return;
+    const [r, g, b] = rgb;
+    const toLin = (c) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    };
+    const luminance = 0.2126 * toLin(r) + 0.7152 * toLin(g) + 0.0722 * toLin(b);
+    const isDarkBg = luminance < 0.5;
+    const baseColor = isDarkBg ? "rgba(255,255,255,0.88)" : "rgba(0,0,0,0.78)";
+    const hoverColor = isDarkBg ? "#ffffff" : "#000000";
+    const shadow = isDarkBg
+        ? "0 1px 2px rgba(0,0,0,0.45)"
+        : "0 1px 2px rgba(255,255,255,0.65)";
+    el.style.color = baseColor;
+    el.style.textShadow = shadow;
+    const link = el.querySelector("a");
+    if (link) {
+        link.style.color = baseColor;
+        link.style.textShadow = shadow;
+        link.onmouseenter = () => { link.style.color = hoverColor; };
+        link.onmouseleave = () => { link.style.color = baseColor; };
+    }
+}
+
+function getEffectiveBackgroundColor(el) {
+    let node = el;
+    while (node && node.nodeType === 1) {
+        const bg = window.getComputedStyle(node).backgroundColor;
+        const m = bg && bg.match(/rgba?\(([^)]+)\)/);
+        if (m) {
+            const parts = m[1].split(",").map((s) => parseFloat(s.trim()));
+            const alpha = parts.length === 4 ? parts[3] : 1;
+            if (alpha > 0.1) return [parts[0], parts[1], parts[2]];
+        }
+        node = node.parentElement;
+    }
+    // Fallback: assume a light page background.
+    return [255, 255, 255];
 }
 
 // Handle rate limit errors from the API
@@ -5283,6 +5852,669 @@ function smoothScrollToResult(resultSection) {
 
 // Try-on function - handles the complete try-on flow
 // Make it globally accessible
+// Public API for the inline-button theme block (and any other external caller).
+// Sets attribution + optional variant pre-selection, then opens the existing
+// popup IN INLINE MODE — a focused PDP-aware variant of the popup that hides
+// browse/wardrobe/quick-picks and surfaces only: the selected product, the
+// photo upload, and the Try On CTA. After try-on completes, the result CTAs
+// become Add-to-Cart instead of "try another item."
+//
+// Inline mode is mutually exclusive with the floating-widget's full browse
+// UX — same popup DOM, different CSS class. The class is added here via
+// ELLO_INLINE_MODE flag and removed on closeWidget().
+window.elloOpenTryOnFromInline = function (ctx) {
+    if (ctx && ctx.variantId) {
+        window.ELLO_PRESELECTED_VARIANT_ID = String(ctx.variantId);
+    }
+    // Tag surface BEFORE openWidget so the fallback inside openWidget doesn't
+    // overwrite it with 'floating_widget'.
+    window.ELLO_PENDING_ENTRY_SOURCE = (ctx && ctx.source) || 'inline_button';
+
+    // Inline mode flag — consumed by openWidget(), closeWidget(), and the
+    // result-render path in startTryOn(). Cleared in closeWidget() so the next
+    // floating-widget open returns to the full browse UX.
+    window.ELLO_INLINE_MODE = true;
+
+    // Stash product context so Add-to-Cart has everything it needs without
+    // re-deriving from DOM. productId is for /cart/add.js (Shopify's AJAX
+    // cart endpoint); variantId may get replaced by the size picker.
+    window.ELLO_INLINE_CTX = {
+        productHandle: ctx && ctx.productHandle || null,
+        productId:     ctx && ctx.productId     || null,
+        variantId:     ctx && ctx.variantId     || null
+    };
+
+    // Auto-fire try-on without a second button click.
+    //   - Returning user (saved photo): openWidget() detects this and fires
+    //     startTryOn() immediately after setup → straight to loading bar.
+    //   - First-time user: the file-picker upload handler detects this and
+    //     fires startTryOn() immediately after upload completes → consent
+    //     modal + picker is the only user-facing interaction.
+    // Photo VALIDATION runs in parallel and never blocks the try-on call;
+    // rejected photos surface as an error after the try-on attempt.
+    window.ELLO_AUTO_FIRE = true;
+
+    if (typeof openWidget === 'function') {
+        openWidget();
+    } else {
+        console.warn('[Ello] openWidget not yet defined — inline click dropped');
+    }
+};
+
+// ─── Inline-mode helpers ────────────────────────────────────────────────────
+// All four functions below are exclusive to the inline-button surface. The
+// floating widget never reaches them because window.ELLO_INLINE_MODE stays
+// false when openWidget() is called from the bubble click path.
+
+// Populates the existing #selectedClothingPreview element with the PDP
+// product's image so the inline-mode layout shows what they're trying on.
+// Forces the workspace + plus separator visible so the two-card layout
+// (Your Photo + Product) reads correctly even before they've uploaded.
+function setupInlineModeProductPreview(currentProduct) {
+    const preview = document.getElementById('selectedClothingPreview');
+    const previewImage = document.getElementById('selectedClothingImage');
+    const workspace = document.getElementById('tryOnWorkspace');
+    const plusSep = document.getElementById('tryOnPlusSeparator');
+
+    // Resolve image url: prefer the rich elloSelectedGarment populated by
+    // populateFeaturedAndQuickPicks; fall back to detectCurrentProduct's
+    // image_url. One of the two is almost always populated on a PDP.
+    const imageUrl =
+        (window.elloSelectedGarment && window.elloSelectedGarment.image_url) ||
+        (currentProduct && currentProduct.image_url) ||
+        null;
+
+    const productName =
+        (window.elloSelectedGarment && (window.elloSelectedGarment.name || window.elloSelectedGarment.title)) ||
+        (currentProduct && (currentProduct.title || currentProduct.name)) ||
+        'this item';
+
+    if (previewImage && imageUrl) {
+        previewImage.src = imageUrl;
+        previewImage.alt = productName;
+    }
+    if (preview) preview.style.display = 'flex';
+    if (workspace) workspace.classList.add('visible');
+    if (plusSep)   plusSep.style.display = 'flex';
+
+    // Stash for the result-stage CTAs (Add-to-Cart button price label etc.)
+    window.ELLO_INLINE_PRODUCT_NAME = productName;
+}
+
+// Lazily injects the inline-mode stylesheet on first open. Idempotent — we
+// keep a flag on document.head so subsequent opens skip the work.
+function ensureInlineModeStyles() {
+    if (document.getElementById('ello-inline-mode-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'ello-inline-mode-styles';
+    style.textContent = `
+        /* ─── Hide all browse/discover UI — inline mode is one-product focused ── */
+        .virtual-tryon-widget.inline-mode .featured-section,
+        .virtual-tryon-widget.inline-mode .quick-picks-section,
+        .virtual-tryon-widget.inline-mode .browse-all-btn,
+        .virtual-tryon-widget.inline-mode .wardrobe-btn,
+        .virtual-tryon-widget.inline-mode #firstRunOverlay,
+        .virtual-tryon-widget.inline-mode .onboarding-strip,
+        .virtual-tryon-widget.inline-mode .mode-tabs,
+        .virtual-tryon-widget.inline-mode .selected-clothing-remove,
+        .virtual-tryon-widget.inline-mode .section-title { display: none !important; }
+
+        /* ─── Workspace: two equal cards with centered "+" between them ───── */
+        .virtual-tryon-widget.inline-mode .try-on-workspace {
+            display: flex !important;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            padding: 24px 20px 16px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .virtual-tryon-widget.inline-mode .active-user-photo-container,
+        .virtual-tryon-widget.inline-mode .selected-clothing-preview {
+            flex: 1 1 0;
+            max-width: 200px;
+            min-width: 0;
+            margin: 0;
+        }
+        /* Force the photo container visible in inline mode even when there's
+           no uploaded photo yet — we'll style it as the "Upload your photo"
+           drop-target via the upload card instead of leaving an empty hole. */
+        .virtual-tryon-widget.inline-mode .selected-clothing-preview {
+            display: flex !important;
+        }
+
+        /* ─── Card styling: matched aspect ratio, soft shadow, clean ─────── */
+        .virtual-tryon-widget.inline-mode .active-photo-wrapper,
+        .virtual-tryon-widget.inline-mode .selected-clothing-image-container {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 3 / 4;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #f8f8f8;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.06);
+        }
+        .virtual-tryon-widget.inline-mode .active-user-photo,
+        .virtual-tryon-widget.inline-mode .selected-clothing-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        /* "Change photo" button — smaller, less obtrusive */
+        .virtual-tryon-widget.inline-mode .change-photo-btn {
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(0,0,0,0.75);
+            color: #fff;
+            border: none;
+            font: inherit;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            backdrop-filter: blur(4px);
+        }
+
+        /* ─── Plus separator: clean, centered, more visible ────────────────── */
+        .virtual-tryon-widget.inline-mode .plus-separator {
+            display: flex !important;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: #f1f1f1;
+            color: #666;
+            font-size: 18px;
+            font-weight: 400;
+            flex-shrink: 0;
+            padding: 0;
+        }
+
+        /* ─── Header: simpler, less "branded" ─────────────────────────────── */
+        .virtual-tryon-widget.inline-mode .widget-header h2,
+        .virtual-tryon-widget.inline-mode .widget-title { font-size: 15px; }
+
+        /* ─── Pre-upload state: hide "Use a model" — inline is upload-only ── */
+        .virtual-tryon-widget.inline-mode #useModelCard { display: none !important; }
+
+        /* ─── Photo upload area — when no user photo yet, this is the CTA ── */
+        /* Grow to fill the available vertical space inside the widget body and
+           center its content. Without this, the cards hug the top of the
+           section and leave a tall white gap below. */
+        .virtual-tryon-widget.inline-mode .photo-section {
+            margin-top: 0 !important;
+            padding: 16px 20px !important;
+            flex: 1 1 auto !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: stretch !important;
+        }
+        /* Single row: [upload card] [+] [product card]. Sized to fit the 420px
+           desktop popup — 150px cards + 8px gap + 24px plus + 8px gap = 340px,
+           fits cleanly inside the ~380px usable popup width. */
+        .virtual-tryon-widget.inline-mode .photo-section-content {
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: center !important;
+            gap: 8px !important;
+            max-width: 100% !important;
+            margin: 0 auto !important;
+            padding: 12px 4px !important;
+            box-sizing: border-box !important;
+        }
+        /* Upload-options column = exactly 150px, no shrink, no grow. */
+        .virtual-tryon-widget.inline-mode .upload-options-container {
+            flex: 0 0 150px !important;
+            width: 150px !important;
+            min-width: 150px !important;
+            max-width: 150px !important;
+            margin: 0 !important;
+            display: block !important;
+        }
+        .virtual-tryon-widget.inline-mode .upload-options-grid {
+            display: block !important;
+            grid-template-columns: none !important;
+            gap: 0 !important;
+            width: 150px !important;
+            margin: 0 !important;
+        }
+        /* The lone upload card — fixed 150x200 (3:4), styled as a clear CTA. */
+        .virtual-tryon-widget.inline-mode #uploadPhotoCard {
+            width: 150px !important;
+            height: 200px !important;
+            min-height: 0 !important;
+            box-sizing: border-box !important;
+            border: 2px dashed #3B63D4 !important;
+            background: #f5f7ff !important;
+            border-radius: 12px !important;
+            margin: 0 !important;
+            padding: 14px 12px !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: center !important;
+            text-align: center !important;
+            gap: 6px !important;
+            cursor: pointer !important;
+            overflow: hidden !important;
+            transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease !important;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(59,99,212,0.08) !important;
+        }
+        .virtual-tryon-widget.inline-mode #uploadPhotoCard:hover {
+            transform: translateY(-2px) !important;
+            background: #eef2ff !important;
+            box-shadow: 0 6px 18px rgba(59,99,212,0.18) !important;
+        }
+        .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-icon-wrapper {
+            width: auto !important;
+            height: auto !important;
+            margin: 0 !important;
+            background: transparent !important;
+        }
+        .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-icon {
+            font-size: 26px !important;
+            line-height: 1 !important;
+        }
+        .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-title {
+            margin: 4px 0 0 !important;
+            font-size: 13px !important;
+            font-weight: 600 !important;
+            color: #0B1220 !important;
+            line-height: 1.25 !important;
+        }
+        .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-subtitle {
+            margin: 0 !important;
+            font-size: 11px !important;
+            color: #6b7280 !important;
+            line-height: 1.3 !important;
+            max-width: 120px !important;
+        }
+        .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-btn {
+            margin-top: 4px !important;
+            padding: 7px 10px !important;
+            background: #3B63D4 !important;
+            color: #fff !important;
+            border: none !important;
+            border-radius: 6px !important;
+            font: inherit !important;
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            cursor: pointer !important;
+            white-space: nowrap !important;
+            width: auto !important;
+        }
+        /* Hide the "Recommended" pill */
+        .virtual-tryon-widget.inline-mode #uploadPhotoCard .recommended-badge {
+            display: none !important;
+        }
+        /* Workspace = the right side: just the [+] [product card] inline. */
+        .virtual-tryon-widget.inline-mode .photo-section-content .try-on-workspace {
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: center !important;
+            flex: 0 0 auto !important;
+            width: auto !important;
+            max-width: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            gap: 8px !important;
+        }
+        /* Product preview card = same 150x200 as the upload card. */
+        .virtual-tryon-widget.inline-mode .photo-section-content .selected-clothing-preview {
+            flex: 0 0 150px !important;
+            width: 150px !important;
+            min-width: 150px !important;
+            max-width: 150px !important;
+            margin: 0 !important;
+        }
+        .virtual-tryon-widget.inline-mode .photo-section-content .selected-clothing-image-container {
+            width: 150px !important;
+            height: 200px !important;
+            aspect-ratio: auto !important;
+        }
+        /* Plus separator sized smaller so the row fits cleanly */
+        .virtual-tryon-widget.inline-mode .photo-section-content .plus-separator {
+            width: 24px !important;
+            height: 24px !important;
+            font-size: 14px !important;
+            flex-shrink: 0 !important;
+        }
+        /* Mobile — popup is calc(100vw - 40px), so on a 390px phone the popup
+           is ~350px wide. Usable inside padding = ~310px. 140px cards × 2 +
+           6px gap + 20px plus + 6px gap = 312px. Tight but fits. */
+        @media (max-width: 480px) {
+            .virtual-tryon-widget.inline-mode .photo-section-content {
+                gap: 6px !important;
+                padding: 10px 2px !important;
+                max-width: 100% !important;
+            }
+            .virtual-tryon-widget.inline-mode .upload-options-container {
+                flex: 0 0 140px !important;
+                width: 140px !important;
+                min-width: 140px !important;
+                max-width: 140px !important;
+            }
+            .virtual-tryon-widget.inline-mode .upload-options-grid { width: 140px !important; }
+            .virtual-tryon-widget.inline-mode #uploadPhotoCard {
+                width: 140px !important;
+                height: 187px !important;
+                padding: 10px 8px !important;
+                gap: 4px !important;
+            }
+            .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-icon { font-size: 24px !important; }
+            .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-title { font-size: 12px !important; }
+            .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-subtitle { font-size: 10px !important; max-width: 110px !important; }
+            .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-btn { padding: 6px 10px !important; font-size: 11px !important; }
+            .virtual-tryon-widget.inline-mode .photo-section-content .try-on-workspace { gap: 6px !important; }
+            .virtual-tryon-widget.inline-mode .photo-section-content .selected-clothing-preview {
+                flex: 0 0 140px !important;
+                width: 140px !important;
+                min-width: 140px !important;
+                max-width: 140px !important;
+            }
+            .virtual-tryon-widget.inline-mode .photo-section-content .selected-clothing-image-container {
+                width: 140px !important;
+                height: 187px !important;
+            }
+            .virtual-tryon-widget.inline-mode .photo-section-content .plus-separator {
+                width: 20px !important;
+                height: 20px !important;
+                font-size: 13px !important;
+            }
+        }
+
+        /* ─── Action buttons row — single full-width primary CTA ──────────── */
+        /* Hide the Close button in inline mode — the top-right × is the only
+           exit. Reducing exit affordances keeps the shopper in the flow. */
+        .virtual-tryon-widget.inline-mode .action-buttons {
+            padding: 12px 16px 16px;
+            gap: 0;
+        }
+        .virtual-tryon-widget.inline-mode .action-buttons .btn-secondary {
+            display: none !important;
+        }
+        .virtual-tryon-widget.inline-mode .action-buttons .btn-primary {
+            flex: 1 1 auto !important;
+            width: 100% !important;
+        }
+
+        /* When result is ready, hide the default action-buttons row.
+           Inline-mode CTAs render inside #resultSection instead. */
+        .virtual-tryon-widget.inline-mode.inline-mode-result-ready .action-buttons { display: none !important; }
+        /* Also hide the workspace once result is showing — full focus on the result image */
+        .virtual-tryon-widget.inline-mode.inline-mode-result-ready .try-on-workspace,
+        .virtual-tryon-widget.inline-mode.inline-mode-result-ready .photo-section { display: none !important; }
+
+        /* Inline-mode result section: tighten padding and let the image breathe
+           a bit larger — buttons stack below so we have vertical room. */
+        .virtual-tryon-widget.inline-mode #resultSection {
+            padding: 8px 12px 0 !important;
+        }
+        .virtual-tryon-widget.inline-mode .tryon-result-container {
+            padding: 0 !important;
+        }
+        .virtual-tryon-widget.inline-mode .tryon-result-image {
+            max-height: 460px !important;
+            max-width: 360px !important;
+            border-radius: 10px;
+        }
+        @media (max-width: 480px) {
+            .virtual-tryon-widget.inline-mode .tryon-result-image {
+                max-height: 420px !important;
+                max-width: 100% !important;
+            }
+        }
+
+        /* Inline-mode result CTAs: attribution under image, then stacked buttons */
+        #ello-inline-result-ctas {
+            display: flex; flex-direction: column; gap: 8px;
+            margin-top: 10px; padding: 0 12px 12px;
+            max-width: 420px; margin-left: auto; margin-right: auto;
+        }
+        #ello-inline-result-ctas .ello-inline-attribution {
+            text-align: center;
+            font-size: 11px;
+            color: #9ca3af;
+            letter-spacing: 0.02em;
+            margin: 0 0 4px;
+        }
+        #ello-inline-result-ctas .ello-inline-attribution a {
+            color: #6b7280;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        #ello-inline-result-ctas .ello-inline-attribution a:hover {
+            color: #111;
+            text-decoration: underline;
+        }
+        #ello-inline-result-ctas .ello-inline-btn-row {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 100%;
+        }
+        #ello-inline-result-ctas .ello-inline-btn {
+            box-sizing: border-box; width: 100%;
+            padding: 13px 20px; border: none; border-radius: 6px;
+            font: inherit; font-weight: 600; font-size: 15px;
+            cursor: pointer; transition: opacity 0.15s;
+        }
+        #ello-inline-result-ctas .ello-inline-btn-primary {
+            background: #000; color: #fff;
+        }
+        #ello-inline-result-ctas .ello-inline-btn-secondary {
+            background: transparent; color: #000; border: 1px solid #d1d5db;
+        }
+        #ello-inline-result-ctas .ello-inline-btn:disabled { opacity: 0.6; cursor: wait; }
+        #ello-inline-cart-error {
+            margin-top: 8px; padding: 10px 12px; border-radius: 6px;
+            background: #fef2f2; color: #b91c1c; font-size: 14px; text-align: center;
+        }
+        #ello-inline-cart-success {
+            display: flex; flex-direction: column; gap: 8px; align-items: center;
+            margin-top: 16px; padding: 16px;
+        }
+        #ello-inline-cart-success .success-check {
+            font-size: 20px; color: #059669; font-weight: 600;
+        }
+    `;
+    document.head.appendChild(style);
+}
+
+// Called from startTryOn() success path. Renders the result-stage CTA stack
+// (Add-to-Cart + Try-another-photo) and the single "powered by Ello.services"
+// attribution for every entry point — inline button, widget preview, and the
+// floating widget. The .inline-mode-result-ready class is reused for styling
+// regardless of mode so we don't fork the CSS.
+function renderInlineModeResultCtas() {
+    const widget = document.getElementById('virtualTryonWidget');
+    if (widget) widget.classList.add('inline-mode-result-ready');
+
+    const resultSection = document.getElementById('resultSection');
+    if (!resultSection) return;
+
+    // Idempotent — remove any prior CTAs before injecting.
+    const existing = document.getElementById('ello-inline-result-ctas');
+    if (existing) existing.remove();
+
+    const ctas = document.createElement('div');
+    ctas.id = 'ello-inline-result-ctas';
+
+    // Try to surface price in the Add-to-Cart label. Falls back to plain
+    // "Add to Cart" if we can't read price from any of the usual sources.
+    const priceLabel = derivePriceLabel();
+    ctas.innerHTML = `
+        <div class="ello-inline-attribution">
+            powered by <a href="https://apps.shopify.com/ello" target="_blank" rel="noopener noreferrer">Ello.services</a>
+        </div>
+        <div class="ello-inline-btn-row">
+            <button class="ello-inline-btn ello-inline-btn-primary" id="ello-inline-add-to-cart-btn">
+                Add to Cart${priceLabel}
+            </button>
+            <button class="ello-inline-btn ello-inline-btn-secondary" id="ello-inline-try-another-btn">
+                Try another photo
+            </button>
+        </div>
+        <div id="ello-inline-cart-error" style="display:none;"></div>
+    `;
+    resultSection.appendChild(ctas);
+
+    document.getElementById('ello-inline-add-to-cart-btn').addEventListener('click', addToCartFromTryOn);
+    document.getElementById('ello-inline-try-another-btn').addEventListener('click', function () {
+        // Reset to upload-photo state without closing the popup
+        const photoInput = document.getElementById('photoInput');
+        if (photoInput) photoInput.value = '';
+        if (typeof resetPhotoUploadArea === 'function') resetPhotoUploadArea();
+        const rs = document.getElementById('resultSection');
+        if (rs) rs.style.display = 'none';
+        const w = document.getElementById('virtualTryonWidget');
+        if (w) w.classList.remove('inline-mode-result-ready');
+        ctas.remove();
+    });
+}
+
+function derivePriceLabel() {
+    try {
+        const meta = window.ShopifyAnalytics && window.ShopifyAnalytics.meta;
+        const variantId = window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.variantId;
+        if (meta && Array.isArray(meta.product?.variants) && variantId) {
+            const vid = String(variantId).replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+            const v = meta.product.variants.find(x => String(x.id) === vid);
+            if (v && typeof v.price === 'number') {
+                const dollars = (v.price / 100).toFixed(2);
+                const currency = meta.currency || '$';
+                const symbol = currency === 'USD' ? '$' : (currency + ' ');
+                return ` — ${symbol}${dollars}`;
+            }
+        }
+        // Widget / preview fallback: pull from the currently selected garment.
+        const garment = window.elloSelectedGarment;
+        if (garment && garment.price != null) {
+            const raw = typeof garment.price === 'number' ? garment.price : parseFloat(garment.price);
+            if (!isNaN(raw)) {
+                return ` — $${raw.toFixed(2)}`;
+            }
+        }
+    } catch (e) { /* fall through to no-label */ }
+    return '';
+}
+
+// Add-to-Cart: handles single-variant directly, multi-variant via the existing
+// showSizeSelector picker. Calls Shopify's standard /cart/add.js endpoint —
+// works on every Shopify theme.
+async function addToCartFromTryOn() {
+    const btn = document.getElementById('ello-inline-add-to-cart-btn');
+    const errEl = document.getElementById('ello-inline-cart-error');
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+
+    try {
+        if (btn) { btn.disabled = true; btn.textContent = 'Adding...'; }
+
+        let variantId = window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.variantId;
+
+        // Multi-variant: prompt with size picker. Single-variant: use as-is.
+        // window.elloSelectedGarment is populated by populateFeaturedAndQuickPicks
+        // during openWidget — it has the variants[] array we need.
+        const garment = window.elloSelectedGarment;
+        if (garment && Array.isArray(garment.variants) && garment.variants.length > 1) {
+            // Don't carry over the PDP-selected variant — let the shopper pick freshly.
+            window.ELLO_PRESELECTED_VARIANT_ID = null;
+            variantId = await showSizeSelector(garment);
+        } else if (!variantId && garment) {
+            // Widget / preview path: no inline context, so fall back to the
+            // garment's selected (single) variant.
+            variantId = garment.selectedVariantId
+                || (garment.variants && garment.variants[0] && (garment.variants[0].shopify_variant_gid || garment.variants[0].id))
+                || null;
+        }
+
+        if (!variantId) {
+            throw new Error('No variant selected');
+        }
+
+        // Normalize: strip GID prefix if present — /cart/add.js wants the number.
+        const numericId = String(variantId).replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+
+        const res = await fetch('/cart/add.js', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ id: numericId, quantity: 1 })
+        });
+
+        if (!res.ok) {
+            // 422 = item not available (sold out, etc.). Shopify returns
+            // { description: "...", message: "..." } with a human message.
+            const errBody = await res.json().catch(() => ({}));
+            const msg = errBody.description || errBody.message || `Couldn't add to cart (HTTP ${res.status})`;
+            throw new Error(msg);
+        }
+
+        // Track the successful add-to-cart attribution.
+        try {
+            trackEvent && trackEvent('inline_add_to_cart', {
+                variant_id: numericId,
+                product_id: window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.productId
+            });
+        } catch (e) { /* analytics is non-critical */ }
+
+        showCartSuccessState();
+    } catch (err) {
+        console.error('[Ello] Add to cart failed:', err);
+        if (errEl) {
+            errEl.textContent = err.message || "Sorry, something went wrong adding this to your cart.";
+            errEl.style.display = 'block';
+        }
+        if (btn) { btn.disabled = false; btn.textContent = `Add to Cart${derivePriceLabel()}`; }
+    }
+}
+
+// Replaces the Add-to-Cart CTAs with the post-purchase success state:
+// ✓ message + Continue shopping (close popup) + View cart (navigate).
+function showCartSuccessState() {
+    const widget = document.getElementById('virtualTryonWidget');
+    if (widget) widget.classList.add('inline-mode-cart-success');
+
+    const ctas = document.getElementById('ello-inline-result-ctas');
+    if (ctas) ctas.remove();
+
+    const resultSection = document.getElementById('resultSection');
+    if (!resultSection) return;
+
+    const success = document.createElement('div');
+    success.id = 'ello-inline-cart-success';
+    success.innerHTML = `
+        <div class="success-check">✓ Added to cart</div>
+        <button class="ello-inline-btn ello-inline-btn-secondary" id="ello-inline-continue-btn"
+                style="box-sizing:border-box;width:100%;padding:14px 20px;border:1px solid #d1d5db;border-radius:6px;background:transparent;color:#000;font:inherit;font-weight:600;font-size:15px;cursor:pointer;">
+            Continue shopping
+        </button>
+        <button class="ello-inline-btn ello-inline-btn-primary" id="ello-inline-view-cart-btn"
+                style="box-sizing:border-box;width:100%;padding:14px 20px;border:none;border-radius:6px;background:#000;color:#fff;font:inherit;font-weight:600;font-size:15px;cursor:pointer;">
+            View cart
+        </button>
+    `;
+    resultSection.appendChild(success);
+
+    document.getElementById('ello-inline-continue-btn').addEventListener('click', function () {
+        closeWidget();
+    });
+    document.getElementById('ello-inline-view-cart-btn').addEventListener('click', function () {
+        // Use top-level location so we escape any embedded iframe context.
+        try { window.top.location.href = '/cart'; }
+        catch (e) { window.location.href = '/cart'; }
+    });
+}
+
 window.startTryOn = async function startTryOn() {
     // Prevent duplicate calls if already processing (check and set atomically)
     if (isTryOnProcessing) {
@@ -5313,6 +6545,7 @@ window.startTryOn = async function startTryOn() {
     isRateLimited = false;
 
     const personImageUrl = window.elloUserImageUrl;
+    const tryOnPhotoValidationId = activePhotoValidationId;
     const garment = window.elloSelectedGarment;
     const productImageUrl = garment?.image_url;
 
@@ -5323,10 +6556,25 @@ window.startTryOn = async function startTryOn() {
         showLoadingBar(false);
         const uploadInput = document.getElementById('photoInput');
         if (uploadInput) {
-            uploadInput.click();
+            // Route through the best-practices/consent modal so the user can't reach
+            // the file picker via this path without seeing the ToS/Privacy disclosure.
+            const triggerFilePicker = () => uploadInput.click();
+            if (checkShouldShowBestPractices()) {
+                pendingPhotoAction = triggerFilePicker;
+                showBestPracticesModal();
+            } else {
+                triggerFilePicker();
+            }
         } else {
             showError("Please upload a photo first.");
         }
+        return;
+    }
+    if (activePhotoValidationStatus === 'invalid') {
+        isTryOnProcessing = false;
+        updateTryOnButton();
+        showLoadingBar(false);
+        showError(PHOTO_BODY_REJECTION_MESSAGE);
         return;
     }
     if (!productImageUrl) {
@@ -5360,6 +6608,18 @@ window.startTryOn = async function startTryOn() {
         // Proceed with try-on - backend will check overage blocking via record_tryon_event
         const imageB64 = await callElloTryOn(personImageUrl, productImageUrl);
 
+        if (tryOnPhotoValidationId && tryOnPhotoValidationId === lastRejectedPhotoValidationId) {
+            throw new Error("PHOTO_VALIDATION_FAILED");
+        }
+
+        if (personImageUrl !== window.elloUserImageUrl) {
+            throw new Error("PHOTO_CHANGED_DURING_TRYON");
+        }
+
+        if (activePhotoValidationStatus === 'invalid') {
+            throw new Error("PHOTO_VALIDATION_FAILED");
+        }
+
         // Usage is already recorded by the server /tryon proxy before the ML call.
         // Do not fire a second client-side success RPC here or usage will double-count.
 
@@ -5374,6 +6634,11 @@ window.startTryOn = async function startTryOn() {
         if (resultSection) {
             resultSection.style.display = "block";
         }
+
+        // Inline mode: swap the default action row for Add-to-Cart + Try-another.
+        // Safe to call even if the surface isn't inline — the function no-ops
+        // when ELLO_INLINE_MODE is false.
+        renderInlineModeResultCtas();
 
         // Try to find elements
         let resultImg = document.getElementById("ello-tryon-result-image");
@@ -5426,43 +6691,20 @@ window.startTryOn = async function startTryOn() {
             resultPanel.style.display = "flex";
         }
 
-        // Create and add "Add to Cart" button after result image
-        if (garment && resultPanel) {
-            // Remove existing buy button if it exists
-            const existingBuyBtn = resultPanel.querySelector('.buy-now-container');
-            if (existingBuyBtn) {
-                existingBuyBtn.remove();
-            }
-
-            // Create buy button container
-            const buyContainer = document.createElement('div');
-            buyContainer.className = 'buy-now-container';
-
-            const buyButton = document.createElement('button');
-            buyButton.className = 'buy-now-btn';
-            buyButton.innerHTML = `
-                <span class="btn-text">Add to Cart</span>
-                <div class="loading-spinner" style="display: none;">
-                    <span></span><span></span><span></span><span></span>
-                </div>
-            `;
-
-            // Generate tryOnId for tracking
-            const tryOnId = 'tryon_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-            const tryonResultUrl = imageB64;
-
-            // Add click handler
-            buyButton.onclick = function (event) {
-                event.preventDefault();
-                handleBuyNow(garment.id, tryonResultUrl, tryOnId, buyButton);
-            };
-
-            buyContainer.appendChild(buyButton);
-            resultPanel.appendChild(buyContainer);
+        // Result-stage Add-to-Cart + attribution are owned by
+        // renderInlineModeResultCtas() above for every entry point (inline
+        // button, widget preview, floating widget). Any lingering legacy
+        // markup (e.g. from a previous successful try-on on an older bundle)
+        // is purged here so we never render two buttons or two attributions.
+        if (resultPanel) {
+            const legacyBuyBtn = resultPanel.querySelector('.buy-now-container');
+            if (legacyBuyBtn) legacyBuyBtn.remove();
+            const legacyAttribution = resultPanel.querySelector('.tryon-attribution');
+            if (legacyAttribution) legacyAttribution.remove();
         }
 
         // Auto-save to wardrobe after successful try-on
-        if (garment && imageB64) {
+        if (garment && imageB64 && activePhotoValidationStatus !== 'pending') {
             const tryOnId = 'tryon_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             // Call async function properly
             autoSaveToWardrobe(garment, imageB64, tryOnId).catch(err => {
@@ -5503,6 +6745,16 @@ window.startTryOn = async function startTryOn() {
             return;
         }
 
+        if (err.message === "PHOTO_VALIDATION_FAILED") {
+            showError(PHOTO_BODY_REJECTION_MESSAGE);
+            return;
+        }
+
+        if (err.message === "PHOTO_CHANGED_DURING_TRYON") {
+            showError("Your photo changed. Please try on again.");
+            return;
+        }
+
         // Don't show generic error if it's a rate limit error (already handled)
         if (err.message !== "RATE_LIMIT_EXCEEDED") {
             showError("Something went wrong generating your try-on. Please try again.");
@@ -5521,7 +6773,7 @@ window.startTryOn = async function startTryOn() {
 
 // Retry try-on function for error handling
 function retryTryOn() {
-    console.log('Retrying try-on request...');
+    elloLog('Retrying try-on request...');
     startTryOn();
 }
 
@@ -5564,13 +6816,39 @@ function retryTryOn() {
 // Improved Size Selector Function
 function showSizeSelector(clothing) {
     return new Promise((resolve) => {
-        console.log('showSizeSelector called with:', clothing);
+        elloLog('showSizeSelector called with:', clothing);
+
+        // Inline-button shortcut: if the shopper already picked a size on the
+        // PDP (and the inline block pushed it through window.Ello.openTryOn),
+        // skip the picker and resolve to that variant directly. Matched loosely
+        // because Shopify variant IDs may be returned as number or string and
+        // may or may not be GID-prefixed depending on the theme.
+        const preselected = window.ELLO_PRESELECTED_VARIANT_ID;
+        if (preselected && Array.isArray(clothing.variants)) {
+            const target = String(preselected).replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+            const match = clothing.variants.find((v) => {
+                const candidates = [v.id, v.shopify_variant_id, v.shopify_variant_gid];
+                return candidates.some((c) => {
+                    if (c == null) return false;
+                    const stripped = String(c).replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+                    return stripped === target;
+                });
+            });
+            // Single-use — clear regardless of match so a later try-on (e.g.,
+            // via floating bubble) shows the picker normally.
+            window.ELLO_PRESELECTED_VARIANT_ID = null;
+            if (match && match.available !== false) {
+                elloLog('[Ello VTO] showSizeSelector: preselected variant matched, skipping picker', match.id);
+                resolve(match.id);
+                return;
+            }
+        }
 
         // Get unique sizes from variants - try multiple methods
         const availableSizes = [];
 
         clothing.variants.forEach(variant => {
-            console.log('Processing variant:', variant);
+            elloLog('Processing variant:', variant);
 
             let sizeValue = null;
 
@@ -5597,7 +6875,7 @@ function showSizeSelector(clothing) {
                 }
             }
 
-            console.log('Extracted size value:', sizeValue);
+            elloLog('Extracted size value:', sizeValue);
 
             if (sizeValue && variant.available && !availableSizes.some(s => s.size === sizeValue)) {
                 availableSizes.push({
@@ -5608,11 +6886,11 @@ function showSizeSelector(clothing) {
             }
         });
 
-        console.log('Available sizes found:', availableSizes);
+        elloLog('Available sizes found:', availableSizes);
 
         // If no sizes found, just use first available variant
         if (availableSizes.length === 0) {
-            console.log('No sizes detected, using first available variant');
+            elloLog('No sizes detected, using first available variant');
             const firstAvailable = clothing.variants.find(v => v.available) || clothing.variants[0];
             if (firstAvailable) {
                 resolve(firstAvailable.id);
@@ -5622,7 +6900,7 @@ function showSizeSelector(clothing) {
 
         // If only one size, use it directly
         if (availableSizes.length === 1) {
-            console.log('Only one size available, using directly');
+            elloLog('Only one size available, using directly');
             resolve(availableSizes[0].variantId);
             return;
         }
@@ -5835,7 +7113,7 @@ async function updateCartDisplay() {
         const cartResponse = await fetch('/cart.js');
         const cartData = await cartResponse.json();
 
-        console.log('Updated cart data:', cartData);
+        elloLog('Updated cart data:', cartData);
 
         // Update cart counter (try multiple common selectors)
         const cartCounters = [
@@ -5904,7 +7182,7 @@ async function updateCartDisplay() {
             }
         });
 
-        console.log('✅ Cart display updated successfully');
+        elloLog('✅ Cart display updated successfully');
 
     } catch (error) {
         console.error('❌ Error updating cart display:', error);
@@ -5932,7 +7210,7 @@ async function handleBuyNow(clothingId, tryonResultUrl, tryOnId, buyBtnElement =
         return false;
     });
 
-    console.log('handleBuyNow called for:', clothing);
+    elloLog('handleBuyNow called for:', clothing);
 
     if (!clothing) {
         alert('Item not found. Please try again.');
@@ -5942,7 +7220,7 @@ async function handleBuyNow(clothingId, tryonResultUrl, tryOnId, buyBtnElement =
     // LAZY LOAD VARIANTS if missing
     if (!clothing.variants || clothing.variants.length === 0) {
         if (clothing.handle) {
-            console.log(`[Ello] Variants missing for ${clothing.handle} in BuyNow, lazy loading...`);
+            elloLog(`[Ello] Variants missing for ${clothing.handle} in BuyNow, lazy loading...`);
             try {
                 const productRes = await fetch(`/products/${clothing.handle}.js`);
                 if (productRes.ok) {
@@ -6043,7 +7321,7 @@ async function handleShopifyPurchase(clothing, variantToAdd, tryonResultUrl, try
 
         if (cartResponse.ok) {
             const cartResult = await cartResponse.json();
-            console.log('✅ Successfully added to Shopify cart:', cartResult);
+            elloLog('✅ Successfully added to Shopify cart:', cartResult);
 
             // Pass session_id as a cart attribute so it flows into checkout order attributes.
             // This is a fallback for the Web Pixel's checkout_completed attribution.
@@ -6216,16 +7494,16 @@ async function sendAnalyticsTracking(conversionType, clothing, variantToAdd, try
             body: JSON.stringify(conversionData)
         }).then(response => {
             if (response.ok) {
-                console.log('✅ Analytics tracked successfully');
+                elloLog('✅ Analytics tracked successfully');
             } else {
-                console.log('⚠️ Analytics tracking failed, but purchase succeeded');
+                elloLog('⚠️ Analytics tracking failed, but purchase succeeded');
             }
         }).catch(error => {
-            console.log('⚠️ Analytics tracking error:', error);
+            elloLog('⚠️ Analytics tracking error:', error);
         });
 
     } catch (webhookError) {
-        console.log('⚠️ Webhook tracking failed:', webhookError);
+        elloLog('⚠️ Webhook tracking failed:', webhookError);
     }
 }
 
@@ -6497,9 +7775,9 @@ function applyMinimizedWidgetColor() {
         } else {
         }
     } else {
-        console.log('ℹ️ No minimized color found in store config. storeConfig:', storeConfig);
+        elloLog('ℹ️ No minimized color found in store config. storeConfig:', storeConfig);
         if (!storeConfig) {
-            console.log('⚠️ Store config not loaded yet. Color will use default.');
+            elloLog('⚠️ Store config not loaded yet. Color will use default.');
         }
     }
 
@@ -6539,7 +7817,7 @@ function applyMinimizedWidgetColor() {
         if (isMinimized) {
             widget.style.background = gradient;
         } else {
-            console.log('ℹ️ Widget not minimized yet, gradient will apply when minimized');
+            elloLog('ℹ️ Widget not minimized yet, gradient will apply when minimized');
         }
 
         // Determine text color based on brightness for contrast
@@ -6603,13 +7881,20 @@ function getWardrobeCount() {
     return wardrobe.length;
 }
 
-// Get wardrobe from sessionStorage
+// Get wardrobe from localStorage (must persist across navigation/tab suspension,
+// same as USER_PHOTO_STORAGE_KEY — sessionStorage gets wiped on mobile and
+// strands the "Your Photo" tile + results even though the photo itself survives).
 function getWardrobe() {
     try {
-        const stored = sessionStorage.getItem(WARDROBE_STORAGE_KEY);
+        const legacy = sessionStorage.getItem(WARDROBE_STORAGE_KEY);
+        if (legacy && !localStorage.getItem(WARDROBE_STORAGE_KEY)) {
+            localStorage.setItem(WARDROBE_STORAGE_KEY, legacy);
+            sessionStorage.removeItem(WARDROBE_STORAGE_KEY);
+        }
+        const stored = localStorage.getItem(WARDROBE_STORAGE_KEY);
         return stored ? JSON.parse(stored) : [];
     } catch (error) {
-        console.error('Error reading wardrobe from sessionStorage:', error);
+        console.error('Error reading wardrobe from localStorage:', error);
         return [];
     }
 }
@@ -6639,7 +7924,7 @@ async function saveWardrobe(wardrobe) {
                     if (cleaned.resultImageUrl && cleaned.resultImageUrl.startsWith('data:') && cleaned.resultImageUrl.length > 150000) {
                         try {
                             cleaned.resultImageUrl = await compressImage(cleaned.resultImageUrl, 350, 0.55);
-                            console.log('✅ Further compressed result image:', Math.round(cleaned.resultImageUrl.length / 1024) + 'KB');
+                            elloLog('✅ Further compressed result image:', Math.round(cleaned.resultImageUrl.length / 1024) + 'KB');
                         } catch (error) {
                             console.warn('Failed to compress result image:', error);
                         }
@@ -6670,8 +7955,8 @@ async function saveWardrobe(wardrobe) {
                     // Use requestIdleCallback if available for non-blocking write
                     const saveToStorage = () => {
                         try {
-                            sessionStorage.setItem(WARDROBE_STORAGE_KEY, JSON.stringify(trimmed));
-                            console.log('✅ Saved wardrobe (trimmed to', trimmed.length, 'items)');
+                            localStorage.setItem(WARDROBE_STORAGE_KEY, JSON.stringify(trimmed));
+                            elloLog('✅ Saved wardrobe (trimmed to', trimmed.length, 'items)');
                             resolve();
                         } catch (e) {
                             console.error('Error saving trimmed wardrobe:', e);
@@ -6687,8 +7972,8 @@ async function saveWardrobe(wardrobe) {
                     // Use requestIdleCallback if available for non-blocking write
                     const saveToStorage = () => {
                         try {
-                            sessionStorage.setItem(WARDROBE_STORAGE_KEY, wardrobeString);
-                            console.log('✅ Saved wardrobe (' + limitedWardrobe.length + ' items, ' + Math.round(wardrobeString.length / 1024) + 'KB)');
+                            localStorage.setItem(WARDROBE_STORAGE_KEY, wardrobeString);
+                            elloLog('✅ Saved wardrobe (' + limitedWardrobe.length + ' items, ' + Math.round(wardrobeString.length / 1024) + 'KB)');
                             resolve();
                         } catch (e) {
                             console.error('Error saving wardrobe:', e);
@@ -6726,8 +8011,8 @@ async function saveWardrobe(wardrobe) {
                         }));
                         const saveToStorage = () => {
                             try {
-                                sessionStorage.setItem(WARDROBE_STORAGE_KEY, JSON.stringify(ultraCleaned));
-                                console.log('✅ Saved wardrobe after cleanup (5 items, heavily compressed)');
+                                localStorage.setItem(WARDROBE_STORAGE_KEY, JSON.stringify(ultraCleaned));
+                                elloLog('✅ Saved wardrobe after cleanup (5 items, heavily compressed)');
                             } catch (e) {
                                 console.warn('Still exceeded quota. Wardrobe not saved.');
                             }
@@ -6762,7 +8047,7 @@ async function addToWardrobe(clothing, resultImageUrl, tryOnId) {
     if (resultImageUrl && resultImageUrl.startsWith('data:')) {
         try {
             compressedResultImage = await compressImage(resultImageUrl, 400, 0.6);
-            console.log('✅ Compressed result image for wardrobe:', Math.round(compressedResultImage.length / 1024) + 'KB');
+            elloLog('✅ Compressed result image for wardrobe:', Math.round(compressedResultImage.length / 1024) + 'KB');
         } catch (error) {
             console.warn('Failed to compress image, using original:', error);
         }
@@ -6775,7 +8060,7 @@ async function addToWardrobe(clothing, resultImageUrl, tryOnId) {
         try {
             // Compress original photo more aggressively (500px width, 0.7 quality) for outfit building
             compressedOriginalPhoto = await compressImage(userPhoto, 500, 0.7);
-            console.log('✅ Compressed original photo for outfit building:', Math.round(compressedOriginalPhoto.length / 1024) + 'KB');
+            elloLog('✅ Compressed original photo for outfit building:', Math.round(compressedOriginalPhoto.length / 1024) + 'KB');
         } catch (error) {
             console.warn('Failed to compress original photo, using original:', error);
             compressedOriginalPhoto = userPhoto;
@@ -6809,7 +8094,7 @@ async function addToWardrobe(clothing, resultImageUrl, tryOnId) {
     await saveWardrobe(wardrobe);
     updateWardrobeButton();
 
-    console.log('✅ Added to wardrobe:', clothing.name);
+    elloLog('✅ Added to wardrobe:', clothing.name);
 }
 
 // Add original photo to wardrobe (for outfit building)
@@ -6843,7 +8128,7 @@ async function addOriginalPhotoToWardrobe() {
         await saveWardrobe(wardrobe);
         updateWardrobeButton();
 
-        console.log('✅ Added original photo to wardrobe (reference only)');
+        elloLog('✅ Added original photo to wardrobe (reference only)');
     }
 }
 
@@ -6854,7 +8139,7 @@ async function removeFromWardrobe(tryOnId) {
     await saveWardrobe(filteredWardrobe);
     updateWardrobeButton();
 
-    console.log('🗑️ Removed from wardrobe:', tryOnId);
+    elloLog('🗑️ Removed from wardrobe:', tryOnId);
 }
 
 // Update wardrobe button count
@@ -7015,12 +8300,12 @@ function addToOutfit(tryOnId) {
         userPhoto = item.resultImageUrl;
         // CRITICAL: Also update window.elloUserImageUrl so the API receives the base64 image
         window.elloUserImageUrl = item.resultImageUrl;
-        console.log('✅ Updated window.elloUserImageUrl to use try-on result (base64)');
+        elloLog('✅ Updated window.elloUserImageUrl to use try-on result (base64)');
     } else if (item.originalPhotoUrl && item.originalPhotoUrl.startsWith('data:image')) {
         // Fallback: if result not available, use original photo (first item in outfit)
         userPhoto = item.originalPhotoUrl;
         window.elloUserImageUrl = item.originalPhotoUrl;
-        console.log('⚠️ Result image not available, using original photo as fallback');
+        elloLog('⚠️ Result image not available, using original photo as fallback');
     } else {
         console.warn('⚠️ No valid image found in wardrobe item, cannot add to outfit');
         showError('Unable to add to outfit: image not available. Please try again.');
@@ -7028,6 +8313,9 @@ function addToOutfit(tryOnId) {
     }
 
     userPhotoFileId = 'outfit_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    activePhotoValidationId = userPhotoFileId;
+    activePhotoValidationStatus = 'valid';
+    lastRejectedPhotoValidationId = null;
 
     // Update photo preview to show the previous try-on result (with garment already on)
     // This shows the user their current outfit state, ready for the next garment
@@ -7084,6 +8372,10 @@ function useOriginalPhoto(tryOnId) {
         console.warn('No photo available for this wardrobe item');
         return;
     }
+
+    activePhotoValidationId = userPhotoFileId;
+    activePhotoValidationStatus = 'valid';
+    lastRejectedPhotoValidationId = null;
 
     // Close wardrobe modal
     closeWardrobe();
@@ -7152,7 +8444,7 @@ function selectWardrobeItem(tryOnId) {
     // Show notification
     showSuccessNotification('Item Selected', `${clothing.name} selected for try-on!`);
 
-    console.log('✅ Selected wardrobe item:', clothing.name);
+    elloLog('✅ Selected wardrobe item:', clothing.name);
 }
 
 // Auto-save successful try-ons to wardrobe
@@ -7195,7 +8487,7 @@ async function addWardrobeItemToCart(tryOnId) {
     // LAZY LOAD VARIANTS if missing
     if (!clothing.variants || clothing.variants.length === 0) {
         if (clothing.handle) {
-            console.log(`[Ello] Variants missing for ${clothing.handle}, lazy loading...`);
+            elloLog(`[Ello] Variants missing for ${clothing.handle}, lazy loading...`);
             try {
                 const productRes = await fetch(`/products/${clothing.handle}.js`);
                 if (productRes.ok) {
@@ -7250,7 +8542,7 @@ async function addWardrobeItemToCart(tryOnId) {
 
         if (cartResponse.ok) {
             const cartResult = await cartResponse.json();
-            console.log('✅ Successfully added wardrobe item to cart:', cartResult);
+            elloLog('✅ Successfully added wardrobe item to cart:', cartResult);
 
             // Show success notification
             const sizeText = variantToAdd.size || variantToAdd.title || '';
@@ -7309,16 +8601,16 @@ async function addWardrobeItemToCart(tryOnId) {
                     body: JSON.stringify(conversionData)
                 }).then(response => {
                     if (response.ok) {
-                        console.log('✅ Wardrobe analytics tracked successfully');
+                        elloLog('✅ Wardrobe analytics tracked successfully');
                     } else {
-                        console.log('⚠️ Wardrobe analytics tracking failed, but cart add succeeded');
+                        elloLog('⚠️ Wardrobe analytics tracking failed, but cart add succeeded');
                     }
                 }).catch(error => {
-                    console.log('⚠️ Wardrobe analytics tracking error:', error);
+                    elloLog('⚠️ Wardrobe analytics tracking error:', error);
                 });
 
             } catch (webhookError) {
-                console.log('⚠️ Wardrobe webhook tracking failed:', webhookError);
+                elloLog('⚠️ Wardrobe webhook tracking failed:', webhookError);
             }
 
         } else {
@@ -7396,11 +8688,11 @@ function stopIdleWatcher() {
 }
 
 function initializePreviewTriggers() {
-    console.log('[Ello VTO] Initializing Preview Triggers...');
+    elloLog('[Ello VTO] Initializing Preview Triggers...');
     // 0. Kill Switch (Dashboard Config)
     const config = window.ELLO_STORE_CONFIG || {};
     if (config.desktopPreviewEnabled === false) {
-        console.log('[Ello VTO] Preview disabled by kill-switch.');
+        elloLog('[Ello VTO] Preview disabled by kill-switch.');
         return;
     }
 
@@ -7408,11 +8700,11 @@ function initializePreviewTriggers() {
     const isFinePointer = window.matchMedia('(pointer: fine)').matches;
     // Relaxed width check for testing/laptops.
     if ((isMobile || window.innerWidth < 768 || !isFinePointer) && !window.forceShowPreview) {
-        console.log('[Ello VTO] Preview disabled by device check:', { isMobile, width: window.innerWidth, isFinePointer });
+        elloLog('[Ello VTO] Preview disabled by device check:', { isMobile, width: window.innerWidth, isFinePointer });
         return;
     }
 
-    console.log('[Ello VTO] Preview Triggers Active.');
+    elloLog('[Ello VTO] Preview Triggers Active.');
 
     // 2. Setup SPA/Route Listeners (Reset logic)
     setupHistoryListeners();
@@ -7494,7 +8786,7 @@ function resetPreviewTimers() {
     if (delaySeconds < 1) delaySeconds = 1;
     if (delaySeconds > 60) delaySeconds = 60;
 
-    console.log(`[Ello VTO] Starting Preview Timer (${delaySeconds}s delay)...`);
+    elloLog(`[Ello VTO] Starting Preview Timer (${delaySeconds}s delay)...`);
 
     // Setup User Activity Listeners (One-time)
     const markActivityAndCheck = () => {
@@ -7508,7 +8800,7 @@ function resetPreviewTimers() {
     // 1. Configurable Delay
     // We want it to pop up "while they are active", just not instantly on load.
     previewDelayTimer = setTimeout(() => {
-        console.log('[Ello VTO] Timer finished. Checking activity...');
+        elloLog('[Ello VTO] Timer finished. Checking activity...');
         attemptShowPreview();
     }, delaySeconds * 1000);
 }
@@ -7519,7 +8811,7 @@ function attemptShowPreview() {
         checkPreviewEligibilityAndShow();
     } else {
         // If not yet active, wait for the FIRST interaction, then show (almost) immediately.
-        console.log('[Ello VTO] User not active yet. Waiting for interaction...');
+        elloLog('[Ello VTO] User not active yet. Waiting for interaction...');
         const showOnInteraction = () => {
             hasUserActivity = true; // Ensure flag is set
             // Small buffer so it doesn't feel jumpy on the exact millisecond of mouse entry
@@ -7530,15 +8822,6 @@ function attemptShowPreview() {
         window.addEventListener('scroll', showOnInteraction, { once: true });
     }
 }
-
-// Old idle watcher is deprecated by this simpler logic
-function stopIdleWatcher() {
-    if (previewDelayTimer) {
-        clearTimeout(previewDelayTimer);
-        previewDelayTimer = null;
-    }
-}
-
 
 // Resolve the active visibility mode from the merchant's dashboard setting
 // (vto_stores.widget_visibility_mode → ELLO_STORE_CONFIG.widgetVisibilityMode).
@@ -7567,14 +8850,35 @@ function applyWidgetVisibilityGate(opts) {
     const show = () => widget.style.removeProperty('display');
     const hide = () => widget.style.setProperty('display', 'none', 'important');
 
+    // ─── Three-surface placement: per-page-type kill switches ───────────────
+    // These run FIRST so the merchant's dashboard setting always wins. The
+    // smart-visibility logic below only kicks in for pages that pass these.
+    const cfg = window.ELLO_STORE_CONFIG || {};
+    const onProductPage = window.location.pathname.includes('/products/');
+
+    if (onProductPage && cfg.floatingWidgetPdpEnabled === false) {
+        hide();
+        return;
+    }
+    if (!onProductPage && cfg.floatingWidgetNonPdpEnabled === false) {
+        hide();
+        return;
+    }
+
+    // failOpen short-circuit — used by callers that need the widget visible
+    // regardless of mode (e.g., after a confirmed click on the bubble itself).
+    if (opts.failOpen) {
+        show();
+        return;
+    }
+
     const mode = getWidgetVisibilityMode();
-    if (mode === 'always' || opts.failOpen) {
+    if (mode === 'always') {
         show();
         return;
     }
 
     // Smart mode — anything that isn't a /products/<handle> page is fine to show on.
-    const onProductPage = window.location.pathname.includes('/products/');
     if (!onProductPage) {
         show();
         return;
@@ -7587,29 +8891,44 @@ function applyWidgetVisibilityGate(opts) {
         return;
     }
 
+    // ─── Hard gate via enabled-handles set ───────────────────────────────
+    // sampleClothing only holds the small preview set under the Tier 2
+    // loading model, so detectCurrentProduct's Method 5 fuzzy title match
+    // can false-positive against featured/quick-pick products with similar
+    // names. The enabled-handles set is the authoritative answer for
+    // "is THIS URL's product in the catalog?" — check it first.
+    if (window.elloEnabledHandles instanceof Set) {
+        const currentHandle = getProductIdFromUrl(window.location.pathname);
+        if (currentHandle && !window.elloEnabledHandles.has(currentHandle)) {
+            hide();
+            elloLog('[Ello VTO] Smart visibility: handle not in enabled set — hiding widget.', currentHandle);
+            return;
+        }
+    }
+
     const currentProduct = detectCurrentProduct();
     if (currentProduct && !currentProduct.isFallback) {
         show();
-        console.log('[Ello VTO] Smart visibility: enabled product detected — showing widget for', currentProduct.title || currentProduct.name);
+        elloLog('[Ello VTO] Smart visibility: enabled product detected — showing widget for', currentProduct.title || currentProduct.name);
     } else {
         hide();
-        console.log('[Ello VTO] Smart visibility: product not in enabled catalog — hiding widget.');
+        elloLog('[Ello VTO] Smart visibility: product not in enabled catalog — hiding widget.');
     }
 }
 
 async function checkPreviewEligibilityAndShow() {
     const storeId = window.ELLO_STORE_ID || 'default_store';
-    console.log('[Ello VTO] Checking preview eligibility...');
+    elloLog('[Ello VTO] Checking preview eligibility...');
 
     // Check Global Toggle
     if (window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.desktopPreviewEnabled === false) {
-        console.log('[Ello VTO] Preview blocked: Disabled in configuration.');
+        elloLog('[Ello VTO] Preview blocked: Disabled in configuration.');
         return;
     }
 
     // Check if main widget is already open
     if (widgetOpen) {
-        console.log('[Ello VTO] Preview blocked: Main widget is already open.');
+        elloLog('[Ello VTO] Preview blocked: Main widget is already open.');
         return;
     }
 
@@ -7617,12 +8936,12 @@ async function checkPreviewEligibilityAndShow() {
     try {
         /*
         if (sessionStorage.getItem(`ello_${storeId}_preview_shown_session`) === 'true') {
-             console.log('[Ello VTO] Preview blocked: Already shown this session.');
+             elloLog('[Ello VTO] Preview blocked: Already shown this session.');
              return;
         }
         */
         if (localStorage.getItem(`ello_${storeId}_preview_dismissed`) === 'true') {
-            console.log('[Ello VTO] Preview blocked: Permanently dismissed.');
+            elloLog('[Ello VTO] Preview blocked: Permanently dismissed.');
             return;
         }
     } catch (e) { }
@@ -7630,14 +8949,14 @@ async function checkPreviewEligibilityAndShow() {
     // Relaxed width check for testing
     const isFinePointer = window.matchMedia('(pointer: fine)').matches;
     if ((isMobile || window.innerWidth < 768 || !isFinePointer) && !window.forceShowPreview) {
-        console.log('[Ello VTO] Preview blocked: Device check failed', { width: window.innerWidth, isMobile, isFinePointer });
+        elloLog('[Ello VTO] Preview blocked: Device check failed', { width: window.innerWidth, isMobile, isFinePointer });
         return;
     }
 
     // Wait for clothing data (and its blacklist) to finish loading before checking.
     // This prevents the preview from showing before the blacklist is populated.
     if (!_elloClothingDataLoaded) {
-        console.log('[Ello VTO] Waiting for clothing data to load before preview check...');
+        elloLog('[Ello VTO] Waiting for clothing data to load before preview check...');
         const maxWait = 15000; // 15s max
         const start = Date.now();
         while (!_elloClothingDataLoaded && Date.now() - start < maxWait) {
@@ -7645,6 +8964,18 @@ async function checkPreviewEligibilityAndShow() {
         }
         if (!_elloClothingDataLoaded) {
             console.warn('[Ello VTO] Preview blocked: Clothing data did not load in time.');
+            return;
+        }
+    }
+
+    // Hard gate via enabled-handles set — same rationale as in
+    // applyWidgetVisibilityGate. detectCurrentProduct's fuzzy title match
+    // (Method 5) can false-positive against the small Tier 2 preview set;
+    // the handles list is the authoritative "is this product enabled?" check.
+    if (window.elloEnabledHandles instanceof Set) {
+        const currentHandle = getProductIdFromUrl(window.location.pathname);
+        if (currentHandle && !window.elloEnabledHandles.has(currentHandle)) {
+            elloLog('[Ello VTO] Preview blocked: handle not in enabled set —', currentHandle);
             return;
         }
     }
@@ -7658,12 +8989,12 @@ async function checkPreviewEligibilityAndShow() {
     // This is a positive check — it catches hidden items, non-clothing, un-synced products, etc.
     // in one simple gate instead of maintaining separate blacklists.
     if (!currentProduct || currentProduct.isFallback) {
-        console.log('[Ello VTO] Preview blocked: Product not in widget catalog.',
+        elloLog('[Ello VTO] Preview blocked: Product not in widget catalog.',
             currentProduct ? (currentProduct.name || currentProduct.title) : '(no product detected)');
         return;
     }
 
-    console.log('[Ello VTO] Eligibility Passed! Showing preview for:', currentProduct.title || currentProduct.name);
+    elloLog('[Ello VTO] Eligibility Passed! Showing preview for:', currentProduct.title || currentProduct.name);
     // Show it!
     await showPreview(currentProduct);
 }
@@ -7756,14 +9087,27 @@ window.handlePreviewUploadClick = function () {
     previewEngaged = true; // Mark as engaged
     trackPreviewEvent('upload_clicked');
 
-    // Trigger the existing file input
-    const photoInput = document.getElementById('photoInput');
-    if (photoInput) {
-        // Stop propagation to prevent bubbling up to the minimized widget container (which would open it)
-        const stopProp = (e) => e.stopPropagation();
-        photoInput.addEventListener('click', stopProp, { once: true });
-        photoInput.click();
+    // Helper that actually opens the file picker.
+    // Wrapped so we can route through the best-practices/consent modal first.
+    const triggerFilePicker = () => {
+        const photoInput = document.getElementById('photoInput');
+        if (photoInput) {
+            // Stop propagation to prevent bubbling up to the minimized widget container (which would open it)
+            const stopProp = (e) => e.stopPropagation();
+            photoInput.addEventListener('click', stopProp, { once: true });
+            photoInput.click();
+        }
+    };
+
+    // Show best-practices modal (which contains ToS/Privacy consent) if not yet dismissed.
+    // Clicking "Continue" in the modal both records consent and triggers the file picker.
+    if (checkShouldShowBestPractices()) {
+        pendingPhotoAction = triggerFilePicker;
+        showBestPracticesModal();
+        return;
     }
+
+    triggerFilePicker();
 }
 
 // Global update function called by handlePhotoUpload
@@ -7790,15 +9134,18 @@ function updatePreviewUserPhoto(photoDataUrl) {
 // Helper to reset UI state
 function resetPreviewUI() {
     const overlay = document.getElementById('previewProgressOverlay');
-    const bar = document.getElementById('previewProgressBar');
+    const previewWidget = document.getElementById('previewWidget');
     const btn = document.getElementById('previewTryBtn');
 
-    if (overlay) overlay.style.display = 'none';
-    if (bar) bar.style.width = '0%';
+    stopTryOnLoadingState('preview');
+    if (previewWidget) {
+        previewWidget.classList.remove('preview-loading');
+    }
+    if (overlay) overlay.style.setProperty('display', 'none', 'important');
     if (btn) {
-        btn.textContent = 'Try On';
-        btn.disabled = false;
-        btn.style.cursor = 'pointer';
+        btn.textContent = 'GENERATE MY LOOK';
+        btn.disabled = !userPhoto;
+        btn.style.cursor = userPhoto ? 'pointer' : '';
     }
 }
 
@@ -7809,67 +9156,55 @@ window.handlePreviewTryOn = async function () {
     }
     window._previewTryOnProcessing = true; // Local lock for preview specifically
 
+    // Surface attribution — every preview-popup-driven try-on tags here.
+    // Consumed and cleared inside callElloTryOn so a later non-preview try-on
+    // isn't mis-attributed.
+    window.ELLO_PENDING_ENTRY_SOURCE = 'preview_popup';
+
     previewEngaged = true; // Mark as engaged
     trackPreviewEvent('tryon_clicked', { hasSavedPhoto: !!window.elloUserImageUrl });
 
     const overlay = document.getElementById('previewProgressOverlay');
-    const bar = document.getElementById('previewProgressBar');
-    const btn = document.getElementById('previewTryBtn');
+    const previewWidget = document.getElementById('previewWidget');
 
-    // 1. Show Progress GUI
     if (overlay) {
+        if (previewWidget) {
+            previewWidget.classList.add('preview-loading');
+        }
         overlay.style.display = 'flex';
         overlay.style.setProperty('display', 'flex', 'important'); // FORCE visibility
         overlay.style.setProperty('z-index', '2147483647', 'important'); // FORCE TOP
-        // Force reflow
+        startTryOnLoadingState('preview');
         void overlay.offsetWidth;
     }
 
-    // 2. Start Request in Background
-    // We catch errors here so we don't break the progress bar flow immediately
-    const tryOnPromise = startTryOn().catch(e => {
+    startTryOn().catch(e => {
         console.error("Preview generation failed:", e);
         window._previewTryOnProcessing = false; // Release lock on error
         return false;
     });
 
-    // 3. Animate Progress Bar (Simulate ~8-12s generation)
-    // We'll advance it to 90% and hold until the real process finishes
-    let progress = 0;
-    const totalDuration = 9000; // 9 seconds target
+    const previewStartedAt = Date.now();
     const intervalTime = 100;
-    const step = 90 / (totalDuration / intervalTime); // increment per step
 
     const progressInterval = setInterval(() => {
-        progress += step;
-        if (progress > 90) progress = 90; // Cap at 90% until done
-
-        if (bar) {
-            bar.style.width = `${progress}%`;
-            bar.style.setProperty('width', `${progress}%`, 'important'); // LOCK IT IN
-        }
-
-        // Check if real process finished early (rare) or failed
-        if (!isTryOnProcessing && progress > 20) {
-            // Process finished (success or fail), jump to end
+        if (!isTryOnProcessing && Date.now() - previewStartedAt > 1200) {
             clearInterval(progressInterval);
             finishPreviewTransition();
         }
     }, intervalTime);
 
-    // 4. Wait for real completion or max timeout
-    // We'll rely on the interval checking `isTryOnProcessing`, but we also need a safety net
-    // If startTryOn returns (it's async), it means the *request* was sent, but not necessarily finished.
-    // The `isTryOnProcessing` flag is our truth.
-
     function finishPreviewTransition() {
-        if (bar) {
-            bar.style.width = '100%';
-            bar.style.setProperty('width', '100%', 'important');
+        if (overlay) {
+            updateTryOnLoadingCopy(overlay, TRYON_LOADING_TIPS.length - 1);
+            updateTryOnLoadingProgress(overlay, 100);
         }
+        stopTryOnLoadingState('preview');
 
-        // Small delay to show 100%
         setTimeout(() => {
+            if (previewWidget) {
+                previewWidget.classList.remove('preview-loading');
+            }
             dismissPreview(true); // Close preview
             openWidget(); // Open full widget
 

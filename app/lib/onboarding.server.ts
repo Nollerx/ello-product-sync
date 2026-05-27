@@ -4,6 +4,7 @@ export type OnboardingStep =
   | "welcome"
   | "activate_widget"
   | "configure"
+  | "placements"
   | "billing"
   | "complete";
 
@@ -11,11 +12,16 @@ export const ONBOARDING_ROUTE_BY_STEP: Record<Exclude<OnboardingStep, "billing" 
   welcome: "/app/onboarding/welcome",
   configure: "/app/onboarding/configure",
   activate_widget: "/app/onboarding/activate-widget",
+  placements: "/app/onboarding/placements",
 };
 
-// Order: welcome → configure (customize color/position) → activate_widget
-// (enable in theme so the customized widget shows up) → billing → complete.
-const STEP_ORDER: OnboardingStep[] = ["welcome", "configure", "activate_widget", "billing", "complete"];
+const INLINE_TRYON_BLOCK_HANDLE = "inline-tryon-button";
+const FALLBACK_THEME_APP_API_KEY = "3ab87c3a17258dd8b44f288b81b7dfc7";
+
+// Order: welcome → configure → placements/install → billing → complete.
+// The legacy activate_widget step still has a route so merchants already there
+// can proceed, but new onboarding uses the unified placements page.
+const STEP_ORDER: OnboardingStep[] = ["welcome", "configure", "placements", "billing", "complete"];
 
 export function nextStep(current: OnboardingStep): OnboardingStep {
   const idx = STEP_ORDER.indexOf(current);
@@ -78,4 +84,14 @@ export function preserveShopifyQuery(sourceUrl: URL): string {
   }
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+export function onboardingRouteForStep(step: OnboardingStep): string | null {
+  if (step === "billing" || step === "complete") return null;
+  return ONBOARDING_ROUTE_BY_STEP[step];
+}
+
+export function getInlineTryOnBlockEditorUrl(shopDomain: string): string {
+  const apiKey = process.env.SHOPIFY_API_KEY || FALLBACK_THEME_APP_API_KEY;
+  return `https://${shopDomain}/admin/themes/current/editor?template=product&addAppBlockId=${apiKey}/${INLINE_TRYON_BLOCK_HANDLE}&target=mainSection`;
 }

@@ -21,6 +21,7 @@ import {
   isPaidPlanKey,
   type ActiveSubscriptionSnapshot,
 } from "../lib/shopify-billing.server";
+import { setOnboardingStep } from "../lib/onboarding.server";
 
 const SHOPIFY_SUBSCRIPTION_FETCH_ATTEMPTS = 5;
 const SHOPIFY_SUBSCRIPTION_FETCH_DELAY_MS = 1000;
@@ -201,6 +202,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
     // 3. Get plan display info
     const planConfig = getPlanConfig();
     const planMeta = planConfig[activePlanKey];
+
+    // Mark onboarding complete — billing approval is the final step.
+    await setOnboardingStep(session.shop, "complete");
 
     return {
       status: "active" as const,

@@ -1,0 +1,564 @@
+{% comment %}
+  Ello Try-On Button — inline placement.
+
+  Merchants drag this block into their product-page section via Shopify's theme
+  editor. Renders a real <button> next to Add to Cart (or wherever they drop it)
+  that opens the same try-on popup as the floating widget. Shares the loader and
+  config plumbing with the floating block — `widget-loader.js`'s duplicate-init
+  guard handles the case where both blocks are installed.
+
+  Schema settings are per-block OVERRIDES. The dashboard provides the merchant-
+  wide defaults via vto_stores.inline_button_*. A non-empty override here beats
+  the dashboard; an empty override falls through to the dashboard value.
+
+  Targets product pages only — enabled_on.templates restricts where the block
+  shows in the theme editor's section/block picker.
+{% endcomment %}
+{% schema %}
+{
+  "name": "Ello Inline Try-On",
+  "target": "section",
+  "enabled_on": { "templates": ["product"] },
+  "settings": [
+    {
+      "type": "text",
+      "id": "backend_url",
+      "label": "Backend URL",
+      "default": "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app",
+      "info": "Ello backend URL — auto-set on install, do not change unless instructed."
+    },
+    {
+      "type": "text",
+      "id": "button_text",
+      "label": "Button text override",
+      "info": "Leave blank to use the text set in your Ello dashboard."
+    },
+    {
+      "type": "color",
+      "id": "bg_color",
+      "label": "Background color override",
+      "info": "Leave blank to use the color set in your Ello dashboard."
+    },
+    {
+      "type": "color",
+      "id": "text_color",
+      "label": "Text color override",
+      "info": "Leave blank to use the color set in your Ello dashboard."
+    },
+    {
+      "type": "checkbox",
+      "id": "hide_when_oos",
+      "label": "Hide on out-of-stock products",
+      "default": false
+    },
+    {
+      "type": "select",
+      "id": "width",
+      "label": "Width",
+      "options": [
+        { "value": "full", "label": "Full width" },
+        { "value": "auto", "label": "Auto" }
+      ],
+      "default": "full"
+    }
+  ]
+}
+{% endschema %}
+
+{%- assign block_button_text = block.settings.button_text | strip -%}
+{%- assign block_bg_color = block.settings.bg_color | strip -%}
+{%- assign block_text_color = block.settings.text_color | strip -%}
+{%- assign variant = product.selected_or_first_available_variant -%}
+{%- assign initial_available = variant.available -%}
+
+{%- comment -%}
+  Hide rendering entirely when:
+  • merchant set hide_when_oos AND the initial variant isn't available, OR
+  • the product itself isn't published (shouldn't happen on PDP, but defensive)
+
+  The dashboard-level inline_button_enabled kill switch is enforced client-side
+  (because we don't have a Liquid view of vto_stores).
+{%- endcomment -%}
+{%- if block.settings.hide_when_oos and initial_available == false -%}
+  {%- comment -%} block hidden by merchant config — render nothing {%- endcomment -%}
+{%- else -%}
+
+<!-- Ello Try-On Inline Button (Theme Extension) -->
+<link rel="preconnect" href="{{ block.settings.backend_url }}" crossorigin>
+<link rel="dns-prefetch" href="{{ block.settings.backend_url }}">
+
+<script>
+  // Pre-queue shim — created synchronously before widget-loader.js runs so
+  // a shopper clicking the button before the loader has executed doesn't
+  // drop the click. widget-loader.js drains the queue when it boots.
+  (function () {
+    if (window.Ello && typeof window.Ello.openTryOn === 'function') return;
+    var __preQueue = [];
+    window.__elloPreQueue = window.__elloPreQueue || __preQueue;
+    window.Ello = window.Ello || {
+      openTryOn: function (ctx) {
+        try { (window.__elloPreQueue || __preQueue).push(ctx); }
+        catch (e) { console.warn('[Ello] pre-queue push failed', e); }
+      },
+      __elloPreQueue: __preQueue
+    };
+  })();
+</script>
+
+<button
+  type="button"
+  class="ello-inline-tryon-btn"
+  data-ello-inline-btn="{{ block.id }}"
+  data-product-handle="{{ product.handle }}"
+  data-product-id="{{ product.id }}"
+  data-variant-id="{{ variant.id }}"
+  data-available="{{ initial_available }}"
+  data-hide-when-oos="{{ block.settings.hide_when_oos }}"
+  data-default-text="{{ block_button_text | default: '' | escape }}"
+  data-default-bg="{{ block_bg_color | default: '' | escape }}"
+  data-default-fg="{{ block_text_color | default: '' | escape }}"
+  data-width="{{ block.settings.width }}"
+  style="
+    {%- comment -%}
+      First-paint styles. We start the button INVISIBLE (opacity: 0) and
+      reveal it once dashboard config + theme-match have settled, so the
+      shopper sees a single transition into the final state instead of
+      black→red→shape-change flashes. revealButton() in the script below
+      flips opacity to 1, with a 1500ms safety timeout so a missing ATC
+      or unreachable config never leaves the button hidden forever.
+    {%- endcomment -%}
+    {% if block.settings.width == 'full' %}display: block; width: 100%;{% else %}display: inline-block;{% endif %}
+    box-sizing: border-box;
+    -webkit-appearance: none;
+    appearance: none;
+    padding: 12px 20px;
+    margin: 8px 0;
+    border: none;
+    border-radius: 4px;
+    font: inherit;
+    font-weight: 500;
+    line-height: 1.4;
+    text-align: center;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    background-color: {% if block_bg_color != '' %}{{ block_bg_color }}{% else %}#000000{% endif %};
+    color: {% if block_text_color != '' %}{{ block_text_color }}{% else %}#FFFFFF{% endif %};
+  "
+>
+  {% if block_button_text != '' %}{{ block_button_text }}{% else %}Try On{% endif %}
+</button>
+
+<script>
+  (function () {
+    var BACKEND_URL = {{ block.settings.backend_url | json }};
+    var SHOP_DOMAIN = {{ shop.permanent_domain | json }};
+    var BLOCK_ID = {{ block.id | json }};
+
+    // ─── Reveal plumbing ──────────────────────────────────────────────
+    // Button is rendered at opacity: 0. We flip it to 1 only once BOTH:
+    //   (a) dashboard config has been applied (from localStorage cache
+    //       on repeat visits, or from ello:config-resolved on cold),
+    //   (b) the theme-match has run (or given up).
+    // ...so the shopper sees a single transition into the final state
+    // instead of black→red→shape-change flashes.
+    //
+    // Safety nets cover the failure modes:
+    //   • 1500ms global timeout reveals regardless of either flag.
+    //   • theme-match giveup branch force-reveals (looks generic but works).
+    var revealed = false;
+    var configApplied = false;
+    var themeMatched = false;
+
+    function revealButton() {
+      if (revealed) return;
+      var btn = document.querySelector('[data-ello-inline-btn="' + BLOCK_ID + '"]');
+      if (!btn) return;
+      // Don't fight an explicit hide (kill switch / inverse-hide /
+      // hide-when-oos). display:none wins over opacity anyway.
+      if (btn.style.getPropertyValue('display') === 'none') return;
+      btn.style.setProperty('opacity', '1');
+      revealed = true;
+    }
+    function maybeReveal() {
+      if (configApplied && themeMatched) revealButton();
+    }
+    // Safety net: reveal no matter what after 1.5s. Covers the case
+    // where config never arrives AND theme-match never succeeds.
+    setTimeout(revealButton, 1500);
+
+    // ─── Synchronous localStorage fast-path ───────────────────────────
+    // widget-loader.js caches the resolved config row at
+    //   ello_config_<shop.permanent_domain>
+    // (and falls back to the storeSlug key when the shop domain is
+    // unknown — see widget-loader.js's `cacheKeyId = shop || storeSlug`).
+    // We replicate that read here so repeat visitors get correct
+    // colors/text BEFORE first paint, without waiting for the loader's
+    // own apply path. Cold visitors miss the fast-path and fall through
+    // to the normal ello:config-resolved flow below.
+    function readCachedConfigRow() {
+      try {
+        var key = 'ello_config_' + SHOP_DOMAIN;
+        var raw = window.localStorage.getItem(key);
+        if (!raw) return null;
+        var parsed = JSON.parse(raw);
+        return (parsed && parsed.config) ? parsed.config : null;
+      } catch (e) {
+        return null;
+      }
+    }
+    function preApplyFromCache() {
+      var row = readCachedConfigRow();
+      if (!row) return false;
+      var btn = document.querySelector('[data-ello-inline-btn="' + BLOCK_ID + '"]');
+      if (!btn) return false;
+
+      // Kill switch first — if disabled in cache, hide and skip rest.
+      if (row.inline_button_enabled === false) {
+        btn.style.setProperty('display', 'none', 'important');
+        return true;
+      }
+      // Respect block-level overrides (theme-editor wins over dashboard).
+      var blockText = btn.dataset.defaultText || '';
+      var blockBg   = btn.dataset.defaultBg || '';
+      var blockFg   = btn.dataset.defaultFg || '';
+      if (blockText === '' && row.inline_button_text) {
+        btn.textContent = row.inline_button_text;
+      }
+      if (blockBg === '' && row.inline_button_color) {
+        btn.style.backgroundColor = row.inline_button_color;
+      }
+      if (blockFg === '' && row.inline_button_text_color) {
+        btn.style.color = row.inline_button_text_color;
+      }
+      return true;
+    }
+    // Run immediately — the <button> above is already in the DOM by the
+    // time this <script> executes (script follows button in source).
+    if (preApplyFromCache()) configApplied = true;
+
+    // 1. Make sure widget-loader.js is on the page. The floating block already
+    //    includes it; if the merchant has inline-only, we inject it here. The
+    //    loader's duplicate-init guard prevents double-execution.
+    function ensureLoader() {
+      if (document.querySelector('script[src*="widget-loader.js"]')) return;
+      var s = document.createElement('script');
+      s.src = BACKEND_URL + '/widget-loader.js';
+      s.async = true;
+      s.defer = true;
+      s.dataset.shop = SHOP_DOMAIN;
+      document.head.appendChild(s);
+    }
+
+    // 2. Wire the button. Re-wiring on theme-editor re-render is safe because
+    //    we de-dup by [data-ello-wired].
+    function wireButton() {
+      var btn = document.querySelector('[data-ello-inline-btn="' + BLOCK_ID + '"]');
+      if (!btn || btn.dataset.elloWired === 'true') return;
+      btn.dataset.elloWired = 'true';
+
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        var ctx = {
+          source: 'inline_button',
+          productHandle: btn.dataset.productHandle || null,
+          productId: btn.dataset.productId || null,
+          variantId: btn.dataset.variantId || null
+        };
+        if (window.Ello && typeof window.Ello.openTryOn === 'function') {
+          window.Ello.openTryOn(ctx);
+        } else {
+          // Pre-queue shim should always be present, but defend anyway.
+          (window.__elloPreQueue = window.__elloPreQueue || []).push(ctx);
+        }
+      });
+
+      // 3. Variant-change listeners — keep data-variant-id in sync with what
+      //    the shopper has selected so try-on uses the right size.
+      //    Three signal sources covered:
+      //    (a) Theme's variant <input name="id"> in the add-to-cart form
+      //    (b) Dawn/most themes' custom 'variant:change' event
+      //    (c) URL ?variant= updates via popstate
+
+      function updateVariant(newId) {
+        if (newId == null) return;
+        btn.dataset.variantId = String(newId);
+      }
+
+      // (a) Most Shopify themes dispatch a change on the form's variant input
+      try {
+        var forms = document.querySelectorAll('form[action*="/cart/add"]');
+        forms.forEach(function (form) {
+          var input = form.querySelector('input[name="id"]');
+          if (input) {
+            input.addEventListener('change', function () {
+              updateVariant(input.value);
+            });
+          }
+        });
+      } catch (e) { /* form selection failed, fall through */ }
+
+      // (b) Custom event many themes (Dawn, Impact, etc.) emit
+      document.addEventListener('variant:change', function (ev) {
+        var v = ev && ev.detail && (ev.detail.variant || ev.detail);
+        if (v && v.id) updateVariant(v.id);
+      });
+
+      // (c) popstate for SPA themes that update ?variant= without reloading
+      window.addEventListener('popstate', function () {
+        try {
+          var v = new URLSearchParams(window.location.search).get('variant');
+          if (v) updateVariant(v);
+        } catch (e) { /* URLSearchParams unsupported */ }
+      });
+    }
+
+    // 4. Theme match — copy size/shape/text-style from the merchant's
+    //    Add-to-Cart button so the Try-On button reads as native to the
+    //    theme. Deliberately does NOT copy background-color, color, or
+    //    width: those stay merchant-controlled (dashboard colors + the
+    //    "full / auto" block width setting).
+    //
+    //    Runs once at boot and re-applies dashboard colors afterward so
+    //    a merchant color override still wins over the cloned ATC look.
+    //    Retries for ~2.5s to cover SPA themes that render the product
+    //    form asynchronously (quick-view modals, hydrated PDPs, etc.).
+    var THEME_PROPS = [
+      'font-family', 'font-size', 'font-weight', 'font-style',
+      'letter-spacing', 'text-transform', 'line-height', 'text-decoration',
+      'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+      'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+      'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+      'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+      'border-top-left-radius', 'border-top-right-radius',
+      'border-bottom-left-radius', 'border-bottom-right-radius',
+      'box-shadow', 'min-height'
+    ];
+
+    // Selectors ordered from most specific (real ATC submit inside the
+    // cart-add form) to least (generic theme button classes). We bail on
+    // the first match that isn't our own button.
+    var ATC_SELECTORS = [
+      'form[action*="/cart/add"] button[type="submit"]',
+      'form[action*="/cart/add"] input[type="submit"]',
+      'form[action*="/cart/add"] [name="add"]',
+      'form[action*="/cart/add"] button.product-form__submit',
+      'form[action*="/cart/add"] button',
+      'button[name="add"]',
+      '.product-form__submit',
+      '[data-add-to-cart]'
+    ];
+
+    function findAtcButton(selfBtn) {
+      for (var i = 0; i < ATC_SELECTORS.length; i++) {
+        var nodes = document.querySelectorAll(ATC_SELECTORS[i]);
+        for (var j = 0; j < nodes.length; j++) {
+          var n = nodes[j];
+          // Skip our own button and anything inside our own button — some
+          // themes wrap multiple submit-like elements in a single form.
+          if (n === selfBtn) continue;
+          if (selfBtn && selfBtn.contains(n)) continue;
+          return n;
+        }
+      }
+      return null;
+    }
+
+    function matchThemeButton() {
+      var btn = document.querySelector('[data-ello-inline-btn="' + BLOCK_ID + '"]');
+      if (!btn) return true; // nothing to do; stop retrying
+      if (btn.dataset.elloThemeMatched === 'true') return true;
+
+      var atc = findAtcButton(btn);
+      if (!atc) return false;
+
+      var cs;
+      try { cs = window.getComputedStyle(atc); }
+      catch (e) { return false; }
+      // Cheap sanity check — if the ATC button hasn't been laid out yet
+      // (display: none, not yet in DOM), computed font-family will still
+      // be set, but padding may be zero. We treat "no font-family" as
+      // "not ready" and retry.
+      if (!cs || !cs.fontFamily) return false;
+
+      for (var k = 0; k < THEME_PROPS.length; k++) {
+        var name = THEME_PROPS[k];
+        var val = cs.getPropertyValue(name);
+        if (val) btn.style.setProperty(name, val);
+      }
+
+      // Width match. Block setting `full` makes us `width: 100%` of OUR
+      // parent — which can be wider than the ATC's parent (e.g., Ello
+      // block dropped in the product section while ATC sits in the
+      // narrower product-form container). Cap our max-width to the ATC's
+      // actual rendered width so the two buttons line up. Block setting
+      // `auto` already shrink-wraps to content, so we leave it alone.
+      if (btn.dataset.width === 'full') {
+        var rect;
+        try { rect = atc.getBoundingClientRect(); } catch (e) { rect = null; }
+        if (rect && rect.width > 0) {
+          btn.style.setProperty('max-width', rect.width + 'px');
+          btn.style.setProperty('margin-left', '0');
+          btn.style.setProperty('margin-right', 'auto');
+        }
+      }
+
+      btn.dataset.elloThemeMatched = 'true';
+
+      // Re-apply dashboard config so merchant color/text overrides win
+      // over the ATC values we just copied (we don't touch bg/color, but
+      // border-color rides along with the border copy and dashboard
+      // text/bg should still take precedence).
+      if (window.ELLO_STORE_CONFIG) applyDashboardConfig(window.ELLO_STORE_CONFIG);
+
+      // Button is now in its final state from a styling perspective —
+      // reveal once config has also landed (or via the safety timeout).
+      themeMatched = true;
+      maybeReveal();
+      return true;
+    }
+
+    // Re-measure ATC width on viewport resize so the cap stays in sync
+    // with responsive themes. Debounced via rAF — themes that animate on
+    // resize were firing this hundreds of times/sec without the guard.
+    function syncWidthToAtc() {
+      var btn = document.querySelector('[data-ello-inline-btn="' + BLOCK_ID + '"]');
+      if (!btn || btn.dataset.elloThemeMatched !== 'true') return;
+      if (btn.dataset.width !== 'full') return;
+      var atc = findAtcButton(btn);
+      if (!atc) return;
+      var rect;
+      try { rect = atc.getBoundingClientRect(); } catch (e) { return; }
+      if (rect && rect.width > 0) {
+        btn.style.setProperty('max-width', rect.width + 'px');
+      }
+    }
+    var resizeRaf = null;
+    window.addEventListener('resize', function () {
+      if (resizeRaf) return;
+      resizeRaf = requestAnimationFrame(function () {
+        resizeRaf = null;
+        syncWidthToAtc();
+      });
+    });
+
+    function startThemeMatch() {
+      if (matchThemeButton()) return;
+      // Retry every 250ms up to ~2.5s. After that, leave the safe defaults
+      // in place — failing open (looks generic but works) beats blocking
+      // the merchant on a theme whose ATC button we can't locate.
+      var attempts = 0;
+      var timer = setInterval(function () {
+        attempts++;
+        if (matchThemeButton() || attempts >= 10) {
+          clearInterval(timer);
+          // If we hit the retry cap without finding ATC, force-reveal
+          // with safe defaults. Looks generic but works — better than
+          // leaving the shopper without a button until the 1.5s timeout.
+          themeMatched = true;
+          if (!revealed) revealButton();
+        }
+      }, 250);
+    }
+
+    // 5. Once dashboard config resolves, restyle from window.ELLO_STORE_CONFIG.
+    //    Per-block overrides (set in theme editor) WIN over dashboard values —
+    //    we only fill in colors/text from config when the block override is empty.
+    //    Also hides the button if the dashboard kill switch is off.
+    function applyDashboardConfig(cfg) {
+      var btn = document.querySelector('[data-ello-inline-btn="' + BLOCK_ID + '"]');
+      if (!btn || !cfg) return;
+
+      // Hard kill switch
+      if (cfg.inlineButtonEnabled === false) {
+        btn.style.setProperty('display', 'none', 'important');
+        return;
+      } else {
+        // Clear any forced-hide left over from a previous config that disabled it
+        if (btn.style.getPropertyValue('display') === 'none') {
+          btn.style.removeProperty('display');
+          // Restore display from data-width
+          btn.style.display = btn.dataset.width === 'auto' ? 'inline-block' : 'block';
+        }
+      }
+
+      var blockText = btn.dataset.defaultText || '';
+      var blockBg   = btn.dataset.defaultBg || '';
+      var blockFg   = btn.dataset.defaultFg || '';
+
+      if (blockText === '' && cfg.inlineButtonText) {
+        btn.textContent = cfg.inlineButtonText;
+      }
+      if (blockBg === '' && cfg.inlineButtonColor) {
+        btn.style.backgroundColor = cfg.inlineButtonColor;
+      }
+      if (blockFg === '' && cfg.inlineButtonTextColor) {
+        btn.style.color = cfg.inlineButtonTextColor;
+      }
+      // Mark config applied so the reveal gate can clear. Try to reveal
+      // now in case theme-match already finished and was waiting on us.
+      configApplied = true;
+      maybeReveal();
+    }
+
+    // Listen for the loader's config-resolved event AND check ELLO_STORE_CONFIG
+    // synchronously in case config already resolved before this script ran
+    // (e.g., warm localStorage cache on a repeat visit, or floating block
+    // already booted the loader). Either path flips configApplied.
+    window.addEventListener('ello:config-resolved', function (ev) {
+      applyDashboardConfig(ev && ev.detail);
+    });
+    if (window.ELLO_STORE_CONFIG) {
+      applyDashboardConfig(window.ELLO_STORE_CONFIG);
+    }
+
+    // 6. Inverse-hide: by default the button stays visible. Once widget-main.js
+    //    finishes loading the merchant's catalog, we hide the button if THIS
+    //    product isn't in it (i.e., merchant hasn't enabled try-on for it).
+    //    Common case (95%+ on most stores): product IS enabled → no-op, button
+    //    stays visible the whole time, zero flicker. Rare case: product is NOT
+    //    enabled → button briefly visible then hides. Inverse is better than
+    //    hide-by-default because the default state matches the dominant case.
+    function maybeHideIfDisabled() {
+      var btn = document.querySelector('[data-ello-inline-btn="' + BLOCK_ID + '"]');
+      if (!btn) return false;
+      if (typeof window.elloIsProductEnabled !== 'function') return false;
+      var handle = btn.dataset.productHandle;
+      var result = window.elloIsProductEnabled(handle);
+      if (result === null) return false; // catalog not loaded yet
+      if (result === false) {
+        btn.style.setProperty('display', 'none', 'important');
+      }
+      // result === true → no-op; button stays as it is.
+      return true; // catalog resolved; no need to listen again
+    }
+
+    // Run once now (in case catalog already loaded — e.g., second PDP visit
+    // in same session where widget-main.js is already running). If not yet
+    // resolved, wait for the catalog-loaded event from widget-main.js.
+    if (!maybeHideIfDisabled()) {
+      window.addEventListener('ello:catalog-loaded', maybeHideIfDisabled, { once: true });
+      // Safety timeout: if widget-main.js never loads / catalog never resolves
+      // within 10s (network failure, ad blocker, etc.), give up the check and
+      // leave the button visible. Failing-open beats failing-hidden when the
+      // user actively wants to use try-on.
+      setTimeout(maybeHideIfDisabled, 10000);
+    }
+
+    // Boot
+    ensureLoader();
+    function boot() {
+      wireButton();
+      // Theme-match after wireButton so we know our own button is in the
+      // DOM. matchThemeButton() handles ATC lookup + retry internally.
+      startThemeMatch();
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', boot);
+    } else {
+      boot();
+    }
+  })();
+</script>
+
+{%- endif -%}

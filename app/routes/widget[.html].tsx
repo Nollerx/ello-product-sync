@@ -25,7 +25,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
                 "Content-Type": "text/html",
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-                "Cache-Control": isDev ? "no-store, no-cache, must-revalidate" : "public, max-age=3600"
+                // Cache 1 day at browser + CDN. Safe because widget-loader.js
+                // version-busts this URL with `?v=<WIDGET_VERSION>` on every
+                // deploy, so stale copies can never be served after a release.
+                "Cache-Control": isDev ? "no-store, no-cache, must-revalidate" : "public, max-age=86400, s-maxage=86400"
             },
         });
     } catch (error) {
