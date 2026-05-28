@@ -199,7 +199,6 @@ let isIOS = false;
 let isAndroid = false;
 
 // Mobile scroll lock variables
-let scrollLockPosition = 0;
 let scrollLockTouchHandler = null;
 
 // Preview State Variables
@@ -2670,16 +2669,11 @@ function handlePhotoUploadClick() {
 function lockBodyScroll() {
     if (!isMobile) return;
 
-    // Store current scroll position
-    scrollLockPosition = window.pageYOffset || document.documentElement.scrollTop;
-
-    // Set body to fixed position at current scroll
-    document.body.style.position = 'fixed';
-    document.body.style.top = `-${scrollLockPosition}px`;
-    document.body.style.left = '0';
-    document.body.style.right = '0';
-    document.body.style.width = '100%';
+    // Avoid `position: fixed` on <body>: on iOS Safari it forces the address
+    // bar to re-expand, flickering the page when the widget opens. The
+    // non-passive touchmove handler below is what blocks background scroll on iOS.
     document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
 
     // Prevent touch scrolling on body (but allow it in widget)
     scrollLockTouchHandler = function (e) {
@@ -2709,17 +2703,8 @@ function lockBodyScroll() {
 function unlockBodyScroll() {
     if (!isMobile) return;
 
-    // Remove fixed positioning
-    document.body.style.position = '';
-    document.body.style.top = '';
-    document.body.style.left = '';
-    document.body.style.right = '';
-    document.body.style.width = '';
     document.body.style.overflow = '';
-
-    // Restore scroll position
-    window.scrollTo(0, scrollLockPosition);
-    scrollLockPosition = 0;
+    document.documentElement.style.overflow = '';
 
     // Remove touch handler
     if (scrollLockTouchHandler) {
@@ -6275,7 +6260,19 @@ function ensureInlineModeStyles() {
             }
         }
 
-        /* Inline-mode result CTAs: attribution under image, then stacked buttons */
+    `;
+    document.head.appendChild(style);
+}
+
+// Styles for the result-stage CTA stack (Add-to-Cart + optional Try-another
+// + attribution). Must be injected for every entry point — inline button,
+// widget preview, AND the floating widget — so the CTAs never render naked.
+// Separate from ensureInlineModeStyles because that one only runs in inline mode.
+function ensureResultCtasStyles() {
+    if (document.getElementById('ello-result-ctas-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'ello-result-ctas-styles';
+    style.textContent = `
         #ello-inline-result-ctas {
             display: flex; flex-direction: column; gap: 8px;
             margin-top: 10px; padding: 0 12px 12px;
@@ -6343,6 +6340,8 @@ function renderInlineModeResultCtas() {
     const resultSection = document.getElementById('resultSection');
     if (!resultSection) return;
 
+    ensureResultCtasStyles();
+
     // Idempotent — remove any prior CTAs before injecting.
     const existing = document.getElementById('ello-inline-result-ctas');
     if (existing) existing.remove();
@@ -6350,8 +6349,11 @@ function renderInlineModeResultCtas() {
     const ctas = document.createElement('div');
     ctas.id = 'ello-inline-result-ctas';
 
-    // Try to surface price in the Add-to-Cart label. Falls back to plain
-    // "Add to Cart" if we can't read price from any of the usual sources.
+    // Try another photo only makes sense in inline-button mode — the
+    // floating widget already has its own TRY ON button in the action row,
+    // so a second "Try another photo" button would just be a duplicate.
+    const showTryAnother = !!window.ELLO_INLINE_MODE;
+
     const priceLabel = derivePriceLabel();
     ctas.innerHTML = `
         <div class="ello-inline-attribution">
@@ -6361,26 +6363,30 @@ function renderInlineModeResultCtas() {
             <button class="ello-inline-btn ello-inline-btn-primary" id="ello-inline-add-to-cart-btn">
                 Add to Cart${priceLabel}
             </button>
+            ${showTryAnother ? `
             <button class="ello-inline-btn ello-inline-btn-secondary" id="ello-inline-try-another-btn">
                 Try another photo
-            </button>
+            </button>` : ''}
         </div>
         <div id="ello-inline-cart-error" style="display:none;"></div>
     `;
     resultSection.appendChild(ctas);
 
     document.getElementById('ello-inline-add-to-cart-btn').addEventListener('click', addToCartFromTryOn);
-    document.getElementById('ello-inline-try-another-btn').addEventListener('click', function () {
-        // Reset to upload-photo state without closing the popup
-        const photoInput = document.getElementById('photoInput');
-        if (photoInput) photoInput.value = '';
-        if (typeof resetPhotoUploadArea === 'function') resetPhotoUploadArea();
-        const rs = document.getElementById('resultSection');
-        if (rs) rs.style.display = 'none';
-        const w = document.getElementById('virtualTryonWidget');
-        if (w) w.classList.remove('inline-mode-result-ready');
-        ctas.remove();
-    });
+    const tryAnotherBtn = document.getElementById('ello-inline-try-another-btn');
+    if (tryAnotherBtn) {
+        tryAnotherBtn.addEventListener('click', function () {
+            // Reset to upload-photo state without closing the popup
+            const photoInput = document.getElementById('photoInput');
+            if (photoInput) photoInput.value = '';
+            if (typeof resetPhotoUploadArea === 'function') resetPhotoUploadArea();
+            const rs = document.getElementById('resultSection');
+            if (rs) rs.style.display = 'none';
+            const w = document.getElementById('virtualTryonWidget');
+            if (w) w.classList.remove('inline-mode-result-ready');
+            ctas.remove();
+        });
+    }
 }
 
 function derivePriceLabel() {
@@ -6913,6 +6919,7 @@ function showSizeSelector(clothing) {
     left: 0;
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     background: rgba(0,0,0,0.6);
     z-index: 30000;
     display: flex;
@@ -7517,6 +7524,7 @@ function showCustomPurchaseModal(clothing, variantToAdd) {
     left: 0;
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     background: rgba(0,0,0,0.6);
     z-index: 30000;
     display: flex;
