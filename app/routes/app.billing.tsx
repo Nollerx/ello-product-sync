@@ -226,6 +226,7 @@ export default function BillingPage() {
 
   return (
     <Page
+      fullWidth
       title="Choose Your Plan"
       subtitle="Start with a 7-day free trial. Cancel anytime."
     >
@@ -254,30 +255,30 @@ export default function BillingPage() {
           </Button>
         </InlineStack>
 
-        {/* Free plan card */}
+        {/* Free plan — horizontal strip */}
         <Card>
           <BlockStack gap="300">
-            <InlineStack align="space-between" blockAlign="center">
-              <Text as="h2" variant="headingMd">Ello Free</Text>
-              <Badge tone="info">Free</Badge>
+            <InlineStack align="space-between" blockAlign="center" wrap={false}>
+              <BlockStack gap="100">
+                <InlineStack gap="200" blockAlign="center">
+                  <Text as="h2" variant="headingMd">Ello Free</Text>
+                  <Badge tone="info">Free</Badge>
+                </InlineStack>
+                <Text as="p" variant="bodyMd" tone="subdued">
+                  $0/month · 10 try-ons per month · Ello branding on widget. No overages — upgrade anytime when you are ready for real traffic.
+                </Text>
+              </BlockStack>
+              <Box minWidth="220px">
+                <Button
+                  fullWidth
+                  onClick={() => handleSelectPlan("ello_free")}
+                  loading={isSubmitting && selectedPlan === "ello_free"}
+                  disabled={isSubmitting}
+                >
+                  Use Free Plan
+                </Button>
+              </Box>
             </InlineStack>
-            <Text as="p" variant="headingXl">
-              $0<Text as="span" variant="bodySm" tone="subdued"> /month</Text>
-            </Text>
-            <Text as="p" variant="bodyMd">10 try-ons per month · Ello branding on widget</Text>
-            <Text as="p" variant="bodySm" tone="subdued">
-              No overages. Upgrade anytime when you are ready for real traffic.
-            </Text>
-            <Box paddingBlockStart="200">
-              <Button
-                fullWidth
-                onClick={() => handleSelectPlan("ello_free")}
-                loading={isSubmitting && selectedPlan === "ello_free"}
-                disabled={isSubmitting}
-              >
-                Use Free Plan
-              </Button>
-            </Box>
           </BlockStack>
         </Card>
 
@@ -327,9 +328,9 @@ export default function BillingPage() {
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-            gap: "16px",
+            gap: "20px",
             alignItems: "stretch",
-            paddingTop: "12px",
+            paddingTop: "16px",
           }}
         >
           {PRICING_PLANS.map((plan) => {
@@ -339,25 +340,25 @@ export default function BillingPage() {
               <div
                 key={plan.key}
                 style={{
-                  transform: plan.featured ? "translateY(-12px)" : "none",
+                  transform: plan.featured ? "translateY(-16px)" : "none",
                   display: "flex",
                   flexDirection: "column",
                   height: "100%",
-                  borderRadius: "12px",
+                  borderRadius: "14px",
                   border: plan.featured ? "2px solid #0F5132" : "1px solid transparent",
                   boxShadow: plan.featured
-                    ? "0 12px 28px rgba(15, 81, 50, 0.16)"
+                    ? "0 16px 36px rgba(15, 81, 50, 0.18)"
                     : "none",
                   overflow: "hidden",
                   background: "#FFFFFF",
                 }}
               >
-                <Card padding="500">
+                <Card padding="800">
                   <div
                     style={{
                       display: "flex",
                       flexDirection: "column",
-                      gap: "12px",
+                      gap: "20px",
                       height: "100%",
                     }}
                   >
@@ -367,22 +368,24 @@ export default function BillingPage() {
                       </Box>
                     )}
 
-                    <Text as="h2" variant="headingMd">
-                      Ello {plan.displayName}
-                    </Text>
-
-                    <Text as="p" variant="headingXl">
-                      {formatMoney(activePrice)}
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        {interval === "monthly" ? " /mo" : " /yr"}
+                    <BlockStack gap="200">
+                      <Text as="h2" variant="headingLg">
+                        Ello {plan.displayName}
                       </Text>
-                    </Text>
+
+                      <Text as="p" variant="heading2xl">
+                        {formatMoney(activePrice)}
+                        <Text as="span" variant="bodyMd" tone="subdued">
+                          {interval === "monthly" ? " /mo" : " /yr"}
+                        </Text>
+                      </Text>
+                    </BlockStack>
 
                     <BlockStack gap="100">
-                      <Text as="p" variant="bodyMd" fontWeight="semibold">
+                      <Text as="p" variant="headingMd" fontWeight="semibold">
                         {plan.includedTryons.toLocaleString()} try-ons/mo
                       </Text>
-                      <Text as="p" variant="bodySm" tone="subdued">
+                      <Text as="p" variant="bodyMd" tone="subdued">
                         {plan.positioning}
                       </Text>
                       <Text as="p" variant="bodySm" tone="subdued">
@@ -391,16 +394,16 @@ export default function BillingPage() {
                     </BlockStack>
 
                     <Box
-                      padding="300"
+                      padding="500"
                       background="bg-surface-success"
-                      borderRadius="200"
+                      borderRadius="300"
                       borderWidth="025"
                       borderColor="border-success"
                     >
-                      <BlockStack gap="100">
+                      <BlockStack gap="200">
                         <span
                           style={{
-                            fontSize: "44px",
+                            fontSize: "64px",
                             fontWeight: 700,
                             lineHeight: 1,
                             color: "#0F5132",
@@ -409,10 +412,10 @@ export default function BillingPage() {
                         >
                           {monthlyBreakEven ?? "—"}
                         </span>
-                        <Text as="p" variant="bodyMd" fontWeight="semibold">
+                        <Text as="p" variant="bodyLg" fontWeight="semibold">
                           extra {monthlyBreakEven === 1 ? "sale from try-on covers" : "sales from try-on cover"} the month
                         </Text>
-                        <Text as="p" variant="bodySm" tone="subdued">
+                        <Text as="p" variant="bodyMd" tone="subdued">
                           {formatMoney(plan.monthlyPrice)} ÷ {formatMoney(averageOrderValue || AOV_DEFAULT)} AOV — every sale after is profit
                         </Text>
                       </BlockStack>
@@ -423,10 +426,11 @@ export default function BillingPage() {
                       {interval === "annual" ? " Save 10% vs monthly." : ""}
                     </Text>
 
-                    <div style={{ marginTop: "auto", paddingTop: "8px" }}>
+                    <div style={{ marginTop: "auto", paddingTop: "12px" }}>
                       <Button
                         variant="primary"
                         fullWidth
+                        size="large"
                         onClick={() => handleSelectPlan(plan.key)}
                         loading={isSubmitting && selectedPlan === plan.key}
                         disabled={isSubmitting}
