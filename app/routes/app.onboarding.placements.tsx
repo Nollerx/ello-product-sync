@@ -444,7 +444,7 @@ export default function OnboardingPlacements() {
   const revalidator = useRevalidator();
   const submitting = navigation.state !== "idle";
 
-  const [inlineEnabled, setInlineEnabled] = useState(settings.inlineEnabled);
+  const [inlineEnabled] = useState(settings.inlineEnabled);
   const [floatingNonPdpEnabled, setFloatingNonPdpEnabled] = useState(
     settings.floatingNonPdpEnabled,
   );
@@ -452,7 +452,7 @@ export default function OnboardingPlacements() {
     settings.floatingPdpEnabled,
   );
   const [previewEnabled, setPreviewEnabled] = useState(settings.previewEnabled);
-  const [previewMode, setPreviewMode] = useState<PreviewMode>("inline");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("theme");
   const [openedEditor, setOpenedEditor] = useState(false);
   const [openedThemeSettings, setOpenedThemeSettings] = useState(false);
 
@@ -513,54 +513,20 @@ export default function OnboardingPlacements() {
                       Add Try-On to your store
                     </Text>
                     <Text as="p" variant="bodyLg" tone="subdued">
-                      Start with the inline button on product pages. Then turn
-                      on Ello in your theme so the floating widget and preview
-                      prompt can support the main button.
+                      Two quick steps in your theme editor: turn Ello on, then
+                      drop the inline button onto your product page.
                     </Text>
                   </BlockStack>
-
-                  <SetupCard
-                    active={previewMode === "inline"}
-                    onSelect={() => setPreviewMode("inline")}
-                  >
-                    <BlockStack gap="300">
-                      <InlineStack align="space-between" blockAlign="start" wrap={false}>
-                        <BlockStack gap="150">
-                          <InlineStack gap="200" blockAlign="center">
-                            <Text as="h2" variant="headingLg">
-                              1. Add the inline Try-On button
-                            </Text>
-                            <Badge tone="success">Recommended</Badge>
-                          </InlineStack>
-                          <Text as="p" variant="bodyMd" tone="subdued">
-                            This is the main conversion placement. Shopify opens
-                            the product template with Ello ready to add.
-                          </Text>
-                        </BlockStack>
-                        <Checkbox
-                          labelHidden
-                          label="Enable inline Try-On button"
-                          checked={inlineEnabled}
-                          onChange={setInlineEnabled}
-                        />
-                      </InlineStack>
-                      <Box>
-                        <Button variant="primary" onClick={handleOpenEditor}>
-                          {openedEditor ? "Open inline setup again" : "Add inline button"}
-                        </Button>
-                      </Box>
-                    </BlockStack>
-                  </SetupCard>
 
                   <SetupCard
                     active={previewMode === "theme"}
                     onSelect={() => setPreviewMode("theme")}
                   >
-                    <InlineStack align="space-between" blockAlign="center" wrap={false}>
+                    <InlineStack align="space-between" blockAlign="center" wrap={false} gap="400">
                       <BlockStack gap="150">
                         <InlineStack gap="200" blockAlign="center">
                           <Text as="h2" variant="headingLg">
-                            2. Turn on Ello in your theme
+                            1. Turn on Ello in your theme
                           </Text>
                           <Badge tone={widgetEnabled ? "success" : "attention"}>
                             {widgetEnabled ? "Enabled" : openedThemeSettings ? "Opened" : "Required"}
@@ -571,8 +537,33 @@ export default function OnboardingPlacements() {
                           Try On on, then click Save.
                         </Text>
                       </BlockStack>
-                      <Button onClick={handleOpenThemeSettings}>
+                      <Button variant="primary" onClick={handleOpenThemeSettings}>
                         {openedThemeSettings ? "Open theme settings again" : "Open theme settings"}
+                      </Button>
+                    </InlineStack>
+                  </SetupCard>
+
+                  <SetupCard
+                    active={previewMode === "inline"}
+                    onSelect={() => setPreviewMode("inline")}
+                  >
+                    <InlineStack align="space-between" blockAlign="center" wrap={false} gap="400">
+                      <BlockStack gap="150">
+                        <InlineStack gap="200" blockAlign="center">
+                          <Text as="h2" variant="headingLg">
+                            2. Add the inline Try-On button
+                          </Text>
+                          <Badge tone={openedEditor ? "success" : "info"}>
+                            {openedEditor ? "Opened" : "Recommended"}
+                          </Badge>
+                        </InlineStack>
+                        <Text as="p" variant="bodyMd" tone="subdued">
+                          This is the main conversion placement. Shopify opens
+                          the product template with Ello ready to add.
+                        </Text>
+                      </BlockStack>
+                      <Button variant="primary" onClick={handleOpenEditor}>
+                        {openedEditor ? "Open inline setup again" : "Add inline button"}
                       </Button>
                     </InlineStack>
                   </SetupCard>
@@ -602,8 +593,8 @@ export default function OnboardingPlacements() {
                       />
                       <OptionRow
                         checked={floatingPdpEnabled}
-                        label="Show floating Try-On widget on product pages"
-                        helpText="Optional if you want the floating widget plus the inline Try-On button on product pages."
+                        label="Also show the floating widget on product pages"
+                        helpText="On top of the inline button. Most stores leave this off — the inline button already handles product pages."
                         onChange={setFloatingPdpEnabled}
                       />
                     </BlockStack>

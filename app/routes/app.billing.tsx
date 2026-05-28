@@ -3,7 +3,6 @@ import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useFetcher, useNavigate } from "react-router";
 import {
   Page,
-  Layout,
   Text,
   Card,
   Button,
@@ -282,12 +281,21 @@ export default function BillingPage() {
           </BlockStack>
         </Card>
 
-        <Card>
-          <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">Conversion leverage calculator</Text>
-            <InlineStack gap="300" blockAlign="end">
-              <BlockStack gap="100">
-                <label htmlFor="average-order-value">Average order value</label>
+        {/* AOV strip — drives the hero number on every plan card below */}
+        <Box
+          padding="400"
+          background="bg-surface-secondary"
+          borderRadius="200"
+          borderWidth="025"
+          borderColor="border"
+        >
+          <InlineStack gap="400" blockAlign="center" wrap={false}>
+            <BlockStack gap="050">
+              <Text as="p" variant="bodySm" tone="subdued">
+                Your average order value
+              </Text>
+              <InlineStack gap="100" blockAlign="center">
+                <Text as="span" variant="headingLg">$</Text>
                 <input
                   id="average-order-value"
                   type="number"
@@ -296,114 +304,164 @@ export default function BillingPage() {
                   value={averageOrderValue}
                   onChange={(event) => setAverageOrderValue(Number(event.currentTarget.value))}
                   style={{
-                    width: "120px",
-                    minHeight: "36px",
-                    padding: "6px 10px",
+                    width: "90px",
+                    fontSize: "20px",
+                    fontWeight: 600,
+                    padding: "4px 8px",
                     border: "1px solid #B8BECA",
                     borderRadius: "6px",
                   }}
                 />
-              </BlockStack>
+              </InlineStack>
+            </BlockStack>
+            <Box>
               <Text as="p" variant="bodyMd" tone="subdued">
-                At {formatMoney(averageOrderValue || AOV_DEFAULT)} AOV, each plan only needs a few added purchases to cover itself.
+                Change this to see exactly how many sales each plan needs to pay for itself.
               </Text>
-            </InlineStack>
-          </BlockStack>
-        </Card>
+            </Box>
+          </InlineStack>
+        </Box>
 
-        {/* Plan grid */}
-        <Layout>
+        {/* Plan grid — single row of 4, featured plan elevated */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+            gap: "16px",
+            alignItems: "stretch",
+            paddingTop: "12px",
+          }}
+        >
           {PRICING_PLANS.map((plan) => {
             const monthlyBreakEven = breakEvenOrders(plan.monthlyPrice, averageOrderValue);
             const activePrice = interval === "monthly" ? plan.monthlyPrice : plan.annualPrice;
             return (
-            <Layout.Section key={plan.key} variant="oneHalf">
-              <Card>
-                <BlockStack gap="300">
-                  <InlineStack align="space-between" blockAlign="center">
+              <div
+                key={plan.key}
+                style={{
+                  transform: plan.featured ? "translateY(-12px)" : "none",
+                  display: "flex",
+                  flexDirection: "column",
+                  height: "100%",
+                  borderRadius: "12px",
+                  border: plan.featured ? "2px solid #0F5132" : "1px solid transparent",
+                  boxShadow: plan.featured
+                    ? "0 12px 28px rgba(15, 81, 50, 0.16)"
+                    : "none",
+                  overflow: "hidden",
+                  background: "#FFFFFF",
+                }}
+              >
+                <Card padding="500">
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "12px",
+                      height: "100%",
+                    }}
+                  >
+                    {plan.featured && (
+                      <Box>
+                        <Badge tone="success">Best first plan</Badge>
+                      </Box>
+                    )}
+
                     <Text as="h2" variant="headingMd">
                       Ello {plan.displayName}
                     </Text>
-                    {plan.featured && (
-                      <Badge tone="success">Best first plan</Badge>
-                    )}
-                  </InlineStack>
 
-                  <Text as="p" variant="headingXl">
-                    {formatMoney(activePrice)}
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      {interval === "monthly" ? " /month" : " /year"}
+                    <Text as="p" variant="headingXl">
+                      {formatMoney(activePrice)}
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        {interval === "monthly" ? " /mo" : " /yr"}
+                      </Text>
                     </Text>
-                  </Text>
 
-                  <Badge tone="info">7-day free trial</Badge>
-
-                  <Text as="p" variant="bodyMd">
-                    {plan.includedTryons.toLocaleString()} try-ons included per month
-                  </Text>
-
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {plan.positioning} · ${OVERAGE_USD_PER_TRYON.toFixed(2)} per additional try-on
-                  </Text>
-
-                  <Box padding="300" background="bg-surface-secondary" borderRadius="200">
                     <BlockStack gap="100">
                       <Text as="p" variant="bodyMd" fontWeight="semibold">
-                        Needs {monthlyBreakEven ?? "-"} added {monthlyBreakEven === 1 ? "purchase" : "purchases"} to cover the monthly cost
+                        {plan.includedTryons.toLocaleString()} try-ons/mo
                       </Text>
                       <Text as="p" variant="bodySm" tone="subdued">
-                        {formatMoney(plan.monthlyPrice)} / {formatMoney(averageOrderValue || AOV_DEFAULT)} AOV = break-even target
+                        {plan.positioning}
+                      </Text>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        ${OVERAGE_USD_PER_TRYON.toFixed(2)} per additional · 7-day free trial
                       </Text>
                     </BlockStack>
-                  </Box>
 
-                  {interval === "annual" && (
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Annual billing saves 10% versus paying monthly.
-                    </Text>
-                  )}
-
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Billed {billingIntervalLabel}. Usage resets monthly.
-                  </Text>
-
-                  <Box paddingBlockStart="200">
-                    <Button
-                      variant="primary"
-                      fullWidth
-                      onClick={() => handleSelectPlan(plan.key)}
-                      loading={isSubmitting && selectedPlan === plan.key}
-                      disabled={isSubmitting}
+                    <Box
+                      padding="300"
+                      background="bg-surface-success"
+                      borderRadius="200"
+                      borderWidth="025"
+                      borderColor="border-success"
                     >
-                      Start 7-day trial
-                    </Button>
-                  </Box>
-                </BlockStack>
-              </Card>
-            </Layout.Section>
+                      <BlockStack gap="100">
+                        <span
+                          style={{
+                            fontSize: "44px",
+                            fontWeight: 700,
+                            lineHeight: 1,
+                            color: "#0F5132",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {monthlyBreakEven ?? "—"}
+                        </span>
+                        <Text as="p" variant="bodyMd" fontWeight="semibold">
+                          extra {monthlyBreakEven === 1 ? "sale from try-on covers" : "sales from try-on cover"} the month
+                        </Text>
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          {formatMoney(plan.monthlyPrice)} ÷ {formatMoney(averageOrderValue || AOV_DEFAULT)} AOV — every sale after is profit
+                        </Text>
+                      </BlockStack>
+                    </Box>
+
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Billed {billingIntervalLabel}. Usage resets monthly.
+                      {interval === "annual" ? " Save 10% vs monthly." : ""}
+                    </Text>
+
+                    <div style={{ marginTop: "auto", paddingTop: "8px" }}>
+                      <Button
+                        variant="primary"
+                        fullWidth
+                        onClick={() => handleSelectPlan(plan.key)}
+                        loading={isSubmitting && selectedPlan === plan.key}
+                        disabled={isSubmitting}
+                      >
+                        Start 7-day trial
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+              </div>
             );
           })}
-          <Layout.Section variant="oneHalf">
-            <Card>
-              <BlockStack gap="300">
-                <InlineStack align="space-between" blockAlign="center">
+        </div>
+
+        {/* Enterprise — full-width strip below the main plan row */}
+        <Card>
+          <BlockStack gap="300">
+            <InlineStack align="space-between" blockAlign="center" wrap={false}>
+              <BlockStack gap="100">
+                <InlineStack gap="200" blockAlign="center">
                   <Text as="h2" variant="headingMd">Enterprise</Text>
                   <Badge tone="info">Custom</Badge>
                 </InlineStack>
-                <Text as="p" variant="headingXl">Custom</Text>
-                <Text as="p" variant="bodyMd">Custom try-on volume, pricing, and rollout support.</Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  For brands that need higher included usage, procurement support, or manual account setup.
+                <Text as="p" variant="bodyMd" tone="subdued">
+                  Custom try-on volume, pricing, and rollout support. For brands that need higher included usage, procurement support, or manual account setup.
                 </Text>
-                <Box paddingBlockStart="200">
-                  <Button fullWidth url="mailto:andrew@ello.services?subject=Ello%20Enterprise%20plan">
-                    Contact for Enterprise
-                  </Button>
-                </Box>
               </BlockStack>
-            </Card>
-          </Layout.Section>
-        </Layout>
+              <Box minWidth="220px">
+                <Button fullWidth url="mailto:andrew@ello.services?subject=Ello%20Enterprise%20plan">
+                  Contact for Enterprise
+                </Button>
+              </Box>
+            </InlineStack>
+          </BlockStack>
+        </Card>
       </BlockStack>
     </Page>
   );
