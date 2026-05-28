@@ -213,7 +213,7 @@ export default function BillingPage() {
 
   const actionError = actionData?.error;
   const isSubmitting = fetcher.state === "submitting" || fetcher.state === "loading";
-  const billingIntervalLabel = interval === "monthly" ? "monthly" : "annual";
+  const billingIntervalLabel = interval === "monthly" ? "monthly" : "annually";
 
   const handleSelectPlan = (planKey: string) => {
     setSelectedPlan(planKey);
@@ -380,8 +380,11 @@ export default function BillingPage() {
             }}
           >
             {PRICING_PLANS.map((plan) => {
-              const monthlyBreakEven = breakEvenOrders(plan.monthlyPrice, averageOrderValue);
-              const activePrice = interval === "monthly" ? plan.monthlyPrice : plan.annualPrice;
+              // Always show a per-month price. For annual, that's the discounted
+              // monthly-equivalent (annual total ÷ 12); the full annual figure moves
+              // to the "billed annually" subline — the industry-standard pattern.
+              const effectiveMonthly = interval === "monthly" ? plan.monthlyPrice : plan.annualPrice / 12;
+              const monthlyBreakEven = breakEvenOrders(effectiveMonthly, averageOrderValue);
               return (
                 <div
                   key={plan.key}
@@ -428,18 +431,25 @@ export default function BillingPage() {
                       <div style={{ fontSize: "15px", fontWeight: 600, color: TEXT_SUBDUED, marginBottom: "8px" }}>
                         Ello {plan.displayName}
                       </div>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
+                        {interval === "annual" && (
+                          <span style={{ fontSize: "20px", fontWeight: 600, color: TEXT_SUBDUED, textDecoration: "line-through" }}>
+                            {formatMoney(plan.monthlyPrice)}
+                          </span>
+                        )}
                         <span style={{ fontSize: "40px", fontWeight: 800, color: "#1A1C1D", lineHeight: 1, letterSpacing: "-0.02em" }}>
-                          {formatMoney(activePrice)}
+                          {formatMoney(effectiveMonthly)}
                         </span>
-                        <span style={{ fontSize: "15px", color: TEXT_SUBDUED, fontWeight: 500 }}>
-                          {interval === "monthly" ? "/mo" : "/yr"}
-                        </span>
+                        <span style={{ fontSize: "15px", color: TEXT_SUBDUED, fontWeight: 500 }}>/mo</span>
                       </div>
                       <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "6px", minHeight: "18px" }}>
                         {plan.positioning}
-                        {interval === "annual" ? " · Save 10% vs monthly" : ""}
                       </div>
+                      {interval === "annual" && (
+                        <div style={{ fontSize: "12px", fontWeight: 600, color: BRAND, marginTop: "4px" }}>
+                          Billed annually at {formatMoney(plan.annualPrice)}/yr · save 10%
+                        </div>
+                      )}
                     </div>
 
                     {/* CTA — moved up under price for stronger conversion */}
