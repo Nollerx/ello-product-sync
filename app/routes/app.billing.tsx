@@ -1,16 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useFetcher, useNavigate } from "react-router";
-import {
-  Page,
-  Text,
-  Button,
-  BlockStack,
-  InlineStack,
-  Badge,
-  Box,
-  Banner,
-} from "@shopify/polaris";
+import { Page, Banner } from "@shopify/polaris";
+import { motion } from "motion/react";
+import NumberFlow from "@number-flow/react";
+import { Shirt, Tag, Coins, Clock } from "lucide-react";
 import { authenticate } from "../shopify.server";
 import { syncShopifyMerchantToSupabase } from "../lib/shopify-billing.server";
 import {
@@ -22,6 +16,23 @@ import {
 } from "../lib/pricing-plans";
 
 const TRIAL_DAYS = 7;
+
+// ─── Ello brand palette (source: vault 02-Areas/Ello/_context/Brand-Palette.md) ─
+const C = {
+  blue: "#3B63D4",
+  blue700: "#2544A3",
+  blue600: "#2E51BD",
+  blue500: "#4E77E4",
+  blue400: "#7A99F0",
+  blue100: "#E8EEFD",
+  blue50: "#F4F7FE",
+  ink: "#0B1220",
+  ink700: "#2A3347",
+  ink500: "#6B7388",
+  border: "#D8DCE3",
+  offwhite: "#FAFBFC",
+  white: "#FFFFFF",
+};
 
 // ─── Billing config lookup (mirrors shopify.server.ts) ───────────────────────
 
@@ -186,12 +197,103 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 }
 
+// ─── Reveal animation (recreates the demo's TimelineContent blur-in) ─────────
+
+const reveal = {
+  hidden: { opacity: 0, y: -20, filter: "blur(10px)" },
+  visible: (i: number) => ({
+    opacity: 1,
+    y: 0,
+    filter: "blur(0px)",
+    transition: { delay: i * 0.12, duration: 0.5 },
+  }),
+};
+
+// ─── Interval toggle (motion sliding pill, Ello blue) ────────────────────────
+
+function PricingSwitch({
+  interval,
+  onSwitch,
+}: {
+  interval: "monthly" | "annual";
+  onSwitch: (v: "monthly" | "annual") => void;
+}) {
+  const indicator = (
+    <motion.span
+      layoutId="billing-switch"
+      style={{
+        position: "absolute",
+        inset: 0,
+        borderRadius: 999,
+        background: `linear-gradient(to top, ${C.blue600}, ${C.blue500} 70%, ${C.blue400})`,
+        border: `3px solid ${C.blue600}`,
+        boxShadow: `0 4px 14px rgba(59, 99, 212, 0.45)`,
+      }}
+      transition={{ type: "spring", stiffness: 500, damping: 30 }}
+    />
+  );
+
+  const btn = (active: boolean): React.CSSProperties => ({
+    position: "relative",
+    zIndex: 10,
+    border: "none",
+    background: "transparent",
+    cursor: "pointer",
+    padding: "10px 24px",
+    borderRadius: 999,
+    fontSize: 15,
+    fontWeight: 600,
+    color: active ? C.white : C.ink500,
+    transition: "color 0.2s",
+  });
+
+  return (
+    <div style={{ display: "flex", justifyContent: "center" }}>
+      <div
+        style={{
+          position: "relative",
+          display: "inline-flex",
+          padding: 4,
+          borderRadius: 999,
+          background: C.white,
+          border: `1px solid ${C.border}`,
+          boxShadow: "0 1px 2px rgba(11,18,32,0.05)",
+        }}
+      >
+        <button type="button" onClick={() => onSwitch("monthly")} style={btn(interval === "monthly")}>
+          {interval === "monthly" && indicator}
+          <span style={{ position: "relative", zIndex: 1 }}>Monthly</span>
+        </button>
+        <button type="button" onClick={() => onSwitch("annual")} style={btn(interval === "annual")}>
+          {interval === "annual" && indicator}
+          <span style={{ position: "relative", zIndex: 1, display: "inline-flex", alignItems: "center", gap: 8 }}>
+            Annual
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                padding: "2px 8px",
+                borderRadius: 999,
+                background: interval === "annual" ? "rgba(255,255,255,0.22)" : C.blue50,
+                color: interval === "annual" ? C.white : C.blue,
+              }}
+            >
+              Save 10%
+            </span>
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BillingPage() {
   const { billingError } = useLoaderData<typeof loader>();
   const fetcher = useFetcher();
   const navigate = useNavigate();
+  const pricingRef = useRef<HTMLDivElement>(null);
   const [interval, setInterval] = useState<"monthly" | "annual">("monthly");
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
   const [averageOrderValue, setAverageOrderValue] = useState(AOV_DEFAULT);
@@ -217,368 +319,393 @@ export default function BillingPage() {
 
   const handleSelectPlan = (planKey: string) => {
     setSelectedPlan(planKey);
-    fetcher.submit(
-      { planKey, interval },
-      { method: "POST" },
-    );
+    fetcher.submit({ planKey, interval }, { method: "POST" });
   };
 
-  const BRAND = "#0F5132";
-  const BRAND_TINT = "#F1F8F4";
-  const BRAND_TINT_BORDER = "#CFE7D9";
-  const BORDER = "#E3E5E7";
-  const TEXT_SUBDUED = "#6B7177";
-
-  const Check = () => (
-    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" style={{ flexShrink: 0, marginTop: "1px" }}>
-      <circle cx="10" cy="10" r="10" fill={BRAND_TINT} />
-      <path d="M5.8 10.2l2.6 2.6 5.8-5.8" stroke={BRAND} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-
-  const featureRow = (label: string) => (
-    <div key={label} style={{ display: "flex", gap: "10px", alignItems: "flex-start" }}>
-      <Check />
-      <span style={{ fontSize: "14px", color: "#3F4448", lineHeight: 1.4 }}>{label}</span>
-    </div>
-  );
-
   return (
-    <Page
-      fullWidth
-      title="Choose Your Plan"
-      subtitle="Start with a 7-day free trial. Cancel anytime."
-    >
-      <Box paddingBlockStart="200" paddingBlockEnd="800">
-        <BlockStack gap="600">
+    <Page fullWidth>
+      <div
+        ref={pricingRef}
+        style={{
+          position: "relative",
+          overflow: "hidden",
+          borderRadius: 16,
+          background: C.offwhite,
+          padding: "16px 16px 56px",
+        }}
+      >
+        {/* Soft blue radial glow — kept subtle per brand rule (white-first, blue accent) */}
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: "10%",
+            width: "80%",
+            height: "70%",
+            zIndex: 0,
+            backgroundImage: `radial-gradient(circle at 50% 0%, ${C.blue400} 0%, transparent 60%)`,
+            opacity: 0.16,
+            pointerEvents: "none",
+          }}
+        />
 
+        <div style={{ position: "relative", zIndex: 1 }}>
           {/* Error banner */}
           {(billingError || actionError) && (
-            <Banner title="Billing Error" tone="critical">
-              <Text as="p" variant="bodyMd">{actionError || billingError}</Text>
-            </Banner>
+            <div style={{ maxWidth: 1280, margin: "0 auto 20px" }}>
+              <Banner title="Billing Error" tone="critical">
+                {actionError || billingError}
+              </Banner>
+            </div>
           )}
 
-          {/* Interval toggle — segmented control */}
-          <InlineStack align="center">
-            <div
+          {/* Heading */}
+          <motion.div
+            custom={0}
+            initial="hidden"
+            animate="visible"
+            variants={reveal}
+            style={{ textAlign: "center", maxWidth: 720, margin: "8px auto 0" }}
+          >
+            <h2
               style={{
-                display: "inline-flex",
-                padding: "4px",
-                background: "#F1F2F3",
-                borderRadius: "999px",
-                border: `1px solid ${BORDER}`,
+                fontSize: "clamp(32px, 5vw, 56px)",
+                fontWeight: 500,
+                color: C.ink,
+                margin: "0 0 14px",
+                lineHeight: 1.05,
+                letterSpacing: "-0.02em",
               }}
             >
-              <button
-                type="button"
-                onClick={() => setInterval("monthly")}
+              Pricing that{" "}
+              <span
                 style={{
-                  border: "none",
-                  cursor: "pointer",
-                  padding: "8px 22px",
-                  borderRadius: "999px",
-                  fontSize: "14px",
-                  fontWeight: 600,
-                  background: interval === "monthly" ? "#FFFFFF" : "transparent",
-                  color: interval === "monthly" ? "#1A1C1D" : TEXT_SUBDUED,
-                  boxShadow: interval === "monthly" ? "0 1px 3px rgba(0,0,0,0.12)" : "none",
-                  transition: "all 0.15s ease",
+                  display: "inline-block",
+                  border: `1px dashed ${C.blue}`,
+                  background: C.blue100,
+                  color: C.ink,
+                  padding: "2px 12px",
+                  borderRadius: 12,
                 }}
               >
-                Monthly
-              </button>
-              <button
-                type="button"
-                onClick={() => setInterval("annual")}
-                style={{
-                  border: "none",
-                  cursor: "pointer",
-                  padding: "8px 22px",
-                  borderRadius: "999px",
-                  fontSize: "14px",
-                  fontWeight: 600,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  background: interval === "annual" ? "#FFFFFF" : "transparent",
-                  color: interval === "annual" ? "#1A1C1D" : TEXT_SUBDUED,
-                  boxShadow: interval === "annual" ? "0 1px 3px rgba(0,0,0,0.12)" : "none",
-                  transition: "all 0.15s ease",
-                }}
-              >
-                Annual
-                <span
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: 700,
-                    color: BRAND,
-                    background: BRAND_TINT,
-                    padding: "2px 8px",
-                    borderRadius: "999px",
-                  }}
-                >
-                  Save 10%
-                </span>
-              </button>
-            </div>
-          </InlineStack>
-
-          {/* AOV calculator strip — drives the break-even number on every card */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "20px",
-              flexWrap: "wrap",
-              padding: "20px 24px",
-              background: "#FFFFFF",
-              border: `1px solid ${BORDER}`,
-              borderRadius: "14px",
-              boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-            }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-              <span style={{ fontSize: "13px", fontWeight: 600, color: TEXT_SUBDUED, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                Your average order value
+                pays for itself
               </span>
-              <div style={{ display: "inline-flex", alignItems: "center" }}>
-                <span style={{ fontSize: "22px", fontWeight: 700, color: "#1A1C1D", marginRight: "2px" }}>$</span>
-                <input
-                  id="average-order-value"
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={averageOrderValue}
-                  onChange={(event) => setAverageOrderValue(Number(event.currentTarget.value))}
-                  style={{
-                    width: "96px",
-                    fontSize: "22px",
-                    fontWeight: 700,
-                    color: "#1A1C1D",
-                    padding: "6px 10px",
-                    border: `1px solid ${BORDER}`,
-                    borderRadius: "8px",
-                    outline: "none",
-                  }}
-                />
+            </h2>
+            <p style={{ fontSize: 16, color: C.ink500, maxWidth: 560, margin: "0 auto", lineHeight: 1.5 }}>
+              Every Ello plan is sized so a few extra sales from try-on cover the whole month. Set your
+              average order value and see exactly where you break even.
+            </p>
+          </motion.div>
+
+          {/* Interval toggle */}
+          <motion.div custom={1} initial="hidden" animate="visible" variants={reveal} style={{ marginTop: 28 }}>
+            <PricingSwitch interval={interval} onSwitch={setInterval} />
+          </motion.div>
+
+          {/* AOV calculator — drives the break-even number on every card */}
+          <motion.div custom={2} initial="hidden" animate="visible" variants={reveal}>
+            <div
+              style={{
+                maxWidth: 640,
+                margin: "24px auto 0",
+                display: "flex",
+                gap: 20,
+                alignItems: "center",
+                justifyContent: "center",
+                flexWrap: "wrap",
+                padding: "18px 24px",
+                background: C.white,
+                border: `1px solid ${C.border}`,
+                borderRadius: 14,
+                boxShadow: "0 1px 2px rgba(11,18,32,0.05)",
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.ink500, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Your average order value
+                </span>
+                <div style={{ display: "inline-flex", alignItems: "center" }}>
+                  <span style={{ fontSize: 22, fontWeight: 700, color: C.ink, marginRight: 2 }}>$</span>
+                  <input
+                    id="average-order-value"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={averageOrderValue}
+                    onChange={(e) => setAverageOrderValue(Number(e.currentTarget.value))}
+                    style={{
+                      width: 96,
+                      fontSize: 22,
+                      fontWeight: 700,
+                      color: C.ink,
+                      padding: "6px 10px",
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 8,
+                      outline: "none",
+                    }}
+                  />
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: 220, fontSize: 14, color: C.ink500, lineHeight: 1.5 }}>
+                Change this to see exactly how many sales each plan needs to pay for itself.
               </div>
             </div>
-            <div style={{ flex: 1, minWidth: "220px", fontSize: "14px", color: TEXT_SUBDUED, lineHeight: 1.5 }}>
-              Change this to see exactly how many sales each plan needs to pay for itself.
-            </div>
-          </div>
+          </motion.div>
 
-          {/* Plan grid — single row of 4, featured plan elevated */}
+          {/* Plan grid */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-              gap: "20px",
+              gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+              gap: 20,
+              maxWidth: 1280,
+              margin: "36px auto 0",
               alignItems: "stretch",
-              paddingTop: "20px",
             }}
           >
-            {PRICING_PLANS.map((plan) => {
-              // Always show a per-month price. For annual, that's the discounted
-              // monthly-equivalent (annual total ÷ 12); the full annual figure moves
-              // to the "billed annually" subline — the industry-standard pattern.
+            {PRICING_PLANS.map((plan, index) => {
+              const popular = !!plan.featured;
               const effectiveMonthly = interval === "monthly" ? plan.monthlyPrice : plan.annualPrice / 12;
-              const monthlyBreakEven = breakEvenOrders(effectiveMonthly, averageOrderValue);
-              return (
-                <div
-                  key={plan.key}
-                  style={{
-                    position: "relative",
-                    transform: plan.featured ? "translateY(-14px)" : "none",
-                    display: "flex",
-                    flexDirection: "column",
-                    height: "100%",
-                    borderRadius: "16px",
-                    border: plan.featured ? `2px solid ${BRAND}` : `1px solid ${BORDER}`,
-                    boxShadow: plan.featured
-                      ? "0 18px 40px rgba(15, 81, 50, 0.16)"
-                      : "0 1px 2px rgba(0,0,0,0.05)",
-                    background: "#FFFFFF",
-                    padding: plan.featured ? "32px 26px 26px" : "26px",
-                  }}
-                >
-                  {plan.featured && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        top: "-13px",
-                        left: "50%",
-                        transform: "translateX(-50%)",
-                        background: BRAND,
-                        color: "#FFFFFF",
-                        fontSize: "12px",
-                        fontWeight: 700,
-                        letterSpacing: "0.03em",
-                        textTransform: "uppercase",
-                        padding: "5px 14px",
-                        borderRadius: "999px",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      Best first plan
-                    </div>
-                  )}
+              const breakEven = breakEvenOrders(effectiveMonthly, averageOrderValue);
+              const features = [
+                { icon: <Shirt size={18} />, text: `${plan.includedTryons.toLocaleString()} try-ons every month` },
+                { icon: <Tag size={18} />, text: "No Ello branding on the widget" },
+                { icon: <Coins size={18} />, text: `$${OVERAGE_USD_PER_TRYON.toFixed(2)} per try-on after that` },
+                { icon: <Clock size={18} />, text: "7-day free trial · cancel anytime" },
+              ];
 
-                  <div style={{ display: "flex", flexDirection: "column", gap: "18px", height: "100%" }}>
-                    {/* Name + price */}
+              return (
+                <motion.div key={plan.key} custom={3 + index} initial="hidden" animate="visible" variants={reveal} style={{ height: "100%" }}>
+                  <div
+                    style={{
+                      position: "relative",
+                      height: "100%",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 18,
+                      borderRadius: 16,
+                      padding: 26,
+                      background: popular ? C.blue50 : C.white,
+                      border: popular ? `2px solid ${C.blue}` : `1px solid ${C.border}`,
+                      boxShadow: popular
+                        ? "0 18px 40px rgba(59, 99, 212, 0.18)"
+                        : "0 1px 2px rgba(11,18,32,0.06)",
+                    }}
+                  >
+                    {/* Name + popular badge */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: C.ink }}>Ello {plan.displayName}</div>
+                      {popular && (
+                        <span
+                          style={{
+                            background: `linear-gradient(to top, ${C.blue600}, ${C.blue500})`,
+                            color: C.white,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            padding: "4px 12px",
+                            borderRadius: 999,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Best first plan
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Price */}
                     <div>
-                      <div style={{ fontSize: "15px", fontWeight: 600, color: TEXT_SUBDUED, marginBottom: "8px" }}>
-                        Ello {plan.displayName}
-                      </div>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
                         {interval === "annual" && (
-                          <span style={{ fontSize: "20px", fontWeight: 600, color: TEXT_SUBDUED, textDecoration: "line-through" }}>
+                          <span style={{ fontSize: 20, fontWeight: 600, color: C.ink500, textDecoration: "line-through" }}>
                             {formatMoney(plan.monthlyPrice)}
                           </span>
                         )}
-                        <span style={{ fontSize: "40px", fontWeight: 800, color: "#1A1C1D", lineHeight: 1, letterSpacing: "-0.02em" }}>
-                          {formatMoney(effectiveMonthly)}
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "baseline",
+                            fontSize: 40,
+                            fontWeight: 800,
+                            color: C.ink,
+                            lineHeight: 1,
+                            letterSpacing: "-0.02em",
+                          }}
+                        >
+                          $
+                          <NumberFlow
+                            value={effectiveMonthly}
+                            format={{
+                              minimumFractionDigits: interval === "annual" ? 2 : 0,
+                              maximumFractionDigits: 2,
+                            }}
+                          />
                         </span>
-                        <span style={{ fontSize: "15px", color: TEXT_SUBDUED, fontWeight: 500 }}>/mo</span>
+                        <span style={{ fontSize: 15, fontWeight: 500, color: C.ink500 }}>/mo</span>
                       </div>
-                      <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "6px", minHeight: "18px" }}>
-                        {plan.positioning}
-                      </div>
+                      <div style={{ fontSize: 13, color: C.ink500, marginTop: 6, minHeight: 18 }}>{plan.positioning}</div>
                       {interval === "annual" && (
-                        <div style={{ fontSize: "12px", fontWeight: 600, color: BRAND, marginTop: "4px" }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: C.blue, marginTop: 4 }}>
                           Billed annually at {formatMoney(plan.annualPrice)}/yr · save 10%
                         </div>
                       )}
                     </div>
 
-                    {/* CTA — moved up under price for stronger conversion */}
-                    <Button
-                      variant="primary"
-                      fullWidth
-                      size="large"
-                      onClick={() => handleSelectPlan(plan.key)}
-                      loading={isSubmitting && selectedPlan === plan.key}
-                      disabled={isSubmitting}
-                    >
-                      Start 7-day trial
-                    </Button>
-
-                    {/* Break-even callout */}
+                    {/* Break-even callout (the AOV mechanic) */}
                     <div
                       style={{
                         display: "flex",
                         alignItems: "center",
-                        gap: "14px",
+                        gap: 14,
                         padding: "14px 16px",
-                        background: BRAND_TINT,
-                        border: `1px solid ${BRAND_TINT_BORDER}`,
-                        borderRadius: "12px",
+                        background: popular ? C.white : C.blue50,
+                        border: `1px solid ${C.blue100}`,
+                        borderRadius: 12,
                       }}
                     >
-                      <span
-                        style={{
-                          fontSize: "40px",
-                          fontWeight: 800,
-                          lineHeight: 1,
-                          color: BRAND,
-                          fontVariantNumeric: "tabular-nums",
-                        }}
-                      >
-                        {monthlyBreakEven ?? "—"}
+                      <span style={{ fontSize: 40, fontWeight: 800, lineHeight: 1, color: C.blue, fontVariantNumeric: "tabular-nums" }}>
+                        {breakEven ?? "—"}
                       </span>
-                      <span style={{ fontSize: "13px", color: "#2C3A33", fontWeight: 600, lineHeight: 1.35 }}>
-                        {monthlyBreakEven === 1 ? "sale from try-on" : "sales from try-on"} pays for the month
+                      <span style={{ fontSize: 13, fontWeight: 600, color: C.ink700, lineHeight: 1.35 }}>
+                        {breakEven === 1 ? "sale from try-on" : "sales from try-on"} pays for the month
                       </span>
                     </div>
+
+                    {/* CTA */}
+                    <button
+                      type="button"
+                      onClick={() => handleSelectPlan(plan.key)}
+                      disabled={isSubmitting}
+                      style={{
+                        width: "100%",
+                        padding: 14,
+                        fontSize: 16,
+                        fontWeight: 600,
+                        borderRadius: 12,
+                        border: "none",
+                        color: C.white,
+                        cursor: isSubmitting ? "default" : "pointer",
+                        background: popular
+                          ? `linear-gradient(to top, ${C.blue600}, ${C.blue500})`
+                          : `linear-gradient(to top, ${C.ink}, ${C.ink700})`,
+                        boxShadow: popular
+                          ? "0 8px 20px rgba(59, 99, 212, 0.35)"
+                          : "0 8px 20px rgba(11,18,32,0.18)",
+                        opacity: isSubmitting && selectedPlan !== plan.key ? 0.55 : 1,
+                        transition: "opacity 0.2s",
+                      }}
+                    >
+                      {isSubmitting && selectedPlan === plan.key ? "Starting…" : "Start 7-day trial"}
+                    </button>
 
                     {/* Feature list */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                      {featureRow(`${plan.includedTryons.toLocaleString()} try-ons every month`)}
-                      {featureRow("No Ello branding on widget")}
-                      {featureRow(`$${OVERAGE_USD_PER_TRYON.toFixed(2)} per try-on after that`)}
-                      {featureRow("7-day free trial · cancel anytime")}
-                    </div>
+                    <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+                      {features.map((f) => (
+                        <li key={f.text} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <span style={{ color: C.ink700, display: "grid", placeContent: "center", flexShrink: 0 }}>{f.icon}</span>
+                          <span style={{ fontSize: 14, color: C.ink700 }}>{f.text}</span>
+                        </li>
+                      ))}
+                    </ul>
 
-                    <div
-                      style={{
-                        marginTop: "auto",
-                        paddingTop: "8px",
-                        fontSize: "12px",
-                        color: TEXT_SUBDUED,
-                      }}
-                    >
+                    <div style={{ marginTop: "auto", paddingTop: 8, fontSize: 12, color: C.ink500 }}>
                       Billed {billingIntervalLabel}. Usage resets monthly.
                     </div>
                   </div>
-                </div>
+                </motion.div>
               );
             })}
           </div>
 
-          {/* Free + Enterprise — secondary options as twin strips */}
+          {/* Free + Enterprise — secondary options */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-              gap: "20px",
-              paddingTop: "8px",
+              gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+              gap: 20,
+              maxWidth: 1280,
+              margin: "20px auto 0",
             }}
           >
             <div
               style={{
                 display: "flex",
                 flexDirection: "column",
-                gap: "14px",
-                padding: "24px",
-                background: "#FFFFFF",
-                border: `1px solid ${BORDER}`,
-                borderRadius: "14px",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                gap: 14,
+                padding: 24,
+                background: C.white,
+                border: `1px solid ${C.border}`,
+                borderRadius: 14,
+                boxShadow: "0 1px 2px rgba(11,18,32,0.05)",
               }}
             >
-              <InlineStack gap="200" blockAlign="center">
-                <Text as="h2" variant="headingMd">Ello Free</Text>
-                <Badge tone="info">Free</Badge>
-              </InlineStack>
-              <div style={{ flex: 1, fontSize: "14px", color: TEXT_SUBDUED, lineHeight: 1.5 }}>
-                $0/month · 10 try-ons per month · Ello branding on widget. No overages — upgrade anytime when you are ready for real traffic.
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 18, fontWeight: 700, color: C.ink }}>Ello Free</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.blue, background: C.blue50, padding: "2px 10px", borderRadius: 999 }}>Free</span>
               </div>
-              <Button
+              <div style={{ flex: 1, fontSize: 14, color: C.ink500, lineHeight: 1.5 }}>
+                $0/month · 10 try-ons per month · Ello branding on widget. No overages — upgrade anytime when
+                you are ready for real traffic.
+              </div>
+              <button
+                type="button"
                 onClick={() => handleSelectPlan("ello_free")}
-                loading={isSubmitting && selectedPlan === "ello_free"}
                 disabled={isSubmitting}
+                style={{
+                  padding: "12px 16px",
+                  fontSize: 15,
+                  fontWeight: 600,
+                  borderRadius: 10,
+                  border: `1px solid ${C.border}`,
+                  background: C.white,
+                  color: C.ink,
+                  cursor: isSubmitting ? "default" : "pointer",
+                  opacity: isSubmitting && selectedPlan !== "ello_free" ? 0.55 : 1,
+                }}
               >
-                Use Free Plan
-              </Button>
+                {isSubmitting && selectedPlan === "ello_free" ? "Starting…" : "Use Free Plan"}
+              </button>
             </div>
 
             <div
               style={{
                 display: "flex",
                 flexDirection: "column",
-                gap: "14px",
-                padding: "24px",
-                background: "#FFFFFF",
-                border: `1px solid ${BORDER}`,
-                borderRadius: "14px",
-                boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                gap: 14,
+                padding: 24,
+                background: C.white,
+                border: `1px solid ${C.border}`,
+                borderRadius: 14,
+                boxShadow: "0 1px 2px rgba(11,18,32,0.05)",
               }}
             >
-              <InlineStack gap="200" blockAlign="center">
-                <Text as="h2" variant="headingMd">Enterprise</Text>
-                <Badge tone="info">Custom</Badge>
-              </InlineStack>
-              <div style={{ flex: 1, fontSize: "14px", color: TEXT_SUBDUED, lineHeight: 1.5 }}>
-                Custom try-on volume, pricing, and rollout support. For brands that need higher included usage, procurement support, or manual account setup.
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 18, fontWeight: 700, color: C.ink }}>Enterprise</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.blue, background: C.blue50, padding: "2px 10px", borderRadius: 999 }}>Custom</span>
               </div>
-              <Button url="mailto:andrew@ello.services?subject=Ello%20Enterprise%20plan">
+              <div style={{ flex: 1, fontSize: 14, color: C.ink500, lineHeight: 1.5 }}>
+                Custom try-on volume, pricing, and rollout support. For brands that need higher included usage,
+                procurement support, or manual account setup.
+              </div>
+              <a
+                href="mailto:andrew@ello.services?subject=Ello%20Enterprise%20plan"
+                style={{
+                  textAlign: "center",
+                  padding: "12px 16px",
+                  fontSize: 15,
+                  fontWeight: 600,
+                  borderRadius: 10,
+                  border: `1px solid ${C.border}`,
+                  background: C.white,
+                  color: C.ink,
+                  textDecoration: "none",
+                }}
+              >
                 Contact for Enterprise
-              </Button>
+              </a>
             </div>
           </div>
-        </BlockStack>
-      </Box>
+        </div>
+      </div>
     </Page>
   );
 }
