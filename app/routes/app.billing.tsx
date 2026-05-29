@@ -687,7 +687,9 @@ export default function BillingPage() {
                 procurement support, or manual account setup.
               </div>
               <a
-                href="mailto:andrew@ello.services?subject=Ello%20Enterprise%20plan"
+                href="https://calendly.com/andrew-ello/ello-setup-call"
+                target="_blank"
+                rel="noopener noreferrer"
                 style={{
                   textAlign: "center",
                   padding: "12px 16px",
@@ -700,7 +702,7 @@ export default function BillingPage() {
                   textDecoration: "none",
                 }}
               >
-                Contact for Enterprise
+                Book a setup call
               </a>
             </div>
           </div>
