@@ -107,7 +107,7 @@ Deno.serve(async (req) => {
     // Fetch active status overrides from clothing_items table
     const { data: storedItems, error: storedItemsError } = await supabaseClient
       .from('clothing_items')
-      .select('item_id, active')
+      .select('item_id, active, image_override_url')
       .eq('store_id', store_slug)
       .eq('data_source', 'shopify');
 
@@ -115,25 +115,36 @@ Deno.serve(async (req) => {
       console.error('Error fetching stored items:', storedItemsError);
     }
 
-    // Create a map of active status overrides (supporting both GID and numeric formats)
+    // Create maps of per-product overrides (supporting both GID and numeric formats).
+    // activeOverrides: existing on/off toggle. imageOverrides: NEW merchant-selected
+    // try-on image. Both are keyed by every id form the product might appear as.
     const activeOverrides = new Map<string, boolean>();
+    const imageOverrides = new Map<string, string>();
     if (storedItems) {
-      storedItems.forEach((item: { item_id: string; active: boolean | null }) => {
-        if (item.active !== null) {
-          activeOverrides.set(item.item_id, item.active);
-          // Also map the numeric portion for legacy data, or full GID if stored as numeric
+      storedItems.forEach(
+        (item: { item_id: string; active: boolean | null; image_override_url: string | null }) => {
+          // All id forms this product could be matched on.
+          const keys: string[] = [item.item_id];
           if (item.item_id.startsWith('gid://')) {
             const numericId = item.item_id.split('/').pop();
-            if (numericId) activeOverrides.set(numericId, item.active);
+            if (numericId) keys.push(numericId);
           } else {
-            // If stored as numeric, also map the full GID
-            activeOverrides.set(`gid://shopify/Product/${item.item_id}`, item.active);
+            keys.push(`gid://shopify/Product/${item.item_id}`);
           }
-        }
-      });
+
+          if (item.active !== null) {
+            keys.forEach((k) => activeOverrides.set(k, item.active as boolean));
+          }
+          if (item.image_override_url) {
+            keys.forEach((k) => imageOverrides.set(k, item.image_override_url as string));
+          }
+        },
+      );
     }
 
-    console.log(`Found ${activeOverrides.size} active status overrides`);
+    console.log(
+      `Found ${activeOverrides.size} active overrides, ${imageOverrides.size} image overrides`,
+    );
 
     const query = `
       query GetProducts {
@@ -145,7 +156,7 @@ Deno.serve(async (req) => {
               handle
               productType
               tags
-              images(first: 1) {
+              images(first: 20) {
                 edges {
                   node {
                     url
@@ -191,7 +202,14 @@ Deno.serve(async (req) => {
     const products = result.data.products.edges.map((edge: any) => {
       const product: ShopifyProduct = edge.node;
       const itemId = product.id; // Keep full GID: gid://shopify/Product/123456
-      const imageUrl = product.images.edges[0]?.node.url || null;
+      // All product images (deduped, order preserved) for the dashboard picker.
+      const images = Array.from(
+        new Set(product.images.edges.map((e) => e.node?.url).filter(Boolean) as string[]),
+      );
+      // images[0] is the featured image — unchanged default behavior.
+      const imageUrl = images[0] || null;
+      // Merchant-selected try-on image, if they've chosen one (null = use featured).
+      const imageOverrideUrl = imageOverrides.get(itemId) || null;
       const firstVariant = product.variants.edges[0]?.node;
       const price = firstVariant ? parseFloat(firstVariant.price.amount) : 0;
       const productUrl = `https://${shop_domain}/products/${product.handle}`;
@@ -207,7 +225,9 @@ Deno.serve(async (req) => {
         name: product.title,
         category: product.productType?.toLowerCase() || 'uncategorized',
         price,
-        image_url: imageUrl,
+        image_url: imageUrl, // featured image (default) — unchanged
+        images, // NEW: all product images, for the try-on image picker
+        image_override_url: imageOverrideUrl, // NEW: current selection (null = featured)
         product_url: productUrl,
         tags: product.tags,
         active: active,
