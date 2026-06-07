@@ -761,7 +761,9 @@
             will-change: transform;
 
             /* CSS Variables for dynamic theme colors */
-            --minimized-bg: #10b981;
+            --minimized-bg: #3B63D4;
+            --minimized-text-color: #fff;
+            --minimized-text-shadow: none;
         }
 
         /* Mobile Responsive - COMPLETELY FIXED */
@@ -770,8 +772,8 @@
                 bottom: max(20px, env(safe-area-inset-bottom));
                 right: max(20px, env(safe-area-inset-right));
                 width: calc(100vw - 40px);
-                height: calc(100dvh - 40px);
-                max-height: 90dvh;
+                height: calc(100svh - 40px);
+                max-height: 90svh;
                 border-radius: 12px;
                 /* Keep positioned from right side only */
                 left: auto;
@@ -852,11 +854,26 @@
             .virtual-tryon-widget.widget-minimized {
                 bottom: max(20px, env(safe-area-inset-bottom)) !important;
                 right: max(20px, env(safe-area-inset-right)) !important;
-                width: 64px !important;
-                height: 64px !important;
+                width: 52px !important;
+                height: 52px !important;
+                padding: 0 !important;
+                gap: 0 !important;
+                flex-direction: row-reverse;
+                border-radius: 999px !important;
                 transform-origin: right bottom !important;
                 /* No left positioning at all */
                 left: auto !important;
+            }
+
+            .virtual-tryon-widget.widget-minimized::before {
+                width: 23px;
+                height: 23px;
+            }
+
+            .virtual-tryon-widget.widget-minimized::after {
+                max-width: 0 !important;
+                opacity: 0 !important;
+                font-size: 12px;
             }
         }
 
@@ -864,7 +881,7 @@
         @media (max-width: 768px) and (max-height: 600px) {
             .virtual-tryon-widget {
                 height: auto;
-                max-height: 80dvh;
+                max-height: 80svh;
             }
         }
 
@@ -894,8 +911,8 @@
                 bottom: max(20px, env(safe-area-inset-bottom));
                 right: max(20px, env(safe-area-inset-right));
                 width: calc(100vw - 40px);
-                height: calc(100dvh - 40px);
-                max-height: 90dvh;
+                height: calc(100svh - 40px);
+                max-height: 90svh;
                 border-radius: 12px;
                 left: auto;
                 transform-origin: right bottom;
@@ -917,34 +934,103 @@
             }
         }
 
+        /* ── Minimized launcher: compact circle that expands to a pill on hover ──
+           At rest it's a 58px circle showing only the hanger icon. On hover (or
+           keyboard focus) it grows leftward into a capsule and reveals the
+           "Virtual Try-On" label. The hanger + label use --minimized-text-color
+           so they auto-contrast against any merchant-set background. */
         .widget-minimized {
-            width: 72px !important;
-            height: 72px !important;
-            border-radius: 8px !important;
+            width: 58px !important;
+            height: 58px !important;
+            border-radius: 999px !important;
             cursor: pointer;
-            background: linear-gradient(135deg, #f0f0f0 0%, #ffffff 50%, #f8f8f8 100%);
+            background: var(--minimized-bg, #3B63D4);
             display: flex !important;
+            flex-direction: row-reverse;
             align-items: center;
             justify-content: center;
-            font-size: 24px;
+            gap: 0;
+            padding: 0;
             overflow: hidden !important;
-            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
-            animation: subtleGlow 4s ease-in-out infinite;
-            border: 1px solid #d0d0d0;
-            transform: scale(1);
+            box-shadow: 0 10px 30px rgba(11, 18, 32, 0.16), 0 2px 8px rgba(11, 18, 32, 0.08);
+            animation: subtleGlow 4.5s ease-in-out infinite;
+            border: 1px solid rgba(11, 18, 32, 0.08);
+            transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                        gap 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                        padding 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                        box-shadow 0.3s ease;
+            will-change: width;
+        }
+
+        /* Hanger icon — always visible. Drawn with a CSS mask so its fill
+           tracks --minimized-text-color (black on light bg, white on dark). */
+        .widget-minimized::before {
+            content: '';
+            flex: 0 0 auto;
+            width: 26px;
+            height: 26px;
+            background-color: var(--minimized-text-color, #0B1220);
+            -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M12%209%20V6%20a1.8%201.8%200%201%200%20-1.8%201.8'/%3E%3Cpath%20d='M12%209%20L4.2%2014.8%20a1.2%201.2%200%200%200%20.7%202.1%20H19.1%20a1.2%201.2%200%200%200%20.7%20-2.1%20L12%209%20Z'/%3E%3C/svg%3E") center / contain no-repeat;
+                    mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='2.2'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M12%209%20V6%20a1.8%201.8%200%201%200%20-1.8%201.8'/%3E%3Cpath%20d='M12%209%20L4.2%2014.8%20a1.2%201.2%200%200%200%20.7%202.1%20H19.1%20a1.2%201.2%200%200%200%20.7%20-2.1%20L12%209%20Z'/%3E%3C/svg%3E") center / contain no-repeat;
+        }
+
+        /* Label — collapsed (zero width, transparent) until hover reveals it. */
+        .widget-minimized::after {
+            content: 'Virtual Try-On';
+            display: block;
+            max-width: 0;
+            opacity: 0;
+            color: var(--minimized-text-color, #0B1220);
+            font-size: 12px;
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: 0.6px;
+            white-space: nowrap;
+            text-transform: uppercase;
+            overflow: hidden;
+            text-shadow: var(--minimized-text-shadow, none);
+            transition: max-width 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+                        opacity 0.22s ease 0.06s;
+        }
+
+        @media (hover: hover) and (pointer: fine) {
+            .widget-minimized:hover,
+            .widget-minimized:focus-visible {
+                width: 202px !important;
+                gap: 11px;
+                padding: 0 20px;
+                box-shadow: 0 14px 40px rgba(11, 18, 32, 0.22), 0 3px 10px rgba(11, 18, 32, 0.10);
+            }
+
+            .widget-minimized:hover::after,
+            .widget-minimized:focus-visible::after {
+                max-width: 150px;
+                opacity: 1;
+            }
         }
 
         @keyframes subtleGlow {
 
             0%,
             100% {
-                box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.1);
+                box-shadow: 0 10px 30px rgba(11, 18, 32, 0.16), 0 2px 8px rgba(11, 18, 32, 0.08);
                 transform: translateY(0);
             }
 
             50% {
-                box-shadow: 0 16px 50px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.15);
+                box-shadow: 0 14px 38px rgba(11, 18, 32, 0.20), 0 3px 10px rgba(11, 18, 32, 0.10);
                 transform: translateY(-2px);
+            }
+        }
+
+        /* Honor reduced-motion: keep the reveal but drop the float + transitions. */
+        @media (prefers-reduced-motion: reduce) {
+            .widget-minimized {
+                animation: none !important;
+                transition: none !important;
+            }
+            .widget-minimized::after {
+                transition: none !important;
             }
         }
 
@@ -954,20 +1040,6 @@
         .widget-minimized .input-area,
         .widget-minimized .first-run-overlay {
             display: none !important;
-        }
-
-        .widget-minimized::after {
-            content: 'VIRTUAL\ATRY ON';
-            display: block;
-            color: var(--minimized-text-color, #333);
-            font-size: 11px;
-            font-weight: 800;
-            text-align: center;
-            line-height: 1.2;
-            letter-spacing: 0.8px;
-            white-space: pre-line;
-            text-transform: uppercase;
-            text-shadow: var(--minimized-text-shadow, 0 2px 4px rgba(255, 255, 255, 0.8));
         }
 
 
@@ -980,16 +1052,12 @@
             height: auto;
             background: #ffffff;
             border-radius: 24px;
-            /* matches rounded-2xl */
             box-shadow: 0 20px 50px rgba(0, 0, 0, 0.1);
-            /* matches shadow-2xl heavy soft shadow */
             z-index: 9999999;
             display: none;
             flex-direction: column;
-            padding: 32px 32px 32px 32px;
-            /* Explicit padding: top right bottom left */
+            padding: 32px;
             gap: 0;
-            /* Gap handled by margin-top on button now */
             transform: translateY(20px);
             opacity: 0;
             transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
@@ -997,7 +1065,6 @@
             border: none;
             overflow: visible;
             box-sizing: border-box;
-            /* IMPORTANT: Ensures padding sits inside width */
         }
 
         .widget-preview.active {
@@ -1066,23 +1133,20 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            /* justify-between */
             gap: 24px;
-            /* gap-6 */
             width: 100%;
         }
 
         .preview-product-thumb {
             width: 128px;
-            /* w-32 */
-            height: 160px;
-            /* h-40 */
+            height: 192px;
             border-radius: 12px;
-            /* rounded-xl */
             object-fit: cover;
+            object-position: top center;
             border: 1px solid #f3f4f6;
-            /* border-gray-100 */
             background: #f8f8f8;
+            box-shadow: none;
+            display: block;
         }
 
         .preview-arrow-icon {
@@ -1090,19 +1154,14 @@
             align-items: center;
             justify-content: center;
             color: #9ca3af;
-            /* text-gray-400 */
         }
 
         .preview-upload-tile {
             width: 128px;
-            /* w-32 matches product */
-            height: 160px;
-            /* h-40 matches product */
+            height: 192px;
             border-radius: 12px;
             border: 1px solid #e5e7eb;
-            /* border-gray-200 */
             background: #f9fafb;
-            /* bg-gray-50 */
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -1111,6 +1170,7 @@
             transition: all 0.2s ease;
             position: relative;
             overflow: hidden;
+            box-shadow: none;
         }
 
         .preview-upload-tile:hover {
@@ -1121,6 +1181,7 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
+            object-position: top center;
             position: absolute;
             top: 0;
             left: 0;
@@ -1185,21 +1246,16 @@
         .preview-actions {
             width: 100%;
             margin-top: 24px;
-            /* mt-6 */
         }
 
         .preview-try-btn {
             background: #0f172a;
-            /* bg-slate-900 / solid black */
             color: white;
             border: none;
             border-radius: 12px;
-            /* rounded-xl */
             padding: 16px 0;
-            /* py-4 */
             font-size: 15px;
             font-weight: 600;
-            /* font-semibold */
             cursor: pointer;
             transition: all 0.2s ease;
             width: 100%;
@@ -1350,7 +1406,7 @@
             width: 72%;
             height: 6px;
             margin-top: -6px;
-            background: #000000;
+            background: #e5e7eb;
             border-radius: 999px;
             overflow: hidden;
         }
@@ -1359,7 +1415,7 @@
             width: 0%;
             height: 100%;
             border-radius: inherit;
-            background: #3B63D4;
+            background: #111827;
             transition: width 0.35s ease;
         }
 
@@ -1663,7 +1719,7 @@
         /* Mobile scroll handling */
         @media (max-width: 768px) {
             .tryon-content {
-                max-height: calc(90dvh - 56px);
+                max-height: calc(90svh - 56px);
                 /* Account for header/footer */
                 overflow-y: auto;
                 -webkit-overflow-scrolling: touch;
@@ -5946,7 +6002,7 @@
         }
 
         /* THEME: White (default) */
-        .theme-white.virtual-tryon-widget {
+        .theme-white.virtual-tryon-widget:not(.widget-minimized) {
             background: linear-gradient(135deg, #ffffff 0%, #f8f8f8 100%);
             color: #222;
         }
@@ -5968,7 +6024,7 @@
         }
 
         /* THEME: Cream */
-        .theme-cream.virtual-tryon-widget {
+        .theme-cream.virtual-tryon-widget:not(.widget-minimized) {
             background: linear-gradient(135deg, #fdf6ee 0%, #f7e9d7 100%);
             color: #3a2c1a;
         }
@@ -5990,7 +6046,7 @@
         }
 
         /* THEME: Black */
-        .theme-black.virtual-tryon-widget {
+        .theme-black.virtual-tryon-widget:not(.widget-minimized) {
             background: linear-gradient(135deg, #23272f 0%, #181a1b 100%);
             color: #f3f3f3;
         }
@@ -6015,6 +6071,13 @@
             background: #181a1b;
             color: #f3f3f3;
             border: 1px solid #333;
+        }
+
+        /* Blackout theme: drive both the hanger icon and label white via the
+           shared contrast var (overridden by applyMinimizedWidgetColor() inline
+           styles when a merchant sets an explicit minimized color). */
+        .theme-black.virtual-tryon-widget.widget-minimized {
+            --minimized-text-color: #fff;
         }
 
         .theme-black.virtual-tryon-widget.widget-minimized::after {

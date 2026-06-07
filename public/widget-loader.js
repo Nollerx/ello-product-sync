@@ -96,7 +96,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.7.3';
+    const WIDGET_VERSION = '2.7.4';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -203,7 +203,10 @@
             // Migration preserves true for any pre-existing merchant.
             floatingWidgetPdpEnabled: storeConfig.floating_widget_pdp_enabled === true,
             // Default-on off-PDP — bubble is still the discovery tool for home/collections.
-            floatingWidgetNonPdpEnabled: storeConfig.floating_widget_non_pdp_enabled !== false
+            floatingWidgetNonPdpEnabled: storeConfig.floating_widget_non_pdp_enabled !== false,
+            // Lead capture (email after Nth try-on) — off by default.
+            leadCaptureEnabled: storeConfig.lead_capture_enabled === true,
+            leadCaptureAfterN: storeConfig.lead_capture_after_n || 1
         };
     }
 
@@ -234,6 +237,40 @@
             floatingWidgetPdpEnabled: false,
             floatingWidgetNonPdpEnabled: true
         };
+    }
+
+    function getMinimizedFirstPaintStyles(color) {
+        if (!color || !/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(color.trim())) {
+            return [];
+        }
+
+        let hex = color.trim().replace('#', '');
+        if (hex.length === 3) {
+            hex = hex.split('').map(function (char) { return char + char; }).join('');
+        }
+
+        const r = parseInt(hex.substring(0, 2), 16);
+        const g = parseInt(hex.substring(2, 4), 16);
+        const b = parseInt(hex.substring(4, 6), 16);
+        const lighterR = Math.min(255, r + 30);
+        const lighterG = Math.min(255, g + 30);
+        const lighterB = Math.min(255, b + 30);
+        const darkerR = Math.max(0, r - 20);
+        const darkerG = Math.max(0, g - 20);
+        const darkerB = Math.max(0, b - 20);
+        const gradient = `linear-gradient(135deg, rgb(${darkerR}, ${darkerG}, ${darkerB}) 0%, rgb(${r}, ${g}, ${b}) 50%, rgb(${lighterR}, ${lighterG}, ${lighterB}) 100%)`;
+        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+        const textColor = brightness > 128 ? '#333' : '#fff';
+        const textShadow = brightness > 128
+            ? '0 2px 4px rgba(255,255,255,0.8)'
+            : '0 2px 4px rgba(0,0,0,0.8)';
+
+        return [
+            `--minimized-bg: ${color.trim()}`,
+            `--minimized-text-color: ${textColor}`,
+            `--minimized-text-shadow: ${textShadow}`,
+            `background: ${gradient} !important`
+        ];
     }
 
     function applyConfig(cfg) {
@@ -592,6 +629,8 @@
                 if (cfg.widgetPosition === 'left') {
                     inlineStyles.push('left: 20px !important', 'right: auto !important', 'transform-origin: left bottom !important');
                 }
+
+                inlineStyles.push.apply(inlineStyles, getMinimizedFirstPaintStyles(cfg.minimizedColor));
 
                 if (inlineStyles.length) {
                     widgetEl.setAttribute('style', inlineStyles.join('; ') + ';');

@@ -57,7 +57,9 @@ window.initializeWidget = function () {
                         widgetAccentColor: storeConfig.widget_accent_color || null,
                         minimizedColor: storeConfig.minimized_color || null,
                         featuredItemId: storeConfig.featured_item_id || null,
-                        quickPicksIds: storeConfig.quick_picks_ids || null
+                        quickPicksIds: storeConfig.quick_picks_ids || null,
+                        leadCaptureEnabled: storeConfig.lead_capture_enabled === true,
+                        leadCaptureAfterN: storeConfig.lead_capture_after_n || 1
                     };
 
                     // Now apply the colors and theme
@@ -234,7 +236,7 @@ const WIDGET_CONFIG = {
 
 // Only the columns the widget actually reads — avoids serializing wide row data.
 // Cuts each clothing_items request payload by roughly 70% vs SELECT *.
-const CLOTHING_SELECT_COLUMNS = 'id,item_id,name,price,category,tags,color,image_url,product_url,data_source,active,shopify_product_id,variants';
+const CLOTHING_SELECT_COLUMNS = 'id,item_id,name,price,category,tags,color,image_url,image_override_url,product_url,data_source,active,shopify_product_id,variants';
 
 // Legacy localStorage key — older versions of the widget cached the clothing
 // list here. We removed caching so merchant changes appear instantly, but we
@@ -635,6 +637,14 @@ async function loadClothingData() {
                 planName: 'STARTER'
             };
         }
+
+        // Load per-product try-on image overrides before any catalog path runs,
+        // so the override map is ready when detectCurrentProduct() resolves the
+        // garment at try-on time. Tiny query (only products that HAVE an override).
+        await loadImageOverrides(
+            storeConfig.storeSlug || storeConfig.storeId ||
+            window.ELLO_STORE_SLUG || window.ELLO_STORE_ID
+        );
 
 
         // ⚡️ CHECK FOR BOOTSTRAP DATA (PRIORITY WITH PROMISE)
@@ -1452,7 +1462,10 @@ function processClothingRows(data) {
                 category: item.category?.toLowerCase() || 'clothing',
                 tags: item.tags || [],
                 color: item.color || 'multicolor',
-                image_url: item.image_url,
+                // Merchant-selected try-on image takes priority; falls back to the
+                // featured image (image_url) when no override is set. NULL override
+                // => identical to previous behavior, so this is fully backward-compatible.
+                image_url: item.image_override_url || item.image_url,
                 product_url: item.product_url || '#',
                 // Supabase products don't have Shopify GIDs, set to null
                 shopify_product_gid: null,
@@ -1577,6 +1590,66 @@ function getProductIdFromUrl(url) {
 }
 
 // 🎯 UPDATED detectCurrentProduct FUNCTION:
+// ─── Per-product try-on image overrides ──────────────────────────────────────
+// Merchants can pick which product image the try-on renders from (dashboard →
+// clothing_items.image_override_url). The PDP try-on garment can come from several
+// data sources (bootstrap edge fn, /api/widget-preview, full clothing_items load),
+// and the two fast paths fetch the featured image straight from Shopify and never
+// read clothing_items. So we load a small map of overrides once and apply it at the
+// single chokepoint every try-on passes through: detectCurrentProduct().
+// Keyed by BOTH the full GID and the numeric id so it matches whatever id form a
+// product object happens to carry. NULL/empty override => no entry => featured image.
+window.elloImageOverrides = window.elloImageOverrides || null;
+
+async function loadImageOverrides(storeSlug) {
+    if (!storeSlug) return;
+    try {
+        const url = `${SUPABASE_URL}/rest/v1/clothing_items?store_id=eq.${encodeURIComponent(storeSlug)}&image_override_url=not.is.null&select=item_id,image_override_url`;
+        const res = await fetch(url, {
+            headers: {
+                'apikey': SUPABASE_ANON_KEY,
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+            },
+        });
+        if (!res.ok) return;
+        const rows = await res.json();
+        const map = new Map();
+        (rows || []).forEach(r => {
+            if (!r || !r.image_override_url) return;
+            const gid = String(r.item_id);
+            map.set(gid, r.image_override_url);
+            const numeric = gid.split('/').pop();
+            if (numeric) map.set(numeric, r.image_override_url);
+        });
+        window.elloImageOverrides = map;
+        elloLog(`Ello: loaded ${map.size} image-override keys`);
+    } catch (e) {
+        // Non-fatal — without the map, try-on simply falls back to the featured image.
+        console.warn('[Ello] image override load failed:', e);
+    }
+}
+
+// Resolve a product's try-on image: if the merchant chose an override for it,
+// swap product.image_url to that. Safe no-op when no map / no match.
+function applyImageOverride(product) {
+    const map = window.elloImageOverrides;
+    if (!product || !map || map.size === 0) return product;
+    const candidates = [
+        product.shopify_product_id,
+        product.shopify_product_gid,
+        product.id,
+        (typeof getProductId === 'function' ? getProductId(product) : null),
+    ].filter(Boolean).map(String);
+    for (const key of candidates) {
+        const ov = map.get(key);
+        if (ov) {
+            product.image_url = ov;
+            break;
+        }
+    }
+    return product;
+}
+
 function detectCurrentProduct() {
     let product = null;
 
@@ -1711,7 +1784,8 @@ function detectCurrentProduct() {
                 });
             }
         }
-        return product;
+        // Apply the merchant's chosen try-on image (if any) before the garment is used.
+        return applyImageOverride(product);
     }
 
     return null;
@@ -2669,11 +2743,12 @@ function handlePhotoUploadClick() {
 function lockBodyScroll() {
     if (!isMobile) return;
 
-    // Avoid `position: fixed` on <body>: on iOS Safari it forces the address
-    // bar to re-expand, flickering the page when the widget opens. The
-    // non-passive touchmove handler below is what blocks background scroll on iOS.
-    document.body.style.overflow = 'hidden';
-    document.documentElement.style.overflow = 'hidden';
+    // Lock background scroll with the non-passive touchmove handler ONLY.
+    // Do not touch document overflow/position: mutating the scroller while the
+    // page is scrolled-down makes iOS Safari snap its address bar open, which
+    // shrinks the (d)vh viewport and flickers the widget mid-open. The handler
+    // below blocks background touch-scroll; .tryon-content already sets
+    // overscroll-behavior: contain to prevent scroll-chaining at its edges.
 
     // Prevent touch scrolling on body (but allow it in widget)
     scrollLockTouchHandler = function (e) {
@@ -2703,14 +2778,50 @@ function lockBodyScroll() {
 function unlockBodyScroll() {
     if (!isMobile) return;
 
-    document.body.style.overflow = '';
-    document.documentElement.style.overflow = '';
-
     // Remove touch handler
     if (scrollLockTouchHandler) {
         document.removeEventListener('touchmove', scrollLockTouchHandler);
         scrollLockTouchHandler = null;
     }
+}
+
+// Inline auto-fire fast path: when a returning shopper clicks the inline
+// "Try It On" button and already has a saved photo, we go straight to the
+// try-on call without any manual interaction. To avoid a flash of the
+// upload/workspace screen (and a blank product card in the loading overlay),
+// this resolves the PDP garment synchronously, seeds elloSelectedGarment, and
+// starts the garment image fetch BEFORE the loading overlay is shown.
+//
+// Returns true only when a usable garment image was resolved — the caller uses
+// this to decide whether it's safe to paint the loading overlay immediately
+// (if no product resolves, the auto-fire in openWidget's setTimeout would never
+// fire startTryOn, so we must not leave a stuck loading overlay on screen).
+function primeInlineLoadingGarment() {
+    const currentProduct = detectCurrentProduct();
+    const garmentUrl = currentProduct && currentProduct.image_url;
+    if (!garmentUrl) return false;
+
+    // Seed elloSelectedGarment if it isn't already populated with a usable
+    // image. Mirrors the exact shape populateFeaturedAndQuickPicks() sets so
+    // startTryOn() and Add-to-Cart see consistent data; the async populate path
+    // enriches this (variants, price) moments later.
+    if (!window.elloSelectedGarment || !window.elloSelectedGarment.image_url) {
+        selectedClothing = currentProduct.id;
+        window.elloSelectedGarment = {
+            image_url: garmentUrl,
+            ...currentProduct,
+            selectedVariantId: currentProduct.variants?.[0]?.shopify_variant_gid || null
+        };
+    }
+
+    // Paint both cards onto the loading overlay now (it's still hidden) so the
+    // garment image fetch is already in flight by the time the overlay appears.
+    const root = document.getElementById('tryOnLoadingBar');
+    if (root) {
+        setTryOnLoadingImage(root.querySelector('[data-loading-product]'), window.elloSelectedGarment.image_url);
+        setTryOnLoadingImage(root.querySelector('[data-loading-person]'), window.elloUserImageUrl || userPhoto || '');
+    }
+    return true;
 }
 
 function openWidget() {
@@ -2742,6 +2853,13 @@ function openWidget() {
     if (window.ELLO_INLINE_MODE) {
         widget.classList.add('inline-mode');
         ensureInlineModeStyles();
+        // The floating-bubble kill switches (applyWidgetVisibilityGate and the
+        // loader's FOUC guard) set display:none on this element when the
+        // merchant has the bubble disabled — the default for new installs on
+        // PDPs. An inline-button click is an explicit request for try-on, so
+        // clear that hide and let the panel open. Without this the click is a
+        // silent no-op on every store with the floating widget turned off.
+        widget.style.removeProperty('display');
     } else {
         widget.classList.remove('inline-mode');
     }
@@ -2804,6 +2922,20 @@ function openWidget() {
     } else {
         // Reset upload area if no photo exists
         resetPhotoUploadArea();
+    }
+
+    // ─── Inline auto-fire fast path (returning shopper, photo already saved) ──
+    // This open is going straight to try-on (see auto-fire path A below), so
+    // paint the full-cover loading overlay NOW — before the upload/workspace
+    // screen ever renders — so the shopper never sees a flash of the "Change
+    // Photo / Try On" UI. primeInlineLoadingGarment() also seeds the garment so
+    // the product card isn't blank when the overlay appears. Only do this once
+    // we've confirmed a garment resolved; otherwise the setTimeout auto-fire
+    // below wouldn't run and we'd be left with a stuck loading overlay.
+    if (window.ELLO_INLINE_MODE && window.ELLO_AUTO_FIRE && userPhoto && window.elloUserImageUrl) {
+        if (primeInlineLoadingGarment()) {
+            showLoadingBar(true);
+        }
     }
 
     if (currentMode === 'tryon') {
@@ -2877,6 +3009,11 @@ function closeWidget() {
         trackEvent('widget_close', { had_meaningful_action: hadMeaningfulAction });
     }
 
+    // Capture inline-mode before we clear it below — the minimize path needs
+    // to know whether this open came from the inline button to decide if the
+    // bubble should reappear or stay hidden (see applyMinimizedVisual).
+    const wasInlineMode = window.ELLO_INLINE_MODE === true;
+
     // Clear inline-mode state. If the shopper re-opens via the floating
     // bubble next, we want them to land in the full browse UX — not in the
     // focused PDP experience that was tied to the previous inline click.
@@ -2909,6 +3046,19 @@ function closeWidget() {
             widget.style.background = savedGradient;
         } else {
             applyMinimizedWidgetColor();
+        }
+        // If this open came from the inline button on a store where the
+        // floating bubble is disabled for this page type, don't strand a
+        // minimized bubble in the corner — re-hide so closing inline try-on
+        // returns the page to its bubble-less state. Inline !important beats
+        // .widget-minimized's display:flex !important.
+        if (wasInlineMode) {
+            const cfg = window.ELLO_STORE_CONFIG || {};
+            const onPdp = window.location.pathname.includes('/products/');
+            const floatingOff =
+                (onPdp && cfg.floatingWidgetPdpEnabled === false) ||
+                (!onPdp && cfg.floatingWidgetNonPdpEnabled === false);
+            if (floatingOff) widget.style.setProperty('display', 'none', 'important');
         }
     };
 
@@ -4171,19 +4321,35 @@ async function analyzeImageQuality(imageSrc) {
         }
 
         img.onload = function () {
+            // Use the image's true intrinsic dimensions for aspect-ratio checks.
+            const naturalWidth = img.naturalWidth || img.width;
+            const naturalHeight = img.naturalHeight || img.height;
+
+            // Downscale to a small thumbnail before reading pixels. We only need
+            // average brightness/contrast, which a thumbnail measures just as well.
+            // Drawing the full-resolution photo onto a canvas hits iOS Safari's
+            // canvas-area limit (~16.7M px), which silently returns an all-zero
+            // (black) pixel buffer — producing false "too dark" / "insufficient
+            // contrast" errors on large phone photos. Capping the canvas size
+            // avoids that limit entirely and makes the result deterministic.
+            const MAX_ANALYSIS_DIM = 512;
+            const scale = Math.min(1, MAX_ANALYSIS_DIM / Math.max(naturalWidth, naturalHeight));
+            const sampleWidth = Math.max(1, Math.round(naturalWidth * scale));
+            const sampleHeight = Math.max(1, Math.round(naturalHeight * scale));
+
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            canvas.width = img.width;
-            canvas.height = img.height;
+            canvas.width = sampleWidth;
+            canvas.height = sampleHeight;
 
-            ctx.drawImage(img, 0, 0);
+            ctx.drawImage(img, 0, 0, sampleWidth, sampleHeight);
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const pixels = imageData.data;
 
-            // Calculate aspect ratio
-            const aspectRatio = canvas.width / canvas.height;
-            const isPortrait = canvas.height > canvas.width;
-            const widthHeightRatio = canvas.width / canvas.height;
+            // Calculate aspect ratio from the true intrinsic dimensions.
+            const aspectRatio = naturalWidth / naturalHeight;
+            const isPortrait = naturalHeight > naturalWidth;
+            const widthHeightRatio = naturalWidth / naturalHeight;
 
             // Calculate brightness and contrast
             let sumLuminance = 0;
@@ -4214,8 +4380,8 @@ async function analyzeImageQuality(imageSrc) {
             const contrast = Math.sqrt(sumSquaredDiff / pixelCount);
 
             resolve({
-                width: canvas.width,
-                height: canvas.height,
+                width: naturalWidth,
+                height: naturalHeight,
                 aspectRatio: aspectRatio,
                 isPortrait: isPortrait,
                 widthHeightRatio: widthHeightRatio,
@@ -4938,9 +5104,13 @@ async function validateImageQuality(imageSrc, options = {}) {
     const analysis = await analyzeImageQuality(imageSrc);
 
     if (!analysis) {
+        // Couldn't read the pixels back (transient canvas/decode failure on
+        // mobile — the classic "fails first attempt, works second"). Don't block
+        // the upload: accept the photo and let the try-on proceed. Body detection
+        // (run separately) is the real backstop for unusable photos.
         return {
-            isValid: false,
-            error: 'Failed to analyze image. Please try a different image.',
+            isValid: true,
+            error: null,
             warnings: []
         };
     }
@@ -4961,19 +5131,16 @@ async function validateImageQuality(imageSrc, options = {}) {
         }
     }
 
-    // Check brightness
-    if (analysis.brightness < 0.15) {
-        errors.push('Image is too dark. Please use a photo with better lighting.');
-    } else if (analysis.brightness > 0.9) {
-        errors.push('Image is too bright. Please use a photo with more balanced lighting.');
-    } else if (analysis.brightness < 0.25 || analysis.brightness > 0.8) {
+    // Brightness and contrast are advisory only — they NEVER reject a photo.
+    // The canvas pixel readback misfires on mobile (decode races, iOS canvas
+    // limits) and returns a false all-black buffer, which used to flag well-lit
+    // photos as "too dark" / "insufficient contrast" and reset the upload. Andrew's
+    // call: accept the photo and start the try-on. Surface only gentle tips.
+    if (analysis.brightness < 0.25 || analysis.brightness > 0.8) {
         warnings.push('Lighting could be improved for better results.');
     }
 
-    // Check contrast
-    if (analysis.contrast < 0.05) {
-        errors.push('Image has insufficient contrast. Please use a clearer, more defined photo.');
-    } else if (analysis.contrast < 0.1) {
+    if (analysis.contrast < 0.1) {
         warnings.push('Image contrast is low. Better contrast will improve try-on results.');
     }
 
@@ -6718,6 +6885,9 @@ window.startTryOn = async function startTryOn() {
             });
         }
 
+        // Lead capture (off unless the merchant enabled it). Never blocks the result.
+        elloMaybeShowLeadCapture(garment);
+
         if (typeof openTryOnResult === "function") {
             openTryOnResult();
         }
@@ -6781,6 +6951,99 @@ window.startTryOn = async function startTryOn() {
 function retryTryOn() {
     elloLog('Retrying try-on request...');
     startTryOn();
+}
+
+// ─── Lead capture (email after Nth try-on) ──────────────────────────────────
+// Off unless ELLO_STORE_CONFIG.leadCaptureEnabled. Counts successful try-ons per
+// browser in localStorage and shows a one-time, dismissible email prompt once
+// the count reaches leadCaptureAfterN. Submitted emails POST to /api/capture-lead.
+// Never blocks or gates the try-on result.
+function elloLeadStoreSlug() {
+    return (window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.storeSlug)
+        || window.ELLO_STORE_SLUG || window.ELLO_STORE_ID || 'default_store';
+}
+
+function elloMaybeShowLeadCapture(garment) {
+    try {
+        const cfg = window.ELLO_STORE_CONFIG || {};
+        if (!cfg.leadCaptureEnabled) return;
+
+        const slug = elloLeadStoreSlug();
+        const capturedKey = 'ello_lead_captured_' + slug;
+        if (userEmail || window.localStorage.getItem(capturedKey)) return;
+
+        const afterN = Math.max(1, parseInt(cfg.leadCaptureAfterN, 10) || 1);
+        const countKey = 'ello_lead_count_' + slug;
+        const count = (parseInt(window.localStorage.getItem(countKey), 10) || 0) + 1;
+        window.localStorage.setItem(countKey, String(count));
+        if (count < afterN) return;
+
+        showElloLeadCaptureModal(garment);
+    } catch (e) {
+        console.warn('[Ello] lead capture check failed:', e);
+    }
+}
+
+function showElloLeadCaptureModal(garment) {
+    if (document.getElementById('ello-lead-capture-overlay')) return;
+
+    const cfg = window.ELLO_STORE_CONFIG || {};
+    const accent = cfg.widgetPrimaryColor || cfg.minimizedColor || '#111827';
+    const slug = elloLeadStoreSlug();
+    const markDone = () => { try { window.localStorage.setItem('ello_lead_captured_' + slug, '1'); } catch (e) {} };
+
+    const overlay = document.createElement('div');
+    overlay.id = 'ello-lead-capture-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(11,18,32,0.55);padding:16px;';
+
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#fff;border-radius:14px;max-width:380px;width:100%;padding:24px;box-shadow:0 12px 40px rgba(0,0,0,0.25);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+    card.innerHTML =
+        '<div style="font-size:18px;font-weight:700;color:#0B1220;margin-bottom:6px;">Want your try-on results?</div>' +
+        '<div style="font-size:14px;color:#434D63;line-height:1.5;margin-bottom:16px;">Enter your email to save your looks and get the occasional update.</div>' +
+        '<input id="ello-lead-email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #D8DCE3;border-radius:8px;font-size:15px;margin-bottom:10px;outline:none;" />' +
+        '<div id="ello-lead-error" style="display:none;color:#D94E4E;font-size:12px;margin-bottom:8px;"></div>' +
+        '<button id="ello-lead-submit" type="button" style="width:100%;padding:12px;border:none;border-radius:8px;background:' + accent + ';color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Save my results</button>' +
+        '<button id="ello-lead-skip" type="button" style="width:100%;padding:10px;margin-top:8px;border:none;background:transparent;color:#6B7388;font-size:13px;cursor:pointer;">No thanks</button>';
+
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    const close = () => { try { overlay.remove(); } catch (e) {} };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { markDone(); close(); } });
+    card.querySelector('#ello-lead-skip').addEventListener('click', () => { markDone(); close(); });
+
+    const input = card.querySelector('#ello-lead-email');
+    const errEl = card.querySelector('#ello-lead-error');
+    setTimeout(() => { if (input) input.focus(); }, 50);
+
+    card.querySelector('#ello-lead-submit').addEventListener('click', () => {
+        const email = ((input && input.value) || '').trim();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+            if (errEl) { errEl.textContent = 'Please enter a valid email.'; errEl.style.display = 'block'; }
+            return;
+        }
+        // Mark done + set email locally first so the UX is instant; POST is fire-and-forget.
+        markDone();
+        userEmail = email;
+        close();
+        try {
+            const base = window.ELLO_WIDGET_BASE_URL || '';
+            fetch(base + '/api/capture-lead', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    store_slug: slug,
+                    email: email,
+                    session_id: sessionId || window.ELLO_SESSION_ID || null,
+                    product_id: (garment && (garment.shopify_product_id || garment.id)) || null,
+                    source: 'widget'
+                })
+            }).catch((e) => console.warn('[Ello] lead capture POST failed:', e));
+        } catch (e) {
+            console.warn('[Ello] lead capture POST threw:', e);
+        }
+    });
 }
 
 // Wire Try On button event listener - retry until widget is injected
