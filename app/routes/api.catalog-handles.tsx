@@ -61,7 +61,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const storeQuery = supabaseAdmin
       .from("vto_stores")
       .select(
-        "store_slug, shop_domain, storefront_token, clothing_population_type, config_version",
+        "store_slug, shop_domain, storefront_token, clothing_population_type, config_version, tryon_targeting_mode, tryon_included_product_ids, tryon_included_collection_ids",
       );
 
     const { data: storeData, error: storeError } = shop
@@ -95,6 +95,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const populationType = storeData.clothing_population_type as
       | string
       | null;
+
+    // Product targeting (Shopify-population stores only). Default 'all' keeps
+    // legacy behavior. 'products'/'collections' scope try-on to a chosen set.
+    const targetingMode =
+      (storeData.tryon_targeting_mode as string | null) || "all";
+    const includedProductIds = Array.isArray(storeData.tryon_included_product_ids)
+      ? (storeData.tryon_included_product_ids as string[])
+      : [];
+    const includedCollectionIds = Array.isArray(
+      storeData.tryon_included_collection_ids,
+    )
+      ? (storeData.tryon_included_collection_ids as string[])
+      : [];
 
     // 2. Compute version: max(config_version, latest clothing_items.updated_at).
     //    Empty clothing_items table (default Shopify install) falls back to
@@ -157,11 +170,31 @@ export async function loader({ request }: LoaderFunctionArgs) {
         .map((r) => (r as { item_id: string | null }).item_id)
         .filter((h): h is string => Boolean(h));
     } else {
-      // Shopify mode: paginate handles-only from Shopify, exclude active=false.
-      const pairs = await fetchShopifyHandles(
-        storeData.shop_domain as string | null,
-        storeData.storefront_token as string | null,
-      );
+      // Shopify mode. Targeting mode decides which products are eligible:
+      //   'all'         → every product, minus merchant exclusions (default)
+      //   'products'    → only the explicitly-selected products
+      //   'collections' → only products inside the selected collections
+      // Merchant exclusions (clothing_items.active=false) are still applied on
+      // top of every mode, so a product can be hidden even within a collection.
+      let pairs: Array<{ id: string; handle: string }> = [];
+      if (targetingMode === "products") {
+        pairs = await fetchHandlesForProductIds(
+          storeData.shop_domain as string | null,
+          storeData.storefront_token as string | null,
+          includedProductIds,
+        );
+      } else if (targetingMode === "collections") {
+        pairs = await fetchHandlesForCollectionIds(
+          storeData.shop_domain as string | null,
+          storeData.storefront_token as string | null,
+          includedCollectionIds,
+        );
+      } else {
+        pairs = await fetchShopifyHandles(
+          storeData.shop_domain as string | null,
+          storeData.storefront_token as string | null,
+        );
+      }
 
       const hiddenIds = await fetchHiddenShopifyIds(slug);
 
@@ -277,6 +310,130 @@ async function fetchShopifyHandles(
   }
 
   return all;
+}
+
+/** Normalize a merchant shop domain to its myshopify.com host. */
+function normalizeShopDomain(shopDomain: string): string {
+  let normalized = shopDomain;
+  if (!normalized.includes(".")) {
+    normalized = `${normalized}.myshopify.com`;
+  } else if (!normalized.includes("myshopify.com")) {
+    normalized = `${normalized.replace(/\.(com|net|org)$/, "")}.myshopify.com`;
+  }
+  return normalized;
+}
+
+/**
+ * Resolve a set of Shopify product GIDs to their current handles via the
+ * Storefront API ('products' targeting mode). Handles are resolved at request
+ * time so product renames stay correct. Batched by 250 (nodes() limit).
+ */
+async function fetchHandlesForProductIds(
+  shopDomain: string | null,
+  storefrontToken: string | null,
+  productIds: string[],
+): Promise<Array<{ id: string; handle: string }>> {
+  if (!shopDomain || !storefrontToken || productIds.length === 0) return [];
+
+  const endpoint = `https://${normalizeShopDomain(shopDomain)}/api/2024-01/graphql.json`;
+  const QUERY = `query Handles($ids: [ID!]!) {
+    nodes(ids: $ids) { ... on Product { id handle } }
+  }`;
+
+  const out: Array<{ id: string; handle: string }> = [];
+  for (let i = 0; i < productIds.length; i += 250) {
+    const batch = productIds.slice(i, i + 250);
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Storefront-Access-Token": storefrontToken,
+      },
+      body: JSON.stringify({ query: QUERY, variables: { ids: batch } }),
+    });
+    if (!res.ok) {
+      console.error(`[catalog-handles] product-ids GraphQL ${res.status}`);
+      continue;
+    }
+    const json: {
+      data?: { nodes?: Array<{ id?: string; handle?: string } | null> };
+    } = await res.json();
+    for (const node of json.data?.nodes ?? []) {
+      if (node?.id && node?.handle) out.push({ id: node.id, handle: node.handle });
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve all product handles inside a set of collection GIDs via the
+ * Storefront API ('collections' targeting mode). Paginated per collection,
+ * deduped by product id. Page cap mirrors fetchShopifyHandles.
+ */
+async function fetchHandlesForCollectionIds(
+  shopDomain: string | null,
+  storefrontToken: string | null,
+  collectionIds: string[],
+): Promise<Array<{ id: string; handle: string }>> {
+  if (!shopDomain || !storefrontToken || collectionIds.length === 0) return [];
+
+  const endpoint = `https://${normalizeShopDomain(shopDomain)}/api/2024-01/graphql.json`;
+  const QUERY = `query CollectionProducts($id: ID!, $cursor: String) {
+    collection(id: $id) {
+      products(first: 250, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        edges { node { id handle } }
+      }
+    }
+  }`;
+
+  const MAX_PAGES = 20;
+  const seen = new Set<string>();
+  const out: Array<{ id: string; handle: string }> = [];
+
+  for (const collectionId of collectionIds) {
+    let cursor: string | null = null;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Shopify-Storefront-Access-Token": storefrontToken,
+        },
+        body: JSON.stringify({
+          query: QUERY,
+          variables: { id: collectionId, cursor },
+        }),
+      });
+      if (!res.ok) {
+        console.error(`[catalog-handles] collection GraphQL ${res.status}`);
+        break;
+      }
+      const json: {
+        data?: {
+          collection?: {
+            products?: {
+              pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
+              edges?: Array<{ node?: { id?: string; handle?: string } }>;
+            };
+          };
+        };
+      } = await res.json();
+
+      const products = json.data?.collection?.products;
+      for (const edge of products?.edges ?? []) {
+        const id = edge?.node?.id;
+        const handle = edge?.node?.handle;
+        if (id && handle && !seen.has(id)) {
+          seen.add(id);
+          out.push({ id, handle });
+        }
+      }
+      if (!products?.pageInfo?.hasNextPage || !products?.pageInfo?.endCursor) break;
+      cursor = products.pageInfo.endCursor;
+    }
+  }
+  return out;
 }
 
 /**
