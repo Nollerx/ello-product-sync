@@ -34,3 +34,7 @@ deploy.sh
 claude-usage/
 supabase/.temp/
 .vscode/
+
+# OS junk
+.DS_Store
+**/.DS_Store
