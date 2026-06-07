@@ -21,7 +21,7 @@ const PLAN_IDS: Record<PricingPlan["key"], string> = {
 };
 
 const PLAN_CONFIG: Record<string, PlanMeta> = {
-  custom_distribution: { displayName: "Custom Plan", price: 0, interval: "month", includedTryons: parseInt(process.env.DEFAULT_INCLUDED_TRYONS || "500", 10), planId: "custom-dist-00000000-0000-0000-0000" },
+  custom_distribution: { displayName: "Custom Plan", price: 0, interval: "month", includedTryons: parseInt(process.env.DEFAULT_INCLUDED_TRYONS || "500", 10), planId: "45951e2b-94da-4c10-8764-3fd03414f0fa" },
   developer_free: { displayName: "Developer Free", price: 0, interval: "month", includedTryons: 9999, planId: "a7d8292a-b720-418c-9de7-70191bc9969d" },
   ello_free: { displayName: "Ello Free", price: 0, interval: "month", includedTryons: 10, planId: "ab69eb9e-648c-4777-a6f6-6482f8b780a7" },
   ...Object.fromEntries(
@@ -407,7 +407,7 @@ export async function syncShopifyMerchantToSupabase(
         currentPeriodStart: existingSub.current_period_start,
         currentPeriodEnd: existingSub.current_period_end,
       });
-      await supabaseAdmin
+      const { error: reactivateError } = await supabaseAdmin
         .from("vto_subscriptions")
         .update({
           plan_id: plan.planId,
@@ -417,6 +417,14 @@ export async function syncShopifyMerchantToSupabase(
           current_period_end: billingWindow.currentPeriodEnd,
         })
         .eq("id", existingSub.id);
+      // Previously unchecked: a failed UPDATE (e.g. invalid/missing plan_id FK) left
+      // the subscription canceled while sync still "succeeded", causing every try-on
+      // to 402 with NO_ACTIVE_SUBSCRIPTION after an uninstall→reinstall cycle.
+      if (reactivateError) {
+        throw new Error(
+          `[ShopifyBilling] Failed to reactivate vto_subscriptions for account "${accountId}": ${reactivateError.message}`,
+        );
+      }
       subData = existingSub;
     } else {
       billingWindow = resolveBillingWindow(plan.interval);
