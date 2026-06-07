@@ -22,13 +22,6 @@
   "settings": [
     {
       "type": "text",
-      "id": "backend_url",
-      "label": "Backend URL",
-      "default": "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app",
-      "info": "Ello backend URL — auto-set on install, do not change unless instructed."
-    },
-    {
-      "type": "text",
       "id": "button_text",
       "label": "Button text override",
       "info": "Leave blank to use the text set in your Ello dashboard."
@@ -65,6 +58,14 @@
 }
 {% endschema %}
 
+{%- comment -%}
+  Backend origin is baked in at deploy time — it is NOT a merchant setting.
+  The public app ships the public Cloud Run URL below; the custom-app deploy
+  substitutes the custom service URL (see `deploy:custom` in package.json).
+  Store owners cannot repoint the widget at a different backend.
+{%- endcomment -%}
+{%- assign ello_backend_url = "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app" -%}
+
 {%- assign block_button_text = block.settings.button_text | strip -%}
 {%- assign block_bg_color = block.settings.bg_color | strip -%}
 {%- assign block_text_color = block.settings.text_color | strip -%}
@@ -84,8 +85,8 @@
 {%- else -%}
 
 <!-- Ello Try-On Inline Button (Theme Extension) -->
-<link rel="preconnect" href="{{ block.settings.backend_url }}" crossorigin>
-<link rel="dns-prefetch" href="{{ block.settings.backend_url }}">
+<link rel="preconnect" href="{{ ello_backend_url }}" crossorigin>
+<link rel="dns-prefetch" href="{{ ello_backend_url }}">
 
 <script>
   // Pre-queue shim — created synchronously before widget-loader.js runs so
@@ -151,7 +152,7 @@
 
 <script>
   (function () {
-    var BACKEND_URL = {{ block.settings.backend_url | json }};
+    var BACKEND_URL = {{ ello_backend_url | json }};
     var SHOP_DOMAIN = {{ shop.permanent_domain | json }};
     var BLOCK_ID = {{ block.id | json }};
 

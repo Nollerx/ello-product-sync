@@ -2,30 +2,30 @@
 {
   "name": "Ello Virtual Try-On",
   "target": "body",
-  "settings": [
-    {
-      "type": "text",
-      "id": "backend_url",
-      "label": "Backend URL",
-      "default": "https://ello-vto-staging-13593516897.us-central1.run.app",
-      "info": "Ello backend URL — auto-set on install, do not change unless instructed."
-    }
-  ]
+  "settings": []
 }
 {% endschema %}
+
+{%- comment -%}
+  Backend origin is baked in at deploy time — it is NOT a merchant setting.
+  The public app ships the public Cloud Run URL below; the custom-app deploy
+  substitutes the custom service URL (see `deploy:custom` in package.json).
+  Store owners cannot repoint the widget at a different backend.
+{%- endcomment -%}
+{%- assign ello_backend_url = "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app" -%}
 
 <!-- Ello Virtual Try-On Widget (Injected via Theme Extension) -->
 
 <!-- Warm DNS + TLS connections in parallel with HTML parsing so the first
      widget asset request doesn't pay handshake latency. crossorigin is
      required for preconnects that will be used for fetch/CORS requests. -->
-<link rel="preconnect" href="{{ block.settings.backend_url }}" crossorigin>
+<link rel="preconnect" href="{{ ello_backend_url }}" crossorigin>
 <link rel="preconnect" href="https://rwmvgwnebnsqcyhhurti.supabase.co" crossorigin>
-<link rel="dns-prefetch" href="{{ block.settings.backend_url }}">
+<link rel="dns-prefetch" href="{{ ello_backend_url }}">
 <link rel="dns-prefetch" href="https://rwmvgwnebnsqcyhhurti.supabase.co">
 
 <script
-  src="{{ block.settings.backend_url }}/widget-loader.js"
+  src="{{ ello_backend_url }}/widget-loader.js"
   data-shop="{{ shop.permanent_domain }}"
   defer
 ></script>
