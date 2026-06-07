@@ -85,22 +85,49 @@ const shopify = shopifyApp({
               "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app") +
             "/api/cart-purchase-event";
 
-          // Check if pixel already exists for this store (prevents duplicates on reinstall)
-          const pixelListResp = await admin.graphql(
-            `query { webPixels(first: 20) { edges { node { id settings } } } }`
-          );
-          const pixelListJson = await pixelListResp.json();
-          const existingPixel = pixelListJson?.data?.webPixels?.edges?.find(
-            (e: { node: { settings: string } }) => {
-              try {
-                return JSON.parse(e.node.settings)?.store_slug === storeSlug;
-              } catch {
-                return false;
-              }
-            }
-          );
+          const settingsJson = JSON.stringify({
+            store_slug: storeSlug,
+            backend_url: backendUrl,
+          });
 
-          if (!existingPixel) {
+          // An app can have at most ONE web pixel per shop, exposed via the
+          // singular `webPixel` query — the plural `webPixels` does NOT exist on
+          // QueryRoot and throws, which previously aborted activation entirely.
+          // Wrap the read in its own try/catch so a missing read scope (or any
+          // read error) still lets us fall through to create the pixel.
+          let existingId: string | null = null;
+          try {
+            const existingResp = await admin.graphql(
+              `query { webPixel { id settings } }`
+            );
+            const existingJson = await existingResp.json();
+            existingId = existingJson?.data?.webPixel?.id ?? null;
+          } catch (readErr) {
+            console.warn(
+              `[AutoSync:${requestId}] webPixel read failed (will attempt create):`,
+              readErr
+            );
+          }
+
+          if (existingId) {
+            // Keep settings (backend_url / store_slug) current on reinstall.
+            const updResp = await admin.graphql(
+              `mutation webPixelUpdate($id: ID!, $webPixel: WebPixelInput!) {
+                webPixelUpdate(id: $id, webPixel: $webPixel) {
+                  webPixel { id }
+                  userErrors { field message }
+                }
+              }`,
+              { variables: { id: existingId, webPixel: { settings: settingsJson } } }
+            );
+            const updJson = await updResp.json();
+            const errors = updJson?.data?.webPixelUpdate?.userErrors;
+            if (errors?.length) {
+              console.error(`[AutoSync:${requestId}] webPixelUpdate errors:`, errors);
+            } else {
+              console.log(`[AutoSync:${requestId}] Conversion pixel updated for ${shop}: ${existingId}`);
+            }
+          } else {
             const pixelResp = await admin.graphql(
               `mutation webPixelCreate($webPixel: WebPixelInput!) {
                 webPixelCreate(webPixel: $webPixel) {
@@ -108,16 +135,7 @@ const shopify = shopifyApp({
                   userErrors { field message }
                 }
               }`,
-              {
-                variables: {
-                  webPixel: {
-                    settings: JSON.stringify({
-                      store_slug: storeSlug,
-                      backend_url: backendUrl,
-                    }),
-                  },
-                },
-              }
+              { variables: { webPixel: { settings: settingsJson } } }
             );
             const pixelJson = await pixelResp.json();
             const errors = pixelJson?.data?.webPixelCreate?.userErrors;
@@ -129,8 +147,6 @@ const shopify = shopifyApp({
                 pixelJson?.data?.webPixelCreate?.webPixel?.id
               );
             }
-          } else {
-            console.log(`[AutoSync:${requestId}] Conversion pixel already exists for ${shop}, skipping.`);
           }
         } catch (pixelErr) {
           console.error(`[AutoSync:${requestId}] Pixel activation failed (non-fatal):`, pixelErr);
