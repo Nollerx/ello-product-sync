@@ -377,7 +377,9 @@ function StorefrontPreview({
     frame: true,
     inline: inlineEnabled,
     bubble: floatPdp,
-    popup: floatPdp && previewEnabled,
+    // The storefront popup shows independent of the floating-widget PDP flag,
+    // so the preview must too (new installs default float-on-PDP off).
+    popup: previewEnabled,
   };
   const targets = spot ? SPOT_MAP[spot].filter((el) => visibleEls[el]) : [];
   const spotted = (el: SpotEl) => targets.includes(el);
@@ -598,7 +600,7 @@ function StorefrontPreview({
           popup (product photo → your photo → generate). Stays hidden so the
           preview doesn't read as cluttered; slides up only while the merchant
           is hovering the Preview popup settings card. */}
-      {floatPdp && previewEnabled && (
+      {previewEnabled && (
         <div
           aria-hidden={!spotted("popup")}
           style={{
