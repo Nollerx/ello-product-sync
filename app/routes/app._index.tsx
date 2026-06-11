@@ -10,6 +10,7 @@ import {
   BlockStack,
   Box,
   InlineStack,
+  InlineGrid,
   Banner,
   Badge,
   Link,
@@ -18,9 +19,26 @@ import {
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
 import { getPlanConfig } from "../lib/shopify-billing.server";
+import { resolveStorefront } from "../lib/storefront-names.server";
+import { brand } from "../components/ui";
+import { FunnelBar, KpiTile, TimeRangeSelector } from "../components/analytics";
+import { parseRange, pctDelta, rangeWindow, RANGE_DAYS } from "../lib/timerange";
+import {
+  buildSessions,
+  fetchCoreEvents,
+  getConversionSummary,
+  getPrevCounts,
+  recentSessions,
+  type RecentSession,
+} from "../lib/analytics.server";
 
 const ACTIVATION_REFRESH_STORAGE_KEY = "ello.billing.activationRefreshCount";
 const MAX_ACTIVATION_REFRESH_ATTEMPTS = 5;
+
+// Where the "Rate Ello" card sends happy merchants. TODO(andrew): confirm the
+// real App Store listing handle — this opens the review modal on the listing.
+const REVIEW_URL = "https://apps.shopify.com/ello-virtual-try-on#modal-show=ReviewListingModal";
+const SUPPORT_EMAIL = "support@ello.services";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -30,28 +48,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Step 1: Store data
   const { data: storeData } = await supabaseAdmin
     .from("vto_stores")
-    .select("store_slug, account_id, widget_enabled, storefront_token")
+    .select("store_slug, account_id, widget_enabled, storefront_token, shop_domain")
     .eq("shop_domain", session.shop)
     .maybeSingle();
 
   const accountId = storeData?.account_id ?? null;
 
-  // Step 2: Parallel — owner email + active subscription
-  const [accountResult, subResult] = await Promise.all([
-    accountId
-      ? supabaseAdmin.from("vto_accounts").select("owner_email").eq("id", accountId).maybeSingle()
-      : Promise.resolve({ data: null }),
-    accountId
-      ? supabaseAdmin
-          .from("vto_subscriptions")
-          .select("id, plan_id, billing_interval, shopify_subscription_id")
-          .eq("account_id", accountId)
-          .eq("status", "active")
-          .order("shopify_subscription_id", { ascending: false, nullsFirst: false })
-          .limit(1)
-          .maybeSingle()
-      : Promise.resolve({ data: null }),
-  ]);
+  // Step 2: Active subscription
+  const subResult = accountId
+    ? await supabaseAdmin
+        .from("vto_subscriptions")
+        .select("id, plan_id, billing_interval, shopify_subscription_id")
+        .eq("account_id", accountId)
+        .eq("status", "active")
+        .order("shopify_subscription_id", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .maybeSingle()
+    : { data: null };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sub = (subResult as any).data as { id: string; plan_id: string; billing_interval: string } | null;
@@ -84,6 +97,61 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
+  // Step 4: Dashboard metrics over the selected range (?range=7d|30d|90d),
+  // with deltas vs the previous window. Graceful — failures just show zeros.
+  const range = parseRange(url.searchParams.get("range"));
+  const win = rangeWindow(range);
+
+  let attributedRevenue = 0;
+  let purchaseConversionPct: number | null = null;
+  let cartConversionPct: number | null = null;
+  let totalTryons = 0;
+  let totalCartAdds = 0;
+  let widgetOpens = 0;
+  let revenueDelta: number | null = null;
+  let tryonsDelta: number | null = null;
+  let cartsDelta: number | null = null;
+  let recent: RecentSession[] = [];
+  let recentProductNames: Record<string, string> = {};
+  let currencyCode = "USD";
+  const slug = storeData?.store_slug ?? null;
+  if (slug) {
+    // Recent sessions always look at the last 7 days so the table stays fresh
+    // and the Home loader stays light even on the 90-day range.
+    const recentWin = rangeWindow("7d");
+    const [summary, counts, prevCounts, recentCore] = await Promise.all([
+      getConversionSummary(slug, win.from, win.to),
+      getPrevCounts(slug, win.from, win.to),
+      getPrevCounts(slug, win.prevFrom, win.prevTo),
+      fetchCoreEvents(slug, recentWin.from, recentWin.to),
+    ]);
+    attributedRevenue = summary?.revenue ?? 0;
+    purchaseConversionPct = summary?.purchaseConversionPct ?? null;
+    cartConversionPct =
+      summary && summary.tryonSessions > 0
+        ? Math.round((summary.addedToCart / summary.tryonSessions) * 100)
+        : null;
+    totalTryons = counts.tryons;
+    totalCartAdds = counts.carts;
+    widgetOpens = counts.opens;
+    revenueDelta = pctDelta(attributedRevenue, prevCounts.revenue);
+    tryonsDelta = pctDelta(counts.tryons, prevCounts.tryons);
+    cartsDelta = pctDelta(counts.carts, prevCounts.carts);
+    recent = recentSessions(buildSessions(recentCore), 8);
+
+    const recentIds = Array.from(new Set(recent.flatMap((s) => s.products)));
+    const idToGid = (raw: string): string => (raw.startsWith("gid://") ? raw : `gid://shopify/Product/${raw}`);
+    const meta = await resolveStorefront(
+      storeData?.shop_domain ?? null,
+      storeData?.storefront_token ?? null,
+      recentIds.map(idToGid),
+    );
+    currencyCode = meta.currencyCode;
+    recentProductNames = Object.fromEntries(
+      recentIds.map((id) => [id, meta.titles.get(idToGid(id)) ?? id]),
+    );
+  }
+
   const skipBilling = process.env.SKIP_BILLING === "true";
   const billingActivationPending = url.searchParams.get("billing") === "activating";
   const pendingPlanKey = url.searchParams.get("plan");
@@ -94,9 +162,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     shop: session.shop,
     apiKey,
-    storeSlug: storeData?.store_slug ?? null,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ownerEmail: (accountResult as any).data?.owner_email ?? null,
+    storeSlug: slug,
     widgetEnabled: storeData?.widget_enabled ?? false,
     storeConnected: !!(storeData?.storefront_token),
     hasPlan: !!planDisplayName,
@@ -108,33 +174,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     skipBilling,
     billingActivationPending,
     pendingPlanDisplayName,
+    range,
+    attributedRevenue,
+    purchaseConversionPct,
+    cartConversionPct,
+    totalTryons,
+    totalCartAdds,
+    widgetOpens,
+    revenueDelta,
+    tryonsDelta,
+    cartsDelta,
+    recent,
+    recentProductNames,
+    currencyCode,
   };
 };
 
-export const action = async ({ request }: LoaderFunctionArgs) => {
+export const action = async () => {
   return null;
 };
 
 export default function Index() {
   const navigate = useNavigate();
   const {
-    shop, apiKey, storeSlug, ownerEmail,
+    shop, apiKey,
     widgetEnabled, storeConnected, hasPlan,
     planDisplayName, planKey, includedTryons, tryonsUsed, periodEnd,
     skipBilling, billingActivationPending, pendingPlanDisplayName,
+    range, attributedRevenue, purchaseConversionPct, cartConversionPct,
+    totalTryons, totalCartAdds, widgetOpens,
+    revenueDelta, tryonsDelta, cartsDelta,
+    recent, recentProductNames, currencyCode,
   } = useLoaderData<typeof loader>();
 
   const syncFetcher = useFetcher();
   const [hasAutoSynced, setHasAutoSynced] = useState(false);
   const [activationRefreshCount, setActivationRefreshCount] = useState(0);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopiedField(field);
-      setTimeout(() => setCopiedField(null), 1500);
-    });
-  };
 
   useEffect(() => {
     if (syncFetcher.state === "idle" && !syncFetcher.data && !hasAutoSynced) {
@@ -178,8 +253,14 @@ export default function Index() {
     ? new Date(periodEnd).toLocaleDateString("en-US", { month: "short", day: "numeric" })
     : null;
 
+  const money = (n: number) =>
+    new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currencyCode || "USD",
+      maximumFractionDigits: 0,
+    }).format(n);
+
   // Onboarding checklist: show until all 3 steps complete
-  // When skipBilling is true, treat plan as always present (custom distribution)
   const effectiveHasPlan = hasPlan || skipBilling;
   const showBillingActivationPending = billingActivationPending && !hasPlan && !skipBilling;
   const allOnboarded = effectiveHasPlan && storeConnected && widgetEnabled;
@@ -243,7 +324,7 @@ export default function Index() {
   }
 
   return (
-    <Page title="Ello Virtual Try-On">
+    <Page title="Dashboard">
       <BlockStack gap="500">
 
         {showBillingActivationPending && (
@@ -321,7 +402,7 @@ export default function Index() {
           </Card>
         )}
 
-        {/* ── Free-plan upgrade CTA (always shown for ello_free) ── */}
+        {/* ── Free-plan upgrade CTA ── */}
         {isFreePlan && (
           <Banner tone="info" title="You're on the Free plan">
             <BlockStack gap="200">
@@ -335,7 +416,7 @@ export default function Index() {
           </Banner>
         )}
 
-        {/* ── Upgrade nudge at 80% (hidden for custom distribution) ── */}
+        {/* ── Upgrade nudge at 80% ── */}
         {isNearLimit && !skipBilling && (
           <Banner
             tone={isFreePlan ? "critical" : "warning"}
@@ -355,160 +436,61 @@ export default function Index() {
           </Banner>
         )}
 
-        {/* ── Dashboard Hero (light-mode, brand palette) ── */}
-        {storeSlug && (
-          <div
-            style={{
-              borderRadius: "12px",
-              padding: "32px",
-              background: "linear-gradient(180deg, #FAFBFC 0%, #F4F7FE 100%)",
-              color: "#2A3347",
-              border: "1px solid #D2DDFB",
-              boxShadow: "0 4px 16px rgba(11, 18, 32, 0.06)",
-              position: "relative",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                top: "-80px",
-                right: "-80px",
-                width: "280px",
-                height: "280px",
-                borderRadius: "50%",
-                background:
-                  "radial-gradient(circle, #E8EEFD 0%, rgba(232, 238, 253, 0) 70%)",
-                pointerEvents: "none",
-              }}
-            />
+        {/* ── Controls row ── */}
+        <InlineStack align="space-between" blockAlign="center">
+          <TimeRangeSelector />
+          <InlineStack gap="200">
+            <Button onClick={() => navigate("/app/widget-design")} variant="tertiary">Customize widget</Button>
+            <Button onClick={() => navigate("/app/analytics")}>Full analytics</Button>
+          </InlineStack>
+        </InlineStack>
 
-            <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: "20px" }}>
-              <div>
-                <div
-                  style={{
-                    display: "inline-block",
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    color: "#6B7388",
-                    marginBottom: "6px",
-                  }}
-                >
-                  Your control center
-                </div>
-                <div
-                  style={{
-                    fontSize: "28px",
-                    fontWeight: 700,
-                    lineHeight: 1.2,
-                    marginBottom: "8px",
-                    color: "#0B1220",
-                  }}
-                >
-                  Your Ello Dashboard
-                </div>
-                <div style={{ fontSize: "15px", color: "#2A3347", maxWidth: "560px", lineHeight: 1.5 }}>
-                  Customize how the widget looks on your storefront, track try-on metrics in real time, and manage which products are enabled.
-                </div>
-              </div>
-
-              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                {[
-                  "Customize widget",
-                  "View analytics",
-                  "Manage products",
-                ].map((label) => (
-                  <span
-                    key={label}
-                    style={{
-                      fontSize: "13px",
-                      padding: "6px 12px",
-                      borderRadius: "999px",
-                      background: "#E8EEFD",
-                      border: "1px solid #D2DDFB",
-                      color: "#2544A3",
-                      fontWeight: 500,
-                    }}
-                  >
-                    {label}
+        {/* ── Revenue hero + widget-to-cart journey ── */}
+        <Card padding="500">
+          <InlineGrid columns={{ xs: "1fr", md: "1fr 1fr" }} gap="500">
+            <BlockStack gap="150">
+              <Text as="span" variant="bodySm" tone="subdued">Attributed revenue</Text>
+              <span style={{ fontSize: 42, fontWeight: 650, lineHeight: 1.05, color: "#3B63D4", letterSpacing: "-0.01em" }}>
+                {money(attributedRevenue)}
+              </span>
+              <InlineStack gap="200" blockAlign="center">
+                {revenueDelta != null && (
+                  <span style={{ fontSize: 12, fontWeight: 600, color: revenueDelta >= 0 ? "#17A673" : "#D94E4E" }}>
+                    {revenueDelta >= 0 ? "▲" : "▼"} {Math.abs(revenueDelta)}% vs previous {RANGE_DAYS[range]} days
                   </span>
-                ))}
-              </div>
+                )}
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Orders placed after a try-on · last {RANGE_DAYS[range]} days
+                </Text>
+              </InlineStack>
+              {purchaseConversionPct != null && (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  {purchaseConversionPct}% of try-on sessions end in a purchase
+                </Text>
+              )}
+            </BlockStack>
+            <BlockStack gap="300">
+              <Text as="span" variant="bodySm" tone="subdued">Widget-to-cart journey</Text>
+              <FunnelBar label="Widget opens" value={widgetOpens} max={widgetOpens} />
+              <FunnelBar label="Try-ons" value={totalTryons} max={widgetOpens} />
+              <FunnelBar label="Cart adds" value={totalCartAdds} max={widgetOpens} />
+            </BlockStack>
+          </InlineGrid>
+        </Card>
 
-              <div
-                style={{
-                  background: "#FFFFFF",
-                  border: "1px solid #D8DCE3",
-                  borderRadius: "8px",
-                  padding: "16px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    color: "#6B7388",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.05em",
-                  }}
-                >
-                  Your login credentials
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                  <CredentialRow
-                    label="Store slug"
-                    value={storeSlug}
-                    copied={copiedField === "slug"}
-                    onCopy={() => copyToClipboard(storeSlug, "slug")}
-                  />
-                  {ownerEmail && (
-                    <CredentialRow
-                      label="Login email"
-                      value={ownerEmail}
-                      copied={copiedField === "email"}
-                      onCopy={() => copyToClipboard(ownerEmail, "email")}
-                    />
-                  )}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
-                <a
-                  href={`https://dashboard.ello.services/login?slug=${storeSlug}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    background: "#3B63D4",
-                    color: "#FFFFFF",
-                    padding: "12px 22px",
-                    borderRadius: "8px",
-                    fontWeight: 600,
-                    fontSize: "15px",
-                    textDecoration: "none",
-                    boxShadow: "0 4px 12px rgba(59, 99, 212, 0.25)",
-                  }}
-                >
-                  Open Ello Dashboard →
-                </a>
-                <span style={{ fontSize: "13px", color: "#6B7388" }}>
-                  Tip: bookmark the dashboard for quick access.
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
+        {/* ── KPI row ── */}
+        <InlineGrid columns={{ xs: 1, sm: 3 }} gap="400">
+          <KpiTile label="Total try-ons" value={totalTryons.toLocaleString()} delta={tryonsDelta} hint={`Last ${RANGE_DAYS[range]} days`} />
+          <KpiTile
+            label="Cart conversion"
+            value={cartConversionPct != null ? `${cartConversionPct}%` : "—"}
+            hint="Try-on sessions that added to cart"
+          />
+          <KpiTile label="Cart adds" value={totalCartAdds.toLocaleString()} delta={cartsDelta} hint="After a try-on" />
+        </InlineGrid>
 
         <Layout>
-          {/* ── Plan & Usage strip ── */}
+          {/* ── Plan & usage ── */}
           {effectiveHasPlan && (
             <Layout.Section>
               <Card>
@@ -567,7 +549,7 @@ export default function Index() {
             </Layout.Section>
           )}
 
-          {/* ── Storefront status (widget + system) ── */}
+          {/* ── Storefront status ── */}
           <Layout.Section>
             <Card>
               <BlockStack gap="400">
@@ -618,13 +600,78 @@ export default function Index() {
           </Layout.Section>
         </Layout>
 
+        {/* ── Recent shopper sessions ── */}
+        <Card padding="500">
+          <BlockStack gap="400">
+            <InlineStack align="space-between" blockAlign="center">
+              <BlockStack gap="100">
+                <Text as="h2" variant="headingMd">Recent sessions</Text>
+                <Text as="p" variant="bodySm" tone="subdued">The latest shoppers to use the widget · last 7 days</Text>
+              </BlockStack>
+              <Button variant="plain" onClick={() => navigate("/app/analytics")}>View all analytics</Button>
+            </InlineStack>
+            {recent.length === 0 ? (
+              <Box paddingBlock="300">
+                <Text as="p" tone="subdued">No shopper sessions yet. They&apos;ll appear here as soon as someone opens the widget.</Text>
+              </Box>
+            ) : (
+              <BlockStack gap="200">
+                {recent.map((s) => (
+                  <div
+                    key={s.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      border: `1px solid ${brand.ink100}`,
+                      borderRadius: 12,
+                      padding: "10px 14px",
+                    }}
+                  >
+                    <BlockStack gap="050">
+                      <Text as="span" variant="bodySm" fontWeight="medium">
+                        {s.products.length > 0
+                          ? s.products.map((p) => recentProductNames[p] ?? p).join(", ")
+                          : "Browsed the widget"}
+                      </Text>
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        {timeAgo(s.lastAt)}
+                        {s.device ? ` · ${s.device}` : ""}
+                        {s.tryonCount > 0 ? ` · ${s.tryonCount} try-on${s.tryonCount === 1 ? "" : "s"}` : ""}
+                      </Text>
+                    </BlockStack>
+                    <InlineStack gap="200" blockAlign="center">
+                      {s.revenue > 0 && (
+                        <Text as="span" variant="bodySm" fontWeight="semibold">{money(s.revenue)}</Text>
+                      )}
+                      <Badge
+                        tone={s.outcome === "purchased" ? "success" : s.outcome === "carted" ? "info" : undefined}
+                      >
+                        {s.outcome === "purchased"
+                          ? "Purchased"
+                          : s.outcome === "carted"
+                            ? "Added to cart"
+                            : s.outcome === "tried"
+                              ? "Tried on"
+                              : "Browsed"}
+                      </Badge>
+                    </InlineStack>
+                  </div>
+                ))}
+              </BlockStack>
+            )}
+          </BlockStack>
+        </Card>
+
+        {/* ── Rate Ello ── */}
+        <RateCard />
+
         {/* ── Slim support footer ── */}
         <Box paddingBlockStart="200" paddingBlockEnd="400">
           <InlineStack align="center" gap="300" blockAlign="center">
             <Text as="span" variant="bodySm" tone="subdued">Need help?</Text>
-            <Link url="https://dashboard.ello.services" target="_blank">Documentation</Link>
-            <Text as="span" variant="bodySm" tone="subdued">·</Text>
-            <Link url="mailto:support@ello.services" target="_blank">Contact support</Link>
+            <Link url={`mailto:${SUPPORT_EMAIL}`}>Contact support</Link>
             <Text as="span" variant="bodySm" tone="subdued">·</Text>
             <Button variant="plain" onClick={handleRetrySync} loading={isLoading}>
               Run sync test
@@ -636,72 +683,76 @@ export default function Index() {
   );
 }
 
-function CredentialRow({
-  label,
-  value,
-  copied,
-  onCopy,
-}: {
-  label: string;
-  value: string;
-  copied: boolean;
-  onCopy: () => void;
-}) {
+// ─── Relative time for the recent-sessions list ────────────────────────────
+function timeAgo(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+// ─── Rate-the-app card ──────────────────────────────────────────────────────
+// Light review-gating: 4–5 stars → App Store review modal; 1–3 → email feedback.
+function RateCard() {
+  const [hover, setHover] = useState(0);
+  const [picked, setPicked] = useState(0);
+
+  const choose = (n: number) => {
+    setPicked(n);
+    if (n >= 4) {
+      window.open(REVIEW_URL, "_blank");
+    } else {
+      const subject = encodeURIComponent("Ello feedback");
+      const body = encodeURIComponent("How can we make Ello better for your store?");
+      window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`;
+    }
+  };
+
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "12px",
-        padding: "10px 12px",
-        background: "#F6F7F9",
-        border: "1px solid #ECEEF3",
-        borderRadius: "6px",
-      }}
-    >
-      <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0, flex: 1 }}>
-        <span
-          style={{
-            fontSize: "11px",
-            color: "#6B7388",
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-          }}
-        >
-          {label}
-        </span>
-        <span
-          style={{
-            fontSize: "14px",
-            color: "#0B1220",
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {value}
-        </span>
-      </div>
-      <button
-        type="button"
-        onClick={onCopy}
-        style={{
-          background: copied ? "#17A673" : "#F4F7FE",
-          border: `1px solid ${copied ? "#17A673" : "#D2DDFB"}`,
-          color: copied ? "#FFFFFF" : "#2544A3",
-          padding: "6px 12px",
-          borderRadius: "6px",
-          fontSize: "12px",
-          fontWeight: 500,
-          cursor: "pointer",
-          transition: "background 0.15s",
-          whiteSpace: "nowrap",
-        }}
-      >
-        {copied ? "Copied!" : "Copy"}
-      </button>
-    </div>
+    <Card>
+      <InlineStack align="space-between" blockAlign="center" wrap>
+        <BlockStack gap="100">
+          <Text as="h2" variant="headingMd">Enjoying Ello?</Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            {picked === 0
+              ? "Rate your experience — it helps other merchants find us."
+              : picked >= 4
+                ? "Thank you! A review means the world to a small team."
+                : "Thanks — we'd love to hear how we can improve."}
+          </Text>
+        </BlockStack>
+        <InlineStack gap="100" blockAlign="center">
+          {[1, 2, 3, 4, 5].map((n) => {
+            const active = (hover || picked) >= n;
+            return (
+              <button
+                key={n}
+                type="button"
+                aria-label={`Rate ${n} star${n === 1 ? "" : "s"}`}
+                onMouseEnter={() => setHover(n)}
+                onMouseLeave={() => setHover(0)}
+                onClick={() => choose(n)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 26,
+                  lineHeight: 1,
+                  padding: "2px",
+                  color: active ? "#E2A93A" : "#D8DCE3",
+                  transition: "color 120ms ease",
+                }}
+              >
+                ★
+              </button>
+            );
+          })}
+        </InlineStack>
+      </InlineStack>
+    </Card>
   );
 }

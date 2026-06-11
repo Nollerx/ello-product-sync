@@ -20,10 +20,20 @@ declare global {
     shopify?: {
       resourcePicker: (options: {
         type: "product" | "collection" | "variant";
-        multiple?: boolean;
+        multiple?: boolean | number;
         selectionIds?: Array<{ id: string }>;
         action?: "select" | "add";
-      }) => Promise<Array<{ id: string; title?: string; handle?: string }> | undefined>;
+      }) => Promise<
+        | Array<{
+            id: string;
+            title?: string;
+            handle?: string;
+            productType?: string;
+            images?: Array<{ originalSrc?: string; src?: string; url?: string }>;
+            variants?: Array<{ price?: string | number }>;
+          }>
+        | undefined
+      >;
     };
   }
 

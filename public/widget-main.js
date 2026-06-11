@@ -6516,10 +6516,10 @@ function renderInlineModeResultCtas() {
     const ctas = document.createElement('div');
     ctas.id = 'ello-inline-result-ctas';
 
-    // Try another photo only makes sense in inline-button mode — the
-    // floating widget already has its own TRY ON button in the action row,
-    // so a second "Try another photo" button would just be a duplicate.
-    const showTryAnother = !!window.ELLO_INLINE_MODE;
+    // "Try on more" only makes sense in inline-button mode — it hands the
+    // shopper from the focused PDP experience to the full widget (featured,
+    // quick picks, wardrobe). The floating widget is already the full widget.
+    const showTryMore = !!window.ELLO_INLINE_MODE;
 
     const priceLabel = derivePriceLabel();
     ctas.innerHTML = `
@@ -6530,9 +6530,9 @@ function renderInlineModeResultCtas() {
             <button class="ello-inline-btn ello-inline-btn-primary" id="ello-inline-add-to-cart-btn">
                 Add to Cart${priceLabel}
             </button>
-            ${showTryAnother ? `
-            <button class="ello-inline-btn ello-inline-btn-secondary" id="ello-inline-try-another-btn">
-                Try another photo
+            ${showTryMore ? `
+            <button class="ello-inline-btn ello-inline-btn-secondary" id="ello-inline-try-more-btn">
+                Try on more
             </button>` : ''}
         </div>
         <div id="ello-inline-cart-error" style="display:none;"></div>
@@ -6540,17 +6540,23 @@ function renderInlineModeResultCtas() {
     resultSection.appendChild(ctas);
 
     document.getElementById('ello-inline-add-to-cart-btn').addEventListener('click', addToCartFromTryOn);
-    const tryAnotherBtn = document.getElementById('ello-inline-try-another-btn');
-    if (tryAnotherBtn) {
-        tryAnotherBtn.addEventListener('click', function () {
-            // Reset to upload-photo state without closing the popup
-            const photoInput = document.getElementById('photoInput');
-            if (photoInput) photoInput.value = '';
-            if (typeof resetPhotoUploadArea === 'function') resetPhotoUploadArea();
+    const tryMoreBtn = document.getElementById('ello-inline-try-more-btn');
+    if (tryMoreBtn) {
+        tryMoreBtn.addEventListener('click', function () {
+            // Hand off from the focused inline experience to the full widget —
+            // featured item, quick picks, browse, and wardrobe. The shopper's
+            // photo stays loaded; they can still change it from there if they
+            // want, but we don't push them to.
+            window.ELLO_INLINE_MODE = false;
+            window.ELLO_AUTO_FIRE = false;
+            window.ELLO_INLINE_CTX = null;
             const rs = document.getElementById('resultSection');
             if (rs) rs.style.display = 'none';
             const w = document.getElementById('virtualTryonWidget');
-            if (w) w.classList.remove('inline-mode-result-ready');
+            if (w) {
+                w.classList.remove('inline-mode', 'inline-mode-result-ready');
+                w.scrollTop = 0;
+            }
             ctas.remove();
         });
     }
@@ -6984,40 +6990,88 @@ function elloMaybeShowLeadCapture(garment) {
     }
 }
 
+// Brand palette mirrors vault Brand-Palette.md: crisp blue + ink + lots of
+// white, editorial. The CTA uses the merchant's widget accent so it feels
+// native to their store; everything else is the Ello landing-page look.
+function elloLeadReadableTextOn(hex) {
+    try {
+        var h = String(hex || '').replace('#', '');
+        if (h.length !== 6) return '#FFFFFF';
+        var r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+        return ((0.299 * r + 0.587 * g + 0.114 * b) / 255) > 0.62 ? '#0B1220' : '#FFFFFF';
+    } catch (e) { return '#FFFFFF'; }
+}
+
 function showElloLeadCaptureModal(garment) {
     if (document.getElementById('ello-lead-capture-overlay')) return;
 
     const cfg = window.ELLO_STORE_CONFIG || {};
     const accent = cfg.widgetPrimaryColor || cfg.minimizedColor || '#111827';
+    const accentText = elloLeadReadableTextOn(accent);
     const slug = elloLeadStoreSlug();
     const markDone = () => { try { window.localStorage.setItem('ello_lead_captured_' + slug, '1'); } catch (e) {} };
+    const garmentImg = (garment && (garment.image_url || garment.image)) || null;
+
+    // One-time keyframes for the fade/pop entrance.
+    if (!document.getElementById('ello-lead-capture-style')) {
+        const styleEl = document.createElement('style');
+        styleEl.id = 'ello-lead-capture-style';
+        styleEl.textContent =
+            '@keyframes elloLeadFade{from{opacity:0}to{opacity:1}}' +
+            '@keyframes elloLeadPop{from{opacity:0;transform:translateY(16px) scale(.96)}to{opacity:1;transform:none}}' +
+            '#ello-lead-email::placeholder{color:#9098A8;}';
+        document.head.appendChild(styleEl);
+    }
 
     const overlay = document.createElement('div');
     overlay.id = 'ello-lead-capture-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(11,18,32,0.55);padding:16px;';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Save your try-on results');
+    overlay.style.cssText =
+        'position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;' +
+        'background:rgba(11,18,32,0.62);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);' +
+        'padding:16px;animation:elloLeadFade 220ms ease;';
 
     const card = document.createElement('div');
-    card.style.cssText = 'background:#fff;border-radius:14px;max-width:380px;width:100%;padding:24px;box-shadow:0 12px 40px rgba(0,0,0,0.25);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+    card.style.cssText =
+        'position:relative;background:#FFFFFF;border-radius:20px;max-width:400px;width:100%;overflow:hidden;' +
+        'box-shadow:0 24px 70px rgba(11,18,32,0.35);text-align:center;' +
+        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+        'animation:elloLeadPop 260ms cubic-bezier(.2,.9,.3,1.1);';
     card.innerHTML =
-        '<div style="font-size:18px;font-weight:700;color:#0B1220;margin-bottom:6px;">Want your try-on results?</div>' +
-        '<div style="font-size:14px;color:#434D63;line-height:1.5;margin-bottom:16px;">Enter your email to save your looks and get the occasional update.</div>' +
-        '<input id="ello-lead-email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #D8DCE3;border-radius:8px;font-size:15px;margin-bottom:10px;outline:none;" />' +
-        '<div id="ello-lead-error" style="display:none;color:#D94E4E;font-size:12px;margin-bottom:8px;"></div>' +
-        '<button id="ello-lead-submit" type="button" style="width:100%;padding:12px;border:none;border-radius:8px;background:' + accent + ';color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Save my results</button>' +
-        '<button id="ello-lead-skip" type="button" style="width:100%;padding:10px;margin-top:8px;border:none;background:transparent;color:#6B7388;font-size:13px;cursor:pointer;">No thanks</button>';
+        '<button id="ello-lead-close" type="button" aria-label="Close" style="position:absolute;top:12px;right:12px;width:30px;height:30px;border-radius:50%;border:1px solid #ECEEF3;background:#FFFFFF;color:#6B7388;font-size:15px;line-height:1;cursor:pointer;padding:0;z-index:1;">×</button>' +
+        '<div style="background:linear-gradient(170deg,#F4F7FE 0%,#E8EEFD 55%,#FFFFFF 100%);padding:30px 26px 18px;">' +
+            (garmentImg
+                ? '<img src="' + String(garmentImg).replace(/"/g, '&quot;') + '" alt="" style="width:84px;height:106px;object-fit:cover;border-radius:14px;border:3px solid #FFFFFF;box-shadow:0 10px 26px rgba(11,18,32,0.18);transform:rotate(-2deg);" />'
+                : '<div style="width:64px;height:64px;border-radius:50%;margin:0 auto;background:#FFFFFF;display:flex;align-items:center;justify-content:center;font-size:28px;box-shadow:0 10px 26px rgba(11,18,32,0.12);">✨</div>') +
+        '</div>' +
+        '<div style="padding:18px 26px 24px;">' +
+            '<div style="font-size:10px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#3B63D4;margin-bottom:8px;">Your virtual fitting room</div>' +
+            '<div style="font-size:21px;font-weight:800;letter-spacing:-0.01em;color:#0B1220;margin-bottom:7px;">Don&#39;t lose this look</div>' +
+            '<div style="font-size:13.5px;color:#434D63;line-height:1.55;margin-bottom:16px;">Enter your email and we&#39;ll keep your try-on results — plus you&#39;ll get first dibs on new drops.</div>' +
+            '<input id="ello-lead-email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" style="width:100%;box-sizing:border-box;padding:13px 15px;border:1.5px solid #D8DCE3;border-radius:12px;font-size:15px;color:#0B1220;outline:none;transition:border-color 140ms ease,box-shadow 140ms ease;" />' +
+            '<div id="ello-lead-error" style="display:none;color:#D94E4E;font-size:12px;margin-top:8px;text-align:left;"></div>' +
+            '<button id="ello-lead-submit" type="button" style="width:100%;box-sizing:border-box;padding:13px;margin-top:12px;border:none;border-radius:12px;background:' + accent + ';color:' + accentText + ';font-size:15px;font-weight:700;letter-spacing:0.01em;cursor:pointer;box-shadow:0 8px 22px rgba(11,18,32,0.18);">Save my looks</button>' +
+            '<div style="font-size:11px;color:#9098A8;margin-top:12px;">No spam, ever. Unsubscribe anytime.</div>' +
+        '</div>';
 
     overlay.appendChild(card);
     document.body.appendChild(overlay);
 
+    // Deliberate friction: the small × is the ONLY way out — no skip button,
+    // no backdrop click-to-dismiss. Entering an email stays one keystroke +
+    // Enter away.
     const close = () => { try { overlay.remove(); } catch (e) {} };
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) { markDone(); close(); } });
-    card.querySelector('#ello-lead-skip').addEventListener('click', () => { markDone(); close(); });
+    card.querySelector('#ello-lead-close').addEventListener('click', () => { markDone(); close(); });
 
     const input = card.querySelector('#ello-lead-email');
     const errEl = card.querySelector('#ello-lead-error');
-    setTimeout(() => { if (input) input.focus(); }, 50);
+    input.addEventListener('focus', () => { input.style.borderColor = '#3B63D4'; input.style.boxShadow = '0 0 0 3px #E8EEFD'; });
+    input.addEventListener('blur', () => { input.style.borderColor = '#D8DCE3'; input.style.boxShadow = 'none'; });
+    setTimeout(() => { if (input) input.focus(); }, 80);
 
-    card.querySelector('#ello-lead-submit').addEventListener('click', () => {
+    const submit = () => {
         const email = ((input && input.value) || '').trim();
         if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
             if (errEl) { errEl.textContent = 'Please enter a valid email.'; errEl.style.display = 'block'; }
@@ -7026,7 +7080,6 @@ function showElloLeadCaptureModal(garment) {
         // Mark done + set email locally first so the UX is instant; POST is fire-and-forget.
         markDone();
         userEmail = email;
-        close();
         try {
             const base = window.ELLO_WIDGET_BASE_URL || '';
             fetch(base + '/api/capture-lead', {
@@ -7043,7 +7096,18 @@ function showElloLeadCaptureModal(garment) {
         } catch (e) {
             console.warn('[Ello] lead capture POST threw:', e);
         }
-    });
+        // Brief success state, then dismiss.
+        card.innerHTML =
+            '<div style="padding:44px 26px 40px;">' +
+                '<div style="width:56px;height:56px;border-radius:50%;margin:0 auto 14px;background:#E8EEFD;display:flex;align-items:center;justify-content:center;font-size:26px;">🎉</div>' +
+                '<div style="font-size:20px;font-weight:800;color:#0B1220;margin-bottom:6px;">You&#39;re in</div>' +
+                '<div style="font-size:13.5px;color:#434D63;">We&#39;ll keep your looks safe.</div>' +
+            '</div>';
+        setTimeout(close, 1400);
+    };
+
+    card.querySelector('#ello-lead-submit').addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 }
 
 // Wire Try On button event listener - retry until widget is injected

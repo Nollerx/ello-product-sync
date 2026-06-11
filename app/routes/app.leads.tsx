@@ -3,10 +3,9 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import {
   Page,
-  Layout,
   Card,
   BlockStack,
-  InlineStack,
+  InlineGrid,
   Text,
   Checkbox,
   TextField,
@@ -17,6 +16,7 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
+import { SectionHeading, Stat } from "../components/ui";
 
 interface LeadRow {
   email: string;
@@ -141,88 +141,73 @@ export default function Leads() {
   return (
     <Page
       title="Leads"
-      subtitle="Capture shopper emails from the Try-On flow."
-      primaryAction={{ content: "Save", onAction: handleSave, loading: saving, disabled: !dirty }}
+      subtitle="Turn try-on sessions into a growing email list."
+      primaryAction={{ content: "Save changes", onAction: handleSave, loading: saving, disabled: !dirty }}
       secondaryActions={[{ content: "Export CSV", onAction: exportCsv, disabled: initial.leads.length === 0 }]}
     >
-      <BlockStack gap="400">
+      <BlockStack gap="500">
         {saved && !dirty && <Banner tone="success">Settings saved. The widget updates on shoppers&apos; next visit.</Banner>}
         {saveError && <Banner tone="critical">{saveError}</Banner>}
         {!initial.hasStore && (
           <Banner tone="warning">We couldn&apos;t find your store record yet. Finish onboarding to capture leads.</Banner>
         )}
 
-        <Layout>
-          <Layout.Section>
-            <BlockStack gap="400">
-              <Card>
-                <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">Email capture</Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Show shoppers a one-time, dismissible prompt to enter their email while they try things on.
-                    It never blocks the try-on result.
-                  </Text>
-                  <Checkbox
-                    label="Capture emails from shoppers"
-                    checked={enabled}
-                    onChange={setEnabled}
-                  />
-                  <Box maxWidth="260px">
-                    <TextField
-                      label="Ask after this many try-ons"
-                      type="number"
-                      value={afterN}
-                      onChange={setAfterN}
-                      autoComplete="off"
-                      min={1}
-                      max={10}
-                      disabled={!enabled}
-                      helpText="1 asks after the first try-on. Higher numbers let shoppers try a few looks first."
-                    />
-                  </Box>
-                </BlockStack>
-              </Card>
+        <InlineGrid columns={{ xs: "1fr", sm: "1fr 1fr" }} gap="400">
+          <Stat label="Total leads" value={initial.total.toLocaleString()} hint="All time" accent />
+          <Stat
+            label="Capture"
+            value={initial.enabled ? "On" : "Off"}
+            hint={initial.enabled ? `After ${initial.afterN} try-on${initial.afterN === 1 ? "" : "s"}` : "Currently disabled"}
+          />
+        </InlineGrid>
 
-              <Card>
-                <BlockStack gap="300">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text as="h2" variant="headingMd">Captured emails</Text>
-                    {initial.leads.length > 0 && (
-                      <Button variant="plain" onClick={exportCsv}>Export CSV</Button>
-                    )}
-                  </InlineStack>
-                  {tableRows.length === 0 ? (
-                    <Text as="p" tone="subdued">
-                      No emails captured yet. Turn on email capture above and they&apos;ll appear here.
-                    </Text>
-                  ) : (
-                    <DataTable
-                      columnContentTypes={["text", "text", "text"]}
-                      headings={["Email", "Captured", "Source"]}
-                      rows={tableRows}
-                    />
-                  )}
-                </BlockStack>
-              </Card>
-            </BlockStack>
-          </Layout.Section>
+        <Card padding="500">
+          <BlockStack gap="400">
+            <SectionHeading
+              eyebrow="Capture"
+              title="Email capture"
+              description="A one-time, dismissible prompt while shoppers try things on. It never blocks the result."
+            />
+            <Checkbox label="Capture emails from shoppers" checked={enabled} onChange={setEnabled} />
+            <Box maxWidth="280px">
+              <TextField
+                label="Ask after this many try-ons"
+                type="number"
+                value={afterN}
+                onChange={setAfterN}
+                autoComplete="off"
+                min={1}
+                max={10}
+                disabled={!enabled}
+                helpText="1 asks after the first try-on. Higher lets shoppers explore a few looks first."
+              />
+            </Box>
+          </BlockStack>
+        </Card>
 
-          <Layout.Section variant="oneThird">
-            <Card>
-              <BlockStack gap="100">
-                <Text as="span" variant="bodySm" tone="subdued">Total leads</Text>
-                <Text as="span" variant="headingXl">{initial.total.toLocaleString()}</Text>
-                <Box paddingBlockStart="200">
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {initial.leads.length >= 500
-                      ? "Showing the 500 most recent. Export CSV for the full list."
-                      : "All captured emails are shown."}
-                  </Text>
-                </Box>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-        </Layout>
+        <Card padding="500">
+          <BlockStack gap="400">
+            <SectionHeading
+              eyebrow="Your list"
+              title="Captured emails"
+              action={initial.leads.length > 0 ? <Button variant="plain" onClick={exportCsv}>Export CSV</Button> : undefined}
+            />
+            {tableRows.length === 0 ? (
+              <Box paddingBlock="400">
+                <Text as="p" tone="subdued">No emails captured yet. Turn on capture above and they&apos;ll appear here.</Text>
+              </Box>
+            ) : (
+              <DataTable
+                columnContentTypes={["text", "text", "text"]}
+                headings={["Email", "Captured", "Source"]}
+                rows={tableRows}
+              />
+            )}
+            {initial.leads.length >= 500 && (
+              <Text as="p" variant="bodySm" tone="subdued">Showing the 500 most recent. Export CSV for the full list.</Text>
+            )}
+          </BlockStack>
+        </Card>
       </BlockStack>
     </Page>
   );
