@@ -228,6 +228,185 @@ export function LineSeries({
   );
 }
 
+// ─── Multi-series daily trend (try-ons + cart adds + conversion line) ───────
+// Counts (try-ons, carts) share the left scale; a rate series (conversion %)
+// rides its own right scale and renders dashed. Hover reads out every series.
+type TrendSeries = {
+  label: string;
+  color: string;
+  values: number[];
+  dashed?: boolean;
+  area?: boolean;
+  axis?: "left" | "right";
+  suffix?: string;
+};
+
+export function TrendChart({
+  days,
+  series,
+  height = 180,
+}: {
+  days: string[];
+  series: TrendSeries[];
+  height?: number;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const gradId = useId().replace(/:/g, "");
+
+  const n = days.length;
+
+  if (n === 0) {
+    return (
+      <div style={{ height, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: brand.ink500 }}>
+        No data for this period yet.
+      </div>
+    );
+  }
+
+  const leftMax = Math.max(1, ...series.filter((s) => (s.axis ?? "left") === "left").flatMap((s) => s.values));
+  const rightMax = Math.max(1, ...series.filter((s) => s.axis === "right").flatMap((s) => s.values));
+  const xFor = (i: number) => (n > 1 ? (i / (n - 1)) * 100 : 50);
+  const yFor = (s: TrendSeries, c: number) => 8 + (1 - c / (s.axis === "right" ? rightMax : leftMax)) * 86;
+
+  const move = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const rect = boxRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return;
+    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    setHover(Math.round(frac * (n - 1)));
+  };
+
+  const hx = hover != null ? xFor(hover) : 0;
+  const tipAlign = hx < 16 ? "0%" : hx > 84 ? "-100%" : "-50%";
+
+  return (
+    <BlockStack gap="300">
+      <InlineStack gap="400">
+        {series.map((s) => (
+          <span key={s.label} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: brand.ink600 }}>
+            <svg width="18" height="8" aria-hidden style={{ overflow: "visible", flexShrink: 0 }}>
+              <line
+                x1="0"
+                y1="4"
+                x2="18"
+                y2="4"
+                stroke={s.color}
+                strokeWidth={2.5}
+                strokeDasharray={s.dashed ? "3 2" : undefined}
+                strokeLinecap="round"
+              />
+            </svg>
+            {s.label}
+          </span>
+        ))}
+      </InlineStack>
+
+      <div
+        ref={boxRef}
+        onMouseMove={move}
+        onMouseLeave={() => setHover(null)}
+        style={{ position: "relative", height, cursor: "crosshair" }}
+      >
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block", overflow: "visible" }}
+          aria-hidden
+        >
+          <defs>
+            {series.map((s, si) =>
+              s.area ? (
+                <linearGradient key={si} id={`${gradId}-${si}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={s.color} stopOpacity="0.16" />
+                  <stop offset="100%" stopColor={s.color} stopOpacity="0.02" />
+                </linearGradient>
+              ) : null,
+            )}
+          </defs>
+
+          <line x1="0" y1="100" x2="100" y2="100" stroke={brand.ink100} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+
+          {series.map((s, si) => {
+            const pts = s.values.map((v, i) => [xFor(i), yFor(s, v)] as [number, number]);
+            const linePath = smoothPath(pts);
+            return (
+              <g key={si}>
+                {s.area && <path d={`${linePath} L 100 100 L 0 100 Z`} fill={`url(#${gradId}-${si})`} stroke="none" />}
+                <path
+                  d={linePath}
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth={2}
+                  strokeDasharray={s.dashed ? "4 3" : undefined}
+                  vectorEffect="non-scaling-stroke"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </g>
+            );
+          })}
+        </svg>
+
+        {hover != null && (
+          <>
+            <div style={{ position: "absolute", top: 4, bottom: 0, left: `${hx}%`, width: 1, background: brand.ink200, pointerEvents: "none" }} />
+            {series.map((s, si) => {
+              const y = yFor(s, s.values[hover] ?? 0);
+              return (
+                <div
+                  key={si}
+                  style={{
+                    position: "absolute",
+                    left: `${hx}%`,
+                    top: (y / 100) * height,
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: brand.white,
+                    border: `2px solid ${s.color}`,
+                    transform: "translate(-50%, -50%)",
+                    pointerEvents: "none",
+                  }}
+                />
+              );
+            })}
+            <div
+              style={{
+                position: "absolute",
+                left: `${hx}%`,
+                top: 6,
+                transform: `translate(${tipAlign}, 0)`,
+                background: brand.ink,
+                color: brand.white,
+                borderRadius: 8,
+                padding: "7px 10px",
+                fontSize: 11,
+                lineHeight: 1.5,
+                whiteSpace: "nowrap",
+                pointerEvents: "none",
+                boxShadow: "0 4px 14px rgba(11,18,32,0.22)",
+                zIndex: 3,
+              }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: 2 }}>{prettyDay(days[hover])}</div>
+              {series.map((s) => (
+                <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: s.color, display: "inline-block", flexShrink: 0 }} />
+                  <span style={{ opacity: 0.85 }}>{s.label}:</span>
+                  <span style={{ fontWeight: 700 }}>
+                    {(s.values[hover] ?? 0).toLocaleString()}
+                    {s.suffix ?? ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </BlockStack>
+  );
+}
+
 // ─── Horizontal funnel bar ──────────────────────────────────────────────────
 export function FunnelBar({ label, value, max }: { label: string; value: number; max: number }) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;

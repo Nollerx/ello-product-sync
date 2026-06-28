@@ -63,7 +63,7 @@ const shopify = shopifyApp({
 
         // 3. Provision Supabase merchant records so the store is auto-connected
         //    Uses "custom_distribution" when SKIP_BILLING is enabled (custom distribution — billed via Stripe)
-        //    Otherwise uses "developer_free" as the provisional plan (idempotent — billing confirm will upgrade it).
+        //    Otherwise uses "developer_free" as the provisional plan (idempotent — the billing gate in app.tsx will upgrade it).
         try {
           const provisionPlan = process.env.SKIP_BILLING === "true" ? "custom_distribution" : "ello_free";
           const shopQuery = await admin.graphql(`query { shop { email } }`);

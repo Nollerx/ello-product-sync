@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useNavigate } from "react-router";
+import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "react-router";
 import {
   Page,
   Layout,
@@ -18,6 +18,9 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
+import { getThemeWidgetStatus, persistThemeStatus } from "../lib/theme-status.server";
+import { getAppEmbedEditorUrl, getInlineTryOnBlockEditorUrl } from "../lib/onboarding.server";
+import { InlineButtonPlacementHelp } from "../components/inline-placement-help";
 import { getPlanConfig } from "../lib/shopify-billing.server";
 import { resolveStorefront } from "../lib/storefront-names.server";
 import { brand } from "../components/ui";
@@ -41,9 +44,14 @@ const REVIEW_URL = "https://apps.shopify.com/ello-virtual-try-on#modal-show=Revi
 const SUPPORT_EMAIL = "support@ello.services";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const url = new URL(request.url);
   const apiKey = process.env.SHOPIFY_API_KEY;
+
+  // Read the LIVE published theme to learn whether our placements are actually
+  // on (source of truth — the old `widget_enabled` flag never reflected this).
+  // Kicked off here so it runs in parallel with the metrics queries below.
+  const themeStatusPromise = getThemeWidgetStatus(admin);
 
   // Step 1: Store data
   const { data: storeData } = await supabaseAdmin
@@ -152,6 +160,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     );
   }
 
+  // Resolve the live theme read (kicked off at the top) and cache it so other
+  // surfaces can show last-known state without their own theme call.
+  const themeStatus = await themeStatusPromise;
+  persistThemeStatus(session.shop, themeStatus).catch((e) =>
+    console.warn("[Dashboard] theme status cache write failed:", e),
+  );
+
   const skipBilling = process.env.SKIP_BILLING === "true";
   const billingActivationPending = url.searchParams.get("billing") === "activating";
   const pendingPlanKey = url.searchParams.get("plan");
@@ -163,7 +178,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shop: session.shop,
     apiKey,
     storeSlug: slug,
-    widgetEnabled: storeData?.widget_enabled ?? false,
+    // Live theme-derived status (source of truth) — see theme-status.server.ts.
+    themeStatusOk: themeStatus.ok,
+    themeStatusReason: themeStatus.reason,
+    appEmbedEnabled: themeStatus.appEmbedEnabled,
+    appEmbedPresentButDisabled: themeStatus.appEmbedPresentButDisabled,
+    inlineButtonAdded: themeStatus.inlineButtonAdded,
+    appEmbedDeepLink: getAppEmbedEditorUrl(session.shop),
+    inlineButtonDeepLink: getInlineTryOnBlockEditorUrl(session.shop),
     storeConnected: !!(storeData?.storefront_token),
     hasPlan: !!planDisplayName,
     planDisplayName,
@@ -197,8 +219,10 @@ export const action = async () => {
 export default function Index() {
   const navigate = useNavigate();
   const {
-    shop, apiKey,
-    widgetEnabled, storeConnected, hasPlan,
+    themeStatusOk, themeStatusReason,
+    appEmbedEnabled, appEmbedPresentButDisabled, inlineButtonAdded,
+    appEmbedDeepLink, inlineButtonDeepLink,
+    storeConnected, hasPlan,
     planDisplayName, planKey, includedTryons, tryonsUsed, periodEnd,
     skipBilling, billingActivationPending, pendingPlanDisplayName,
     range, attributedRevenue, purchaseConversionPct, cartConversionPct,
@@ -206,6 +230,15 @@ export default function Index() {
     revenueDelta, tryonsDelta, cartsDelta,
     recent, recentProductNames, currencyCode,
   } = useLoaderData<typeof loader>();
+
+  // Derived live-status booleans. null = couldn't read the theme (e.g. the
+  // read_themes scope isn't granted yet, or a vintage .liquid product template).
+  const appEmbedOn = appEmbedEnabled === true;
+  const inlineOn = inlineButtonAdded === true;
+  // The storefront is "live" once at least one placement is actually on.
+  const storefrontLive = appEmbedOn || inlineOn;
+  const themeUnreadable = !themeStatusOk;
+  const scopeMissing = themeStatusReason === "missing_scope";
 
   const syncFetcher = useFetcher();
   const [hasAutoSynced, setHasAutoSynced] = useState(false);
@@ -218,11 +251,22 @@ export default function Index() {
     }
   }, [syncFetcher.state, hasAutoSynced, syncFetcher.data]);
 
-  const openThemeEditor = () => {
-    const storeHandle = shop.replace(".myshopify.com", "");
-    const deepLink = `https://admin.shopify.com/store/${storeHandle}/themes/current/editor?context=apps&app_id=${apiKey}`;
-    window.open(deepLink, "_blank");
-  };
+  // Theme-editor deep links: one opens the App embeds panel with our embed
+  // pre-selected; the other drops the inline button onto the product template.
+  const openAppEmbed = () => window.open(appEmbedDeepLink, "_blank", "noopener");
+  const openInlineSetup = () => window.open(inlineButtonDeepLink, "_blank", "noopener");
+
+  // Re-read the live theme status when the merchant returns from the editor
+  // tab. Lightweight — revalidate re-runs the loader (which reads the theme),
+  // no full page reload.
+  const statusRevalidator = useRevalidator();
+  useEffect(() => {
+    function onFocus() {
+      if (statusRevalidator.state === "idle") statusRevalidator.revalidate();
+    }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [statusRevalidator]);
 
   const handleRetrySync = () => {
     syncFetcher.submit(null, { method: "POST", action: "/api/sync-token" });
@@ -263,7 +307,7 @@ export default function Index() {
   // Onboarding checklist: show until all 3 steps complete
   const effectiveHasPlan = hasPlan || skipBilling;
   const showBillingActivationPending = billingActivationPending && !hasPlan && !skipBilling;
-  const allOnboarded = effectiveHasPlan && storeConnected && widgetEnabled;
+  const allOnboarded = effectiveHasPlan && storeConnected && storefrontLive;
   const activationRefreshLimitReached =
     showBillingActivationPending && activationRefreshCount >= MAX_ACTIVATION_REFRESH_ATTEMPTS;
   const pendingPlanLabel = pendingPlanDisplayName ? `${pendingPlanDisplayName} plan` : "your plan";
@@ -296,6 +340,69 @@ export default function Index() {
 
     return () => window.clearTimeout(timeoutId);
   }, [showBillingActivationPending]);
+
+  // ── Live storefront placement rows (inline button + floating embed) ──
+  // The app embed is the engine — it powers every try-on, so it leads (see embedRow).
+  const inlineRow: PlacementRowProps = inlineOn
+    ? {
+        tone: "on",
+        label: "Inline Try-On button is on your product page",
+        actionLabel: "Open editor",
+        onAction: openInlineSetup,
+      }
+    : inlineButtonAdded === false
+      ? {
+          tone: "off",
+          label: "Inline Try-On button isn't on your product page",
+          helper: "Your main conversion placement — one click adds it.",
+          actionLabel: "Add button",
+          onAction: openInlineSetup,
+        }
+      : {
+          tone: "unknown",
+          label: "Inline Try-On button — couldn't verify",
+          helper: scopeMissing
+            ? "Reload above so Ello can verify your theme."
+            : "We can't auto-detect it on this theme. Use the button to add it if it isn't there.",
+          actionLabel: "Add button",
+          onAction: openInlineSetup,
+        };
+
+  // The Ello app embed is the engine: it loads the widget on your storefront
+  // and powers every try-on (the inline button included). So it leads, and its
+  // CTA reassures merchants the only step is Save.
+  const embedRow: PlacementRowProps = appEmbedOn
+    ? {
+        tone: "on",
+        label: "Ello widget is on — powering try-ons across your store",
+        actionLabel: "Open theme editor",
+        onAction: openAppEmbed,
+      }
+    : appEmbedPresentButDisabled
+      ? {
+          tone: "off",
+          label: "Ello widget is turned off in your theme",
+          helper: "Click Turn on — we re-enable it for you, then just click Save in the editor.",
+          actionLabel: "Turn on",
+          onAction: openAppEmbed,
+        }
+      : appEmbedEnabled === false
+        ? {
+            tone: "off",
+            label: "Ello widget isn't turned on yet",
+            helper: "This powers every try-on. Click Turn on — we switch it on for you, then just click Save.",
+            actionLabel: "Turn on",
+            onAction: openAppEmbed,
+          }
+        : {
+            tone: "unknown",
+            label: "Couldn't check if the Ello widget is on",
+            helper: scopeMissing
+              ? "Reload above so Ello can verify your theme."
+              : "We couldn't read your theme just now — reload to retry.",
+            actionLabel: "Turn on",
+            onAction: openAppEmbed,
+          };
 
   // Status banner for sync card
   let statusBanner = <Banner tone="info">Checking connection status...</Banner>;
@@ -388,13 +495,15 @@ export default function Index() {
 
                 <InlineStack align="space-between" blockAlign="center">
                   <InlineStack gap="300" blockAlign="center">
-                    <Badge tone={widgetEnabled ? "success" : "attention"}>{widgetEnabled ? "✓" : "3"}</Badge>
-                    <Text as="span" variant="bodyMd" tone={widgetEnabled ? "subdued" : undefined}>
-                      Enable widget on storefront
+                    <Badge tone={storefrontLive ? "success" : "attention"}>{storefrontLive ? "✓" : "3"}</Badge>
+                    <Text as="span" variant="bodyMd" tone={storefrontLive ? "subdued" : undefined}>
+                      Turn on the Ello widget
                     </Text>
                   </InlineStack>
-                  {!widgetEnabled && (
-                    <Button onClick={openThemeEditor} size="slim">Enable Now</Button>
+                  {!storefrontLive && (
+                    <Button onClick={openAppEmbed} size="slim">
+                      {themeUnreadable ? "Set up" : "Turn on Ello"}
+                    </Button>
                   )}
                 </InlineStack>
               </BlockStack>
@@ -555,25 +664,36 @@ export default function Index() {
               <BlockStack gap="400">
                 <InlineStack align="space-between" blockAlign="center">
                   <Text as="h2" variant="headingMd">Storefront</Text>
-                  {!isLoading && (syncFetcher.data as { success?: boolean })?.success && widgetEnabled && (
+                  {!isLoading && themeStatusOk && storeConnected && storefrontLive && (
                     <Badge tone="success">All systems operational</Badge>
                   )}
                 </InlineStack>
 
-                <BlockStack gap="200">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <InlineStack gap="200" blockAlign="center">
-                      <Badge tone={widgetEnabled ? "success" : "attention"}>
-                        {widgetEnabled ? "✓" : "!"}
-                      </Badge>
-                      <Text as="span" variant="bodyMd">
-                        {widgetEnabled ? "Widget enabled on your storefront" : "Widget not yet enabled"}
-                      </Text>
-                    </InlineStack>
-                    <Button onClick={openThemeEditor} variant={widgetEnabled ? "plain" : "primary"} size="slim">
-                      {widgetEnabled ? "Open theme editor" : "Enable widget"}
-                    </Button>
-                  </InlineStack>
+                {themeUnreadable && (
+                  <Banner
+                    tone="warning"
+                    title={scopeMissing ? "Reload to verify your widget status" : "Couldn't read your theme"}
+                  >
+                    <Text as="p" variant="bodyMd">
+                      {scopeMissing
+                        ? "Ello now reads your live theme to confirm the Try-On button and widget are actually on. Reload this page to grant the one-time permission."
+                        : "We couldn't read your live theme just now, so the statuses below may be out of date. Reload to try again."}
+                    </Text>
+                    <Box paddingBlockStart="200">
+                      <Button onClick={() => window.location.reload()} variant="primary" size="slim">
+                        {scopeMissing ? "Reload & verify" : "Reload"}
+                      </Button>
+                    </Box>
+                  </Banner>
+                )}
+
+                <BlockStack gap="300">
+                  <PlacementRow {...embedRow} />
+                  <PlacementRow {...inlineRow} />
+
+                  {/* Plain-language guide for placing the inline button under
+                      Add-to-cart on nested themes (Horizon). Shared component. */}
+                  <InlineButtonPlacementHelp />
 
                   <InlineStack align="space-between" blockAlign="center">
                     <InlineStack gap="200" blockAlign="center">
@@ -592,7 +712,13 @@ export default function Index() {
                   </InlineStack>
                 </BlockStack>
 
-                {(isLoading || (syncFetcher.data && !(syncFetcher.data as { success?: boolean }).success)) && (
+                {/* Only surface the banner for a persistent error. The transient
+                    "Syncing…/Checking…" states are intentionally omitted: the
+                    connection badges above already convey status, and a banner
+                    that mounts mid-page after the sync fetcher resolves (then
+                    unmounts on success) reflows everything below it on every
+                    load — a recurring layout shift that hurts CLS. */}
+                {syncFetcher.data && !(syncFetcher.data as { success?: boolean }).success && (
                   <Box paddingBlockStart="200">{statusBanner}</Box>
                 )}
               </BlockStack>
@@ -680,6 +806,38 @@ export default function Index() {
         </Box>
       </BlockStack>
     </Page>
+  );
+}
+
+// ─── Storefront placement status row ───────────────────────────────────────
+type PlacementRowProps = {
+  tone: "on" | "off" | "unknown";
+  label: string;
+  helper?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+};
+
+function PlacementRow({ tone, label, helper, actionLabel, onAction }: PlacementRowProps) {
+  const badgeTone = tone === "on" ? "success" : tone === "off" ? "attention" : "warning";
+  const symbol = tone === "on" ? "✓" : tone === "off" ? "!" : "?";
+  return (
+    <InlineStack align="space-between" blockAlign="center" wrap={false} gap="300">
+      <InlineStack gap="200" blockAlign="center">
+        <Badge tone={badgeTone}>{symbol}</Badge>
+        <BlockStack gap="050">
+          <Text as="span" variant="bodyMd">{label}</Text>
+          {helper && (
+            <Text as="span" variant="bodySm" tone="subdued">{helper}</Text>
+          )}
+        </BlockStack>
+      </InlineStack>
+      {actionLabel && onAction && (
+        <Button onClick={onAction} variant={tone === "on" ? "plain" : "primary"} size="slim">
+          {actionLabel}
+        </Button>
+      )}
+    </InlineStack>
   );
 }
 

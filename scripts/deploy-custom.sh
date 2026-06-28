@@ -18,6 +18,7 @@ CUSTOM_URL="https://custom-ello-app-13593516897-13593516897.us-central1.run.app"
 FILES=(
   "extensions/ello-theme-extension/blocks/widget.liquid"
   "extensions/ello-theme-extension/blocks/inline-tryon-button.liquid"
+  "extensions/ello-theme-extension/blocks/fitting-room.liquid"
 )
 
 BACKUP_DIR="$(mktemp -d)"

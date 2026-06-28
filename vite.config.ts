@@ -55,8 +55,13 @@ export default defineConfig({
   ],
   build: {
     assetsInlineLimit: 0,
-    sourcemap: false, // SAVE MEMORY
-    minify: false,    // SAVE MEMORY
+    sourcemap: false,
+    // esbuild minify runs in its own Go process (cheap on the Node heap), so it
+    // stays within the 4GB build cap set in the Dockerfile. Shipping minified JS
+    // is the single biggest Core Web Vitals win here — it roughly halves the
+    // bytes the Shopify admin iframe must download, parse, and hydrate, which
+    // directly improves LCP and INP.
+    minify: "esbuild",
   },
   optimizeDeps: {
     include: ["@shopify/app-bridge-react"],

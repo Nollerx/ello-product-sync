@@ -2171,6 +2171,7 @@ let currentFeaturedItem = null;
 let isTryOnProcessing = false; // Track if try-on is currently processing
 let isRateLimited = false; // Track if user has hit rate limit
 let browserCurrentPage = 1; // Current page in browser
+let browserCategoryFilter = 'all'; // active category-chip filter in the collection browser
 
 // --- Analytics State & Context ---
 const WIDGET_VERSION = '2.4.0';
@@ -2824,6 +2825,23 @@ function primeInlineLoadingGarment() {
     return true;
 }
 
+// Clears any leftover result-stage UI so RE-opening the panel (e.g. tapping the
+// inline "Try it on" again while a previous result is still on screen) starts
+// from a clean workspace instead of stacking the new view on top of the old
+// result — the overlap bug. Mirrors closeWidget's teardown, plus hides the
+// previous result image/section. Idempotent: a no-op on a first/clean open.
+function resetInlineResultState() {
+    const widget = document.getElementById('virtualTryonWidget');
+    if (widget) widget.classList.remove('inline-mode-result-ready', 'inline-mode-cart-success');
+    ['ello-inline-result-ctas', 'ello-inline-cart-success', 'ello-tryon-result'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    });
+    document.querySelectorAll('.buy-now-container, .tryon-attribution').forEach(function (el) { el.remove(); });
+    const resultSection = document.getElementById('resultSection');
+    if (resultSection) resultSection.style.display = 'none';
+}
+
 function openWidget() {
     // Reset analytics state for this widget view
     hadMeaningfulAction = false;
@@ -2845,6 +2863,18 @@ function openWidget() {
     }
 
     const widget = document.getElementById('virtualTryonWidget');
+    // Defensive guard: on an unfamiliar theme the shell may be absent or
+    // injected late. Bail loudly instead of throwing on widget.classList below,
+    // so a launcher-less open (inline button / fitting-room hub) fails safe.
+    if (!widget) {
+        console.warn('[Ello] try-on shell (#virtualTryonWidget) not found — open aborted');
+        return;
+    }
+
+    // Start every open from a clean slate — clears any result/CTAs left over
+    // from a previous try-on so re-opening (inline "Try it on" again) never
+    // stacks the new workspace on top of the old result.
+    resetInlineResultState();
 
     // Inline mode — focused PDP experience. CSS hides featured/quick-picks/
     // wardrobe sections and centers the selected product. Class is added on
@@ -2853,15 +2883,16 @@ function openWidget() {
     if (window.ELLO_INLINE_MODE) {
         widget.classList.add('inline-mode');
         ensureInlineModeStyles();
-        // The floating-bubble kill switches (applyWidgetVisibilityGate and the
-        // loader's FOUC guard) set display:none on this element when the
-        // merchant has the bubble disabled — the default for new installs on
-        // PDPs. An inline-button click is an explicit request for try-on, so
-        // clear that hide and let the panel open. Without this the click is a
-        // silent no-op on every store with the floating widget turned off.
-        widget.style.removeProperty('display');
     } else {
         widget.classList.remove('inline-mode');
+    }
+    // Launcher-less open (inline "Try On" button, Fitting Room full panel, or a
+    // hub deep-link) — clear the floating-bubble kill-switch display:none so the
+    // panel opens even when the merchant has the bubble turned off (the default
+    // for the launcher-less setup). Without this the click is a silent no-op on
+    // every store with the floating widget disabled.
+    if (window.ELLO_INLINE_MODE || window.ELLO_LAUNCHERLESS) {
+        widget.style.removeProperty('display');
     }
 
     // Mobile animation handling
@@ -2984,10 +3015,14 @@ function openWidget() {
             // Update wardrobe button count
             updateWardrobeButton();
 
-            // 🎯 Focus management - focus on first interactive element
-            const firstFocusableElement = widget.querySelector('button, input, select, [tabindex]:not([tabindex="-1"])');
-            if (firstFocusableElement) {
-                firstFocusableElement.focus();
+            // 🎯 Focus management - focus on first interactive element.
+            // Skip in hub mode: the panel opens behind the Collection/Wardrobe
+            // modal, so focusing the panel would steal focus from the modal.
+            if (!window.ELLO_HUB_MODE) {
+                const firstFocusableElement = widget.querySelector('button, input, select, [tabindex]:not([tabindex="-1"])');
+                if (firstFocusableElement) {
+                    firstFocusableElement.focus();
+                }
             }
         }, 100);
     }
@@ -3013,6 +3048,10 @@ function closeWidget() {
     // to know whether this open came from the inline button to decide if the
     // bubble should reappear or stay hidden (see applyMinimizedVisual).
     const wasInlineMode = window.ELLO_INLINE_MODE === true;
+    // Any launcher-less open (inline button, Fitting Room full panel, hub) must
+    // re-hide the bubble on close so a bubble-off store is left clean.
+    const wasLauncherless = wasInlineMode || window.ELLO_LAUNCHERLESS === true;
+    window.ELLO_LAUNCHERLESS = false;
 
     // Clear inline-mode state. If the shopper re-opens via the floating
     // bubble next, we want them to land in the full browse UX — not in the
@@ -3023,6 +3062,13 @@ function closeWidget() {
         window.ELLO_AUTO_FIRE = false; // cancel any pending auto-fire
         widget.classList.remove('inline-mode');
     }
+
+    // Clear fitting-room hub state so the next open isn't treated as a hub
+    // session, and strip the hub switch from the modal headers so a later
+    // floating-widget open of those modals is clean.
+    if (typeof elloTeardownHubChrome === 'function') elloTeardownHubChrome();
+    window.ELLO_HUB_MODE = false;
+    window.__elloHubKeepOpen = false;
 
     // Always tear down result-stage CTAs and success state on close, since
     // they're rendered in every mode now. Re-opening mid-load was producing
@@ -3052,7 +3098,7 @@ function closeWidget() {
         // minimized bubble in the corner — re-hide so closing inline try-on
         // returns the page to its bubble-less state. Inline !important beats
         // .widget-minimized's display:flex !important.
-        if (wasInlineMode) {
+        if (wasLauncherless) {
             const cfg = window.ELLO_STORE_CONFIG || {};
             const onPdp = window.location.pathname.includes('/products/');
             const floatingOff =
@@ -3909,10 +3955,10 @@ function updateTryOnButton() {
         btn.classList.remove('rate-limited');
         btn.title = "Processing your try-on...";
     } else if (isRateLimited) {
-        btn.innerHTML = '<span>🚫</span>Daily Limit Reached';
+        btn.innerHTML = '<span>🚫</span>Try-On Limit Reached';
         btn.classList.add('rate-limited');
         btn.classList.remove('processing');
-        btn.title = "You've reached the daily limit of 15 try-ons.";
+        btn.title = "You've reached this store's try-on limit.";
     } else {
         // Normal state handling
         btn.classList.remove('processing', 'rate-limited');
@@ -5208,11 +5254,18 @@ function openClothingBrowser() {
     const backdrop = document.getElementById('modalBackdrop');
 
     modal.classList.add('active');
-    backdrop.classList.add('active');
+    // In the Fitting Room hub, match the Wardrobe surface — no dark page
+    // blackout behind the panel. Standalone (non-hub) use keeps the dimmer.
+    if (window.ELLO_HUB_MODE) {
+        backdrop.classList.remove('active');
+    } else {
+        backdrop.classList.add('active');
+    }
     document.body.style.overflow = 'hidden';
 
-    // Reset pagination
+    // Reset pagination + filters
     browserCurrentPage = 1;
+    browserCategoryFilter = 'all';
     filteredClothing = [...sampleClothing];
 
     elloLog('Opening clothing browser, sampleClothing length:', sampleClothing.length);
@@ -5228,6 +5281,14 @@ function closeClothingBrowser() {
 
     if (!widgetOpen || !isMobile) {
         document.body.style.overflow = '';
+    }
+
+    // Fitting-room hub: the collection IS the hub's main surface, so dismissing
+    // it closes the whole hub (and re-hides any bubble). Suppressed while
+    // switching tabs (elloHubSwitch) or picking an item to try on
+    // (selectClothingFromBrowser), which set __elloHubKeepOpen.
+    if (window.ELLO_HUB_MODE && !window.__elloHubKeepOpen) {
+        closeWidget();
     }
 }
 
@@ -5271,13 +5332,10 @@ function renderBrowserGrid() {
         return;
     }
 
-    // Reset filtered clothing if needed
-    if (filteredClothing.length === 0 || filteredClothing.length === sampleClothing.length) {
-        filteredClothing = [...sampleClothing];
-    }
-
-    // Use updateBrowserDisplay to handle pagination
-    updateBrowserDisplay();
+    // Build the category chips from the loaded catalog, then apply the active
+    // category + search filters and render the grid.
+    elloRenderCategoryChips();
+    applyBrowserFilters();
 }
 
 function selectClothingFromBrowser(clothingId) {
@@ -5295,16 +5353,21 @@ function selectClothingFromBrowser(clothingId) {
         };
     }
 
-    document.querySelectorAll('.browser-clothing-card').forEach(card => {
-        card.classList.remove('selected');
+    document.querySelectorAll('.epc-card').forEach(card => {
+        card.classList.remove('is-selected');
     });
 
-    event.target.closest('.browser-clothing-card').classList.add('selected');
+    const __clickedCard = event && event.target && event.target.closest('.epc-card');
+    if (__clickedCard) __clickedCard.classList.add('is-selected');
 
     // Update preview
     updateSelectedClothingPreview(clothingId);
 
+    // In hub mode, picking a garment should advance into try-on, NOT close the
+    // whole hub. Guard the close so closeClothingBrowser() doesn't full-close.
+    window.__elloHubKeepOpen = true;
     closeClothingBrowser();
+    window.__elloHubKeepOpen = false;
 
     // updateTryOnButton handles the button state
     updateTryOnButton();
@@ -5317,83 +5380,223 @@ function selectClothingFromBrowser(clothingId) {
     }
 }
 
+// Debounced so filtering a large catalog doesn't re-run on every keystroke.
+let __epcSearchTimer = null;
 function handleBrowserSearch() {
-    const searchTerm = document.getElementById('browserSearch').value.toLowerCase().trim();
+    clearTimeout(__epcSearchTimer);
+    __epcSearchTimer = setTimeout(__epcRunSearch, 160);
+}
 
-    // Reset to page 1 when searching
-    browserCurrentPage = 1;
+function __epcRunSearch() {
+    // The search box and the active category chip apply together.
+    applyBrowserFilters();
+}
 
-    if (searchTerm === '') {
-        filteredClothing = [...sampleClothing];
-    } else {
-        filteredClothing = sampleClothing.filter(item => {
-            const matchesName = item.name.toLowerCase().includes(searchTerm);
-            const matchesCategory = item.category.toLowerCase().includes(searchTerm);
-            const matchesColor = item.color.toLowerCase().includes(searchTerm);
+// ── Category filter chips ───────────────────────────────────────────────────
+// Map each product into a clean shopping bucket from its type / tags / name so a
+// thousands-product catalog is browsable by category instead of one endless wall.
+// Best-effort keyword buckets (first match wins; order minimizes overlap). Quality
+// rides on the merchant's product data — anything unmatched lands in "Other".
+const ELLO_BROWSE_BUCKETS = [
+    { key: 'dresses',     label: 'Dresses',     kw: ['dress', 'gown', 'romper', 'jumpsuit', 'frock', 'bodycon'] },
+    { key: 'outerwear',   label: 'Outerwear',   kw: ['jacket', 'coat', 'blazer', 'parka', 'trench', 'windbreaker', 'poncho', 'overcoat', 'puffer'] },
+    { key: 'shoes',       label: 'Shoes',       kw: ['shoe', 'sneaker', 'boot', 'sandal', 'heel', 'loafer', 'footwear', 'slipper'] },
+    { key: 'accessories', label: 'Accessories', kw: ['hat', 'cap', 'beanie', 'beret', 'bag', 'purse', 'tote', 'backpack', 'scarf', 'belt', 'glove', 'sunglass', 'glasses', 'jewel', 'necklace', 'earring', 'bracelet', 'watch', 'sock', 'headband'] },
+    { key: 'swim',        label: 'Swim',        kw: ['swim', 'bikini', 'bathing', 'trunks'] },
+    { key: 'bottoms',     label: 'Bottoms',     kw: ['pant', 'trouser', 'jean', 'denim', 'legging', 'shorts', 'skirt', 'jogger', 'sweatpant', 'chino', 'culotte', 'cargo', 'slacks'] },
+    { key: 'tops',        label: 'Tops',        kw: ['top', 'tee', 't-shirt', 'tshirt', 'shirt', 'blouse', 'tank', 'cami', 'sweater', 'sweatshirt', 'hoodie', 'jumper', 'pullover', 'knit', 'cardigan', 'crop', 'bodysuit', 'polo', 'henley', 'turtleneck'] }
+];
 
-            return matchesName || matchesCategory || matchesColor;
-        });
+function elloProductBucket(item) {
+    if (!item) return 'other';
+    const hay = ((item.category || '') + ' ' + (item.name || '') + ' ' + ((item.tags || []).join(' '))).toLowerCase();
+    for (let i = 0; i < ELLO_BROWSE_BUCKETS.length; i++) {
+        const kws = ELLO_BROWSE_BUCKETS[i].kw;
+        for (let j = 0; j < kws.length; j++) {
+            if (hay.indexOf(kws[j]) !== -1) return ELLO_BROWSE_BUCKETS[i].key;
+        }
     }
+    return 'other';
+}
 
+// Apply the active category chip + the search box together, then re-render.
+function applyBrowserFilters() {
+    const input = document.getElementById('browserSearch');
+    const q = (input ? input.value : '').toLowerCase().trim();
+    const cat = browserCategoryFilter || 'all';
+    filteredClothing = (sampleClothing || []).filter(item => {
+        if (cat !== 'all' && elloProductBucket(item) !== cat) return false;
+        if (q) {
+            const hay = ((item.name || '') + ' ' + (item.category || '') + ' ' + (item.color || '') + ' ' + ((item.tags || []).join(' '))).toLowerCase();
+            if (hay.indexOf(q) === -1) return false;
+        }
+        return true;
+    });
+    browserCurrentPage = 1;
     updateBrowserDisplay();
+}
+
+// Build the chip row from the buckets actually present in the catalog. Hidden
+// when there's only one category (a filter bar of one is just clutter).
+function elloRenderCategoryChips() {
+    const bar = document.getElementById('epcCategoryBar');
+    if (!bar) return;
+    const counts = {};
+    (sampleClothing || []).forEach(it => { const b = elloProductBucket(it); counts[b] = (counts[b] || 0) + 1; });
+    const chips = [{ key: 'all', label: 'All' }];
+    ELLO_BROWSE_BUCKETS.forEach(b => { if (counts[b.key]) chips.push({ key: b.key, label: b.label }); });
+    if (counts.other) chips.push({ key: 'other', label: 'Other' });
+
+    // If the active filter's bucket vanished (catalog changed), reset to All.
+    if (!chips.some(c => c.key === browserCategoryFilter)) browserCategoryFilter = 'all';
+
+    if (chips.length <= 2) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+    bar.style.display = '';
+    bar.innerHTML = chips.map(c =>
+        '<button type="button" class="epc-chip' + (browserCategoryFilter === c.key ? ' active' : '') + '" data-cat="' + c.key + '">' + c.label + '</button>'
+    ).join('');
+    Array.prototype.forEach.call(bar.querySelectorAll('.epc-chip'), btn => {
+        btn.addEventListener('click', () => {
+            browserCategoryFilter = btn.getAttribute('data-cat');
+            Array.prototype.forEach.call(bar.querySelectorAll('.epc-chip'), b => b.classList.toggle('active', b === btn));
+            applyBrowserFilters();
+        });
+    });
+}
+
+// ── Modern collection rendering ────────────────────────────────────────────
+
+// ── Modern collection rendering ────────────────────────────────────────────
+// Image-forward cards + infinite scroll: a catalog with thousands of products
+// only ever builds a few hundred lightweight DOM nodes, and native lazy-loaded
+// images mean only what's near the viewport actually downloads. Replaces the
+// old page-by-page renderer (pagination controls are hidden).
+const EPC_CHUNK = 30;
+let __epcItems = [];
+let __epcIndex = 0;
+let __epcObserver = null;
+
+function __epcScrollRoot() {
+    const grid = document.getElementById('browserGrid');
+    return grid ? grid.closest('.browser-body') : null;
+}
+
+function __epcBuildCard(item) {
+    const card = document.createElement('div');
+    // No persistent selected ring in the grid — clicking opens try-on right
+    // away, and pre-highlighting the current product just read as a stray border.
+    card.className = 'epc-card';
+    card.setAttribute('role', 'button');
+    card.setAttribute('tabindex', '0');
+    card.dataset.id = item.id;
+    card.onclick = () => selectClothingFromBrowser(item.id);
+
+    const safeName = (item.name || '').replace(/"/g, '&quot;');
+    // Price can arrive as a number or a string ("$38.00"), on the item or its
+    // first variant — normalize all of those to a clean number.
+    let rawPrice = item.price;
+    if ((rawPrice == null || Number(rawPrice) <= 0) && item.variants && item.variants[0]) {
+        rawPrice = item.variants[0].price;
+    }
+    const priceNum = Number(String(rawPrice == null ? '' : rawPrice).replace(/[^0-9.]/g, ''));
+    const priceHtml = (isFinite(priceNum) && priceNum > 0)
+        ? `<div class="epc-price">$${priceNum.toFixed(2)}</div>` : '';
+    const fallback = "this.onerror=null;this.style.opacity=1;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22300%22 height=%22400%22%3E%3Crect width=%22300%22 height=%22400%22 fill=%22%23eceef0%22/%3E%3C/svg%3E';this.parentNode.classList.add('epc-ready')";
+
+    card.innerHTML =
+        '<div class="epc-media">' +
+            `<img class="epc-img" src="${item.image_url}" alt="${safeName}" loading="lazy" decoding="async" ` +
+            `onload="this.classList.add('is-loaded');this.parentNode.classList.add('epc-ready')" ` +
+            `onerror="${fallback}">` +
+        '</div>' +
+        `<div class="epc-info"><div class="epc-name">${safeName}</div>${priceHtml}</div>`;
+    return card;
+}
+
+function __epcAppendChunk() {
+    const grid = document.getElementById('browserGrid');
+    if (!grid) return;
+    const end = Math.min(__epcIndex + EPC_CHUNK, __epcItems.length);
+    const frag = document.createDocumentFragment();
+    for (let i = __epcIndex; i < end; i++) frag.appendChild(__epcBuildCard(__epcItems[i]));
+    grid.appendChild(frag);
+    __epcIndex = end;
+    if (__epcIndex >= __epcItems.length) __epcDisconnect();
+}
+
+function __epcDisconnect() {
+    if (__epcObserver) { __epcObserver.disconnect(); __epcObserver = null; }
+    const s = document.getElementById('epcSentinel');
+    if (s) s.style.display = 'none';
+}
+
+function __epcFillIfNeeded() {
+    const root = __epcScrollRoot();
+    let guard = 0;
+    while (__epcIndex < __epcItems.length && root &&
+           root.scrollHeight <= root.clientHeight + 800 && guard < 60) {
+        __epcAppendChunk();
+        guard++;
+    }
+}
+
+function __epcEnsureObserver() {
+    const grid = document.getElementById('browserGrid');
+    const root = __epcScrollRoot();
+    if (!grid || !root) return;
+    let sentinel = document.getElementById('epcSentinel');
+    if (!sentinel) {
+        sentinel = document.createElement('div');
+        sentinel.id = 'epcSentinel';
+        sentinel.style.cssText = 'width:100%;height:1px;flex:none;';
+    }
+    sentinel.style.display = 'block';
+    if (grid.nextSibling !== sentinel) grid.parentNode.insertBefore(sentinel, grid.nextSibling);
+    if (__epcObserver) __epcObserver.disconnect();
+    if (__epcIndex >= __epcItems.length) { sentinel.style.display = 'none'; return; }
+    __epcObserver = new IntersectionObserver(function (entries) {
+        for (const e of entries) {
+            if (e.isIntersecting) { __epcAppendChunk(); __epcFillIfNeeded(); }
+        }
+    }, { root: root, rootMargin: '700px 0px' });
+    __epcObserver.observe(sentinel);
 }
 
 function updateBrowserDisplay() {
     const grid = document.getElementById('browserGrid');
     const noResults = document.getElementById('noResultsMessage');
     const resultsCount = document.getElementById('searchResultsCount');
+    const pagination = document.getElementById('browserPagination');
+    if (!grid) return;
 
+    // Infinite scroll replaces the old page-by-page controls.
+    if (pagination) pagination.style.display = 'none';
+
+    __epcDisconnect();
+    __epcIndex = 0;
     grid.innerHTML = '';
 
-    if (filteredClothing.length === 0) {
+    // Only show items that actually have a usable image.
+    __epcItems = (filteredClothing || []).filter(item =>
+        item && item.image_url && item.image_url.trim() !== '' &&
+        !item.image_url.includes('placeholder') &&
+        !item.image_url.includes('data:image/svg'));
+
+    if (__epcItems.length === 0) {
         grid.style.display = 'none';
-        noResults.style.display = 'block';
-        resultsCount.textContent = '';
-        updatePaginationControls(0);
-    } else {
-        grid.style.display = 'grid';
-        noResults.style.display = 'none';
-
-        // Filter out items without images
-        const itemsWithImages = filteredClothing.filter(item => {
-            return item && item.image_url && item.image_url.trim() !== '' &&
-                !item.image_url.includes('placeholder') &&
-                !item.image_url.includes('data:image/svg');
-        });
-
-        // Calculate pagination with filtered items
-        const totalPages = Math.ceil(itemsWithImages.length / browserItemsPerPage);
-        const startIndex = (browserCurrentPage - 1) * browserItemsPerPage;
-        const endIndex = startIndex + browserItemsPerPage;
-        const itemsForCurrentPage = itemsWithImages.slice(startIndex, endIndex);
-
-        // Update results count
-        resultsCount.textContent = `Showing ${startIndex + 1}-${Math.min(endIndex, itemsWithImages.length)} of ${itemsWithImages.length} items`;
-
-        // Render only items for current page
-        itemsForCurrentPage.forEach(item => {
-            const isSelected = selectedClothing === item.id;
-            const selectedClass = isSelected ? 'selected' : '';
-
-            const cardElement = document.createElement('div');
-            cardElement.className = `browser-clothing-card ${selectedClass}`;
-            cardElement.onclick = () => selectClothingFromBrowser(item.id);
-
-            const safeName = (item.name || '').replace(/\"/g, '&quot;');
-            // Add onload handler for fade-in effect
-            const imgHtml = `<img src="${item.image_url}" alt="${safeName}" loading="lazy" decoding="async" onload="this.classList.add('loaded')" onerror="this.onerror=null;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22300%22 height=%22400%22 viewBox=%220 0 300 400%22%3E%3Crect width=%22300%22 height=%22400%22 fill=%22%23f0f0f0%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22%23999%22 font-family=%22Arial%22 font-size=%2214%22%3ENo Image%3C/text%3E%3C/svg%3E'">`;
-
-            cardElement.innerHTML = `
-                <div class="browser-image-wrap">${imgHtml}</div>
-                <div class="browser-card-name">${safeName}</div>
-            `;
-
-            grid.appendChild(cardElement);
-        });
-
-        // Update pagination controls
-        updatePaginationControls(totalPages);
+        if (noResults) noResults.style.display = 'block';
+        if (resultsCount) resultsCount.textContent = '';
+        return;
     }
+
+    grid.style.display = 'grid';
+    if (noResults) noResults.style.display = 'none';
+    if (resultsCount) resultsCount.textContent =
+        __epcItems.length + (__epcItems.length === 1 ? ' item' : ' items');
+
+    __epcAppendChunk();      // first chunk
+    __epcEnsureObserver();   // wire up infinite scroll
+    __epcFillIfNeeded();     // top up if the first screen isn't full
 }
 
 // Pagination navigation functions
@@ -5528,6 +5731,11 @@ async function callElloTryOn(personImageUrl, productImageUrl) {
         sessionId: sessionId || null,
         pageContext: getPageContext(),
         entrySource,
+        // Product context so the engine knows which item is for sale (e.g. transfer
+        // the shirt, not a necklace the model is also wearing). All optional.
+        productTitle: garment?.name || garment?.title || null,
+        productType: garment?.category || garment?.product_type || null,
+        productTags: garment?.tags || null,
     };
 
 
@@ -5880,9 +6088,10 @@ function handleRateLimitError(errorResponse) {
     // Set rate limit state
     isRateLimited = true;
 
-    // Extract error message from response
+    // Extract error message from response (server message includes the
+    // merchant-configured limit, e.g. "15 per day"; this is just a fallback)
     let errorMessage = errorResponse?.message ||
-        "You've reached the daily limit of 15 try-ons for this store. Please try again in a few hours.";
+        "You've reached this store's try-on limit. Please come back later.";
 
     // Show rate limit error message
     showRateLimitError(errorMessage);
@@ -6053,6 +6262,159 @@ window.elloOpenTryOnFromInline = function (ctx) {
     }
 };
 
+// ─── Fitting-room hub (launcher-less browse + wardrobe) ─────────────────────
+// The hub reuses the existing Browse Collection + Wardrobe modals, opened
+// WITHOUT the bottom-right bubble. window.Ello.openCollection / openWardrobe
+// (in widget-loader.js) forward here. We run in ELLO_INLINE_MODE so openWidget()
+// clears the bubble's display:none kill switch and closeWidget() re-hides it —
+// the focused panel behind the modal stays invisible to the shopper, while the
+// full-screen modal IS the hub surface. ELLO_HUB_MODE changes the modal-close
+// semantics so dismissing the hub fully closes the panel (no stranded bubble).
+
+// The two modal headers the hub decorates with a Collection/Wardrobe switch.
+var ELLO_HUB_HEADERS = [
+    { modal: 'clothingBrowserModal', header: '.browser-header', title: '.browser-title' },
+    { modal: 'wardrobeModal',        header: '.wardrobe-header', title: '.wardrobe-title' }
+];
+
+function elloEnsureHubSwitchStyles() {
+    if (document.getElementById('ello-hub-switch-styles')) return;
+    var style = document.createElement('style');
+    style.id = 'ello-hub-switch-styles';
+    style.textContent =
+        '.ello-hub-switch{display:inline-flex;gap:2px;background:rgba(0,0,0,0.06);border-radius:999px;padding:3px;}' +
+        '.ello-hub-switch button{border:none;background:transparent;cursor:pointer;font:inherit;font-size:13px;font-weight:500;padding:6px 14px;border-radius:999px;color:#555;line-height:1;transition:background .15s,color .15s;}' +
+        '.ello-hub-switch button.active{background:#fff;color:#111;box-shadow:0 1px 2px rgba(0,0,0,0.12);}';
+    document.head.appendChild(style);
+}
+
+// Inject (idempotently) the Collection/Wardrobe segmented switch into both
+// modal headers and reflect which surface is active. Hub mode only.
+function elloEnsureHubChrome(active) {
+    if (!window.ELLO_HUB_MODE) return;
+    elloEnsureHubSwitchStyles();
+    ELLO_HUB_HEADERS.forEach(function (h) {
+        var modalEl = document.getElementById(h.modal);
+        if (!modalEl) return;
+        var header = modalEl.querySelector(h.header);
+        if (!header) return;
+        // Hide the static title — the segmented switch is the hub's nav.
+        var titleEl = header.querySelector(h.title);
+        if (titleEl) titleEl.style.display = 'none';
+        var sw = header.querySelector('.ello-hub-switch');
+        if (!sw) {
+            sw = document.createElement('div');
+            sw.className = 'ello-hub-switch';
+            sw.innerHTML =
+                '<button type="button" data-hub="collection">Collection</button>' +
+                '<button type="button" data-hub="wardrobe">Wardrobe</button>';
+            sw.querySelector('[data-hub="collection"]').addEventListener('click', function () { elloHubSwitch('collection'); });
+            sw.querySelector('[data-hub="wardrobe"]').addEventListener('click', function () { elloHubSwitch('wardrobe'); });
+            header.insertBefore(sw, header.firstChild);
+        }
+        sw.querySelectorAll('button').forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-hub') === active);
+        });
+    });
+}
+
+// Remove the hub switch + restore titles so a later NON-hub open of these
+// modals (via the floating widget) is clean. Called from closeWidget().
+function elloTeardownHubChrome() {
+    ELLO_HUB_HEADERS.forEach(function (h) {
+        var modalEl = document.getElementById(h.modal);
+        if (!modalEl) return;
+        var header = modalEl.querySelector(h.header);
+        if (!header) return;
+        var sw = header.querySelector('.ello-hub-switch');
+        if (sw) sw.remove();
+        var titleEl = header.querySelector(h.title);
+        if (titleEl) titleEl.style.display = '';
+    });
+}
+
+// Switch between the two hub surfaces without closing the hub. __elloHubKeepOpen
+// suppresses the full-close in closeClothingBrowser/closeWardrobe during the swap.
+function elloHubSwitch(target) {
+    if (!window.ELLO_HUB_MODE) return;
+    window.__elloHubKeepOpen = true;
+    try {
+        if (target === 'wardrobe') {
+            closeClothingBrowser();
+            openWardrobe();
+        } else {
+            closeWardrobe();
+            openClothingBrowser();
+        }
+    } finally {
+        window.__elloHubKeepOpen = false;
+    }
+    elloEnsureHubChrome(target);
+}
+
+// Public hub entry point — forwarded from window.Ello.openCollection /
+// openWardrobe. Mirrors elloOpenTryOnFromInline's state-setup + delegation.
+// Fitting Room — opens the FULL try-on panel launcher-less (no persistent corner
+// bubble). Unlike the hub deep-links below, this lands the shopper on the panel's
+// HOME so EVERYTHING is reachable: change photo, the try-on workspace, Browse Full
+// Collection, My Wardrobe, featured + quick picks. This is the primary entry the
+// "Fitting Room" header link / nav menu uses.
+window.elloOpenPanelFromInline = function (ctx) {
+    if (window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.fittingRoomEnabled === false) {
+        return;
+    }
+    window.ELLO_PENDING_ENTRY_SOURCE = (ctx && ctx.source) || 'fitting_room';
+    // Full panel — NOT the focused inline/PDP view, and NOT the stripped hub that
+    // trapped the shopper in a single modal. Land on the home.
+    window.ELLO_INLINE_MODE = false;
+    window.ELLO_HUB_MODE = false;
+    window.ELLO_AUTO_FIRE = false;
+    window.ELLO_INLINE_CTX = null;
+    window.ELLO_LAUNCHERLESS = true;   // launcher-less open/close (re-hides the bubble)
+    try { loadFullCatalogIfNeeded(window.ELLO_STORE_CONFIG || {}); } catch (e) { /* non-fatal */ }
+    if (typeof openWidget !== 'function') {
+        console.warn('[Ello] openWidget not yet defined — Fitting Room open dropped');
+        return;
+    }
+    openWidget();
+};
+
+window.elloOpenHubFromInline = function (ctx) {
+    // Dashboard kill switch — if the merchant turned the Fitting Room hub OFF,
+    // every entry point (block button, nav link, programmatic) becomes a no-op.
+    // The block hides its own button too; this guards the nav-link / programmatic
+    // paths that we can't hide from the merchant's theme.
+    if (window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.fittingRoomEnabled === false) {
+        return;
+    }
+    var intent = (ctx && ctx.__elloHubIntent) || 'collection';
+    window.ELLO_PENDING_ENTRY_SOURCE = (ctx && ctx.source) || 'fitting_room_hub';
+
+    window.ELLO_INLINE_MODE = true;   // keeps the floating bubble hidden
+    window.ELLO_HUB_MODE = true;      // hub close/switch semantics
+    window.ELLO_AUTO_FIRE = false;    // never auto-fire a try-on from the hub
+    window.ELLO_INLINE_CTX = { productHandle: null, productId: null, variantId: null };
+
+    // Warm the full catalog so the Browse grid isn't empty (idempotent —
+    // openWidget triggers it too; renderBrowserGrid also waits on the promise).
+    try { loadFullCatalogIfNeeded(window.ELLO_STORE_CONFIG || {}); } catch (e) { /* non-fatal */ }
+
+    if (typeof openWidget !== 'function') {
+        console.warn('[Ello] openWidget not yet defined — hub open dropped');
+        return;
+    }
+    openWidget();
+
+    // Open the requested hub surface on top of the (hidden) panel.
+    if (intent === 'wardrobe') {
+        openWardrobe();
+        elloEnsureHubChrome('wardrobe');
+    } else {
+        openClothingBrowser();
+        elloEnsureHubChrome('collection');
+    }
+};
+
 // ─── Inline-mode helpers ────────────────────────────────────────────────────
 // All four functions below are exclusive to the inline-button surface. The
 // floating widget never reaches them because window.ELLO_INLINE_MODE stays
@@ -6105,8 +6467,6 @@ function ensureInlineModeStyles() {
         .virtual-tryon-widget.inline-mode .quick-picks-section,
         .virtual-tryon-widget.inline-mode .browse-all-btn,
         .virtual-tryon-widget.inline-mode .wardrobe-btn,
-        .virtual-tryon-widget.inline-mode #firstRunOverlay,
-        .virtual-tryon-widget.inline-mode .onboarding-strip,
         .virtual-tryon-widget.inline-mode .mode-tabs,
         .virtual-tryon-widget.inline-mode .selected-clothing-remove,
         .virtual-tryon-widget.inline-mode .section-title { display: none !important; }
@@ -6208,6 +6568,16 @@ function ensureInlineModeStyles() {
             flex-direction: column !important;
             justify-content: center !important;
             align-items: stretch !important;
+        }
+        /* Pre-upload only: let the content wrapper fill the panel + center the
+           workspace, so the cards sit in the MIDDLE instead of hugging the top
+           over a tall white void. The result view (.inline-mode-result-ready)
+           keeps its normal top-anchored flow. */
+        .virtual-tryon-widget.inline-mode:not(.inline-mode-result-ready) .tryon-content {
+            flex: 1 1 auto !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
         }
         /* Single row: [upload card] [+] [product card]. Sized to fit the 420px
            desktop popup — 150px cards + 8px gap + 24px plus + 8px gap = 340px,
@@ -6588,6 +6958,115 @@ function derivePriceLabel() {
     return '';
 }
 
+// ─── Theme cart UI refresh (theme-agnostic, best-effort + guaranteed) ───────
+// Shopify adds the item server-side via /cart/add.js, but the MERCHANT's theme
+// owns the cart icon + drawer and has no idea a third-party widget just added
+// something — so its count/drawer go stale until a reload. We update it IN PLACE
+// (a full reload would destroy the try-on result the shopper is looking at):
+//   1. Re-render the standard cart sections (Shopify Section Rendering API) and
+//      swap them in — how Dawn + the whole OS 2.0 theme family update their cart.
+//   2. Patch common cart-count selectors directly from /cart.js — the universal
+//      fallback that works even on themes whose sections we don't match.
+//   3. Dispatch the cart events themes commonly listen for.
+// Whatever we can't reach still leaves the in-widget "View cart" button as a
+// 100%-reliable path. Call after ANY successful /cart/add.js.
+
+// Standard cart section ids across Dawn and the vast majority of OS 2.0 themes.
+// Sections that don't exist are simply omitted from Shopify's response.
+var ELLO_CART_SECTION_IDS = [
+    'cart-icon-bubble', 'cart-live-region-text', 'cart-drawer',
+    'cart-notification', 'cart-notification-product',
+    'main-cart-items', 'main-cart-footer', 'header'
+];
+
+function elloApplyCartSections(sections) {
+    if (!sections || typeof sections !== 'object') return;
+    var parser = new DOMParser();
+    Object.keys(sections).forEach(function (id) {
+        var html = sections[id];
+        if (typeof html !== 'string' || !html) return;
+        // Themes mount these either as a full section (#shopify-section-<id>) or
+        // as a bare snippet container (#<id>, e.g. Dawn's #cart-icon-bubble).
+        var live = document.getElementById('shopify-section-' + id) || document.getElementById(id);
+        if (!live) return;
+        try {
+            var doc = parser.parseFromString(html, 'text/html');
+            var src = doc.getElementById('shopify-section-' + id) || doc.getElementById(id) || doc.body;
+            if (src) live.innerHTML = src.innerHTML;
+        } catch (e) { /* skip this section */ }
+    });
+}
+
+function elloUpdateCartCount(count) {
+    if (typeof count !== 'number') return;
+    var sels = [
+        '.cart-count-bubble', '.cart-count', '#CartCount', '#cart-icon-bubble .cart-count-bubble',
+        '[data-cart-count]', '.cart-link__bubble', '.header__cart-count',
+        '.site-header__cart-count', '.cart-counter', '.js-cart-count',
+        '.cart-item-count', '.cart-count-badge', '.cart-qty'
+    ];
+    var nodes;
+    try { nodes = document.querySelectorAll(sels.join(',')); } catch (e) { return; }
+    nodes.forEach(function (n) {
+        if (n.hasAttribute && n.hasAttribute('data-cart-count')) n.setAttribute('data-cart-count', String(count));
+        // Set the number on the deepest count-only text node so we don't wipe
+        // sibling markup (icons, aria-hidden spans) that themes nest in the bubble.
+        var span = n.querySelector && (n.querySelector('span[aria-hidden="true"]') || n.querySelector('span'));
+        if (span && /^\s*\d*\s*$/.test(span.textContent)) span.textContent = String(count);
+        else if (/^\s*\d*\s*$/.test(n.textContent)) n.textContent = String(count);
+        if (count > 0) {
+            // Themes hide an empty bubble — reveal it now that there's an item.
+            if (n.classList) n.classList.remove('hidden', 'is-empty', 'cart-count-bubble--hidden', 'visually-hidden');
+            if (n.hasAttribute && n.hasAttribute('hidden')) n.removeAttribute('hidden');
+        }
+    });
+}
+
+function elloDispatchCartEvents(cart) {
+    function fire(name, detail) {
+        try { document.dispatchEvent(new CustomEvent(name, { bubbles: true, detail: detail })); } catch (e) {}
+    }
+    // Cross-theme conventions (different theme families listen to different names).
+    fire('cart:refresh', { source: 'ello' });
+    fire('cart:updated', { cart: cart });
+    fire('cart:build', { cart: cart });
+    fire('ajaxProduct:added', { cart: cart });
+    // Dawn pub/sub — themes subscribe to PUB_SUB_EVENTS.cartUpdate.
+    try {
+        if (typeof window.publish === 'function' && window.PUB_SUB_EVENTS && window.PUB_SUB_EVENTS.cartUpdate) {
+            window.publish(window.PUB_SUB_EVENTS.cartUpdate, { source: 'ello', cartData: cart });
+        }
+    } catch (e) {}
+    // Legacy jQuery themes.
+    try { if (window.jQuery) window.jQuery(document).trigger('cart.requestComplete', cart); } catch (e) {}
+}
+
+async function elloRefreshThemeCart() {
+    // 1. Re-render the standard cart sections and swap them in.
+    try {
+        var sr = await fetch(window.location.pathname + '?sections=' + ELLO_CART_SECTION_IDS.join(','), {
+            headers: { 'Accept': 'application/json' }, credentials: 'same-origin'
+        });
+        if (sr.ok) {
+            var sections = await sr.json().catch(function () { return null; });
+            if (sections) elloApplyCartSections(sections);
+        }
+    } catch (e) { /* section rendering unsupported — count + events still run */ }
+
+    // 2. Authoritative count from /cart.js, patched into common bubble selectors.
+    var cart = null;
+    try {
+        var cr = await fetch('/cart.js', { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+        if (cr.ok) cart = await cr.json();
+    } catch (e) {}
+    if (cart) elloUpdateCartCount(cart.item_count);
+
+    // 3. Tell theme JS the cart changed.
+    elloDispatchCartEvents(cart);
+
+    return cart;
+}
+
 // Add-to-Cart: handles single-variant directly, multi-variant via the existing
 // showSizeSelector picker. Calls Shopify's standard /cart/add.js endpoint —
 // works on every Shopify theme.
@@ -6645,6 +7124,11 @@ async function addToCartFromTryOn() {
                 product_id: window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.productId
             });
         } catch (e) { /* analytics is non-critical */ }
+
+        // Refresh the merchant's theme cart UI (count + drawer) in place so the
+        // shopper sees the item immediately — no full reload (which would wipe
+        // the try-on result they're looking at).
+        try { await elloRefreshThemeCart(); } catch (e) { /* non-fatal */ }
 
         showCartSuccessState();
     } catch (err) {
@@ -6814,11 +7298,6 @@ window.startTryOn = async function startTryOn() {
             resultSection.style.display = "block";
         }
 
-        // Inline mode: swap the default action row for Add-to-Cart + Try-another.
-        // Safe to call even if the surface isn't inline — the function no-ops
-        // when ELLO_INLINE_MODE is false.
-        renderInlineModeResultCtas();
-
         // Try to find elements
         let resultImg = document.getElementById("ello-tryon-result-image");
         let resultPanel = document.getElementById("ello-tryon-result");
@@ -6869,6 +7348,12 @@ window.startTryOn = async function startTryOn() {
         if (resultPanel) {
             resultPanel.style.display = "flex";
         }
+
+        // Inline mode: swap the default action row for Add-to-Cart + Try-another.
+        // Called AFTER the result image is appended so the CTAs (and attribution)
+        // always sit BELOW the result, never above it. No-ops when
+        // ELLO_INLINE_MODE is false (still safe for the floating widget).
+        renderInlineModeResultCtas();
 
         // Result-stage Add-to-Cart + attribution are owned by
         // renderInlineModeResultCtas() above for every entry point (inline
@@ -7449,28 +7934,14 @@ async function updateCartDisplay() {
 
         elloLog('Updated cart data:', cartData);
 
-        // Update cart counter (try multiple common selectors)
-        const cartCounters = [
-            '.cart-count',
-            '.cart-counter',
-            '.cart-item-count',
-            '[data-cart-count]',
-            '.header__cart-count',
-            '.cart-link__bubble',
-            '.cart__count',
-            '#cart-count',
-            '.cart-count-bubble'
-        ];
-
-        cartCounters.forEach(selector => {
-            const counter = document.querySelector(selector);
-            if (counter) {
-                counter.textContent = cartData.item_count;
-                counter.innerHTML = cartData.item_count;
-                // Also try setting attributes
-                counter.setAttribute('data-count', cartData.item_count);
-            }
-        });
+        // Safe count update (doesn't clobber the bubble's inner icon markup the
+        // way innerHTML= did) + re-render the standard cart sections so the
+        // drawer/bubble reflect the new item. Shared with the inline add path.
+        elloUpdateCartCount(cartData.item_count);
+        try {
+            const __sr = await fetch(window.location.pathname + '?sections=' + ELLO_CART_SECTION_IDS.join(','), { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' });
+            if (__sr.ok) { const __sec = await __sr.json().catch(() => null); if (__sec) elloApplyCartSections(__sec); }
+        } catch (e) { /* section rendering unsupported — count + events still run */ }
 
         // Trigger cart update events that themes might listen for
         const cartUpdateEvents = [
@@ -8482,9 +8953,9 @@ function updateWardrobeButton() {
     const wardrobeBtn = document.querySelector('.wardrobe-btn');
     if (wardrobeBtn) {
         const count = getWardrobeCount();
-        const countSpan = wardrobeBtn.querySelector('span:last-child');
+        const countSpan = wardrobeBtn.querySelector('.wardrobe-count');
         if (countSpan) {
-            countSpan.textContent = `(${count})`;
+            countSpan.textContent = count;
         }
     }
 }
@@ -8505,6 +8976,12 @@ function closeWardrobe() {
 
     if (!widgetOpen || !isMobile) {
         document.body.style.overflow = '';
+    }
+
+    // Fitting-room hub: dismissing the wardrobe closes the whole hub, unless
+    // we're switching to the collection tab (__elloHubKeepOpen set by elloHubSwitch).
+    if (window.ELLO_HUB_MODE && !window.__elloHubKeepOpen) {
+        closeWidget();
     }
 }
 
@@ -8537,28 +9014,25 @@ function renderWardrobeGrid() {
             imageSrc = savedPhoto || imageSrc;
         }
 
+        const cartIcon = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1.4"></circle><circle cx="17.5" cy="20" r="1.4"></circle><path d="M2.5 3.5h2.3l2.2 11.1a1.4 1.4 0 0 0 1.37 1.1h8.1a1.4 1.4 0 0 0 1.36-1.07L21 7.5H6.2"></path></svg>';
+        const outfitIcon = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>';
+        const photoIcon = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"></rect><circle cx="8.5" cy="10" r="1.6"></circle><path d="m20 17-4.6-4.6L7 20"></path></svg>';
+
+        const actionsHTML = isOriginalPhoto
+            ? `<button class="ewc-btn ewc-btn-primary" onclick="useOriginalPhoto('${item.id}')">${photoIcon}<span>Use this photo</span></button>`
+            : `<button class="ewc-btn ewc-btn-primary" onclick="addWardrobeItemToCart('${item.id}')">${cartIcon}<span>Add to cart</span></button>`
+              + `<button class="ewc-btn ewc-btn-ghost" onclick="addToOutfit('${item.id}')">${outfitIcon}<span>Add to outfit</span></button>`;
+
         gridHTML += `
-            <div class="wardrobe-item ${isOriginalPhoto ? 'original-photo-item' : ''}" data-tryon-id="${item.id}">
-                <img src="${imageSrc}" alt="${displayName}" loading="lazy" onclick="enlargeWardrobeImage('${imageSrc}', '${displayName}', '${item.id}')">
-                <div class="wardrobe-item-name">${displayName}</div>
-                ${displayPrice ? `<div class="wardrobe-item-price">${displayPrice}</div>` : ''}
-                <div class="wardrobe-item-actions">
-                    ${!isOriginalPhoto ? `
-                        <button class="wardrobe-action-btn wardrobe-add-outfit-btn" onclick="addToOutfit('${item.id}')" title="Add this item to your outfit">
-                            <span>👕</span>
-                            <span>Add to Outfit</span>
-                        </button>
-                        <button class="wardrobe-action-btn wardrobe-add-cart-btn" onclick="addWardrobeItemToCart('${item.id}')" title="Add this item to your cart">
-                            <span>🛒</span>
-                            <span>Add to Cart</span>
-                        </button>
-                    ` : `
-                        <button class="wardrobe-action-btn wardrobe-use-photo-btn" onclick="useOriginalPhoto('${item.id}')" title="Use this photo for try-on">
-                            <span>📸</span>
-                            <span>Use Photo</span>
-                        </button>
-                    `}
+            <div class="epc-card ewc-card ${isOriginalPhoto ? 'ewc-original' : ''}" data-tryon-id="${item.id}">
+                <div class="epc-media">
+                    <img class="epc-img" src="${imageSrc}" alt="${displayName}" loading="lazy" decoding="async" onload="this.classList.add('is-loaded');this.parentNode.classList.add('epc-ready')" onclick="enlargeWardrobeImage('${imageSrc}', '${displayName}', '${item.id}')">
                 </div>
+                <div class="epc-info">
+                    <div class="epc-name">${displayName}</div>
+                    ${displayPrice ? `<div class="epc-price">${displayPrice}</div>` : ''}
+                </div>
+                <div class="ewc-actions">${actionsHTML}</div>
             </div>
         `;
     });

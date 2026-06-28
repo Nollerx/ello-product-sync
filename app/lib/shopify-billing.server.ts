@@ -258,6 +258,14 @@ export async function syncShopifyMerchantToSupabase(
 
   const accountId = accountData.id as string;
 
+  // Paid plans should auto-bill overage by default: merchants expect usage past
+  // their included try-ons to be charged, not have the widget hard-block (the RPC
+  // returns OVERAGE_BLOCKED when overage_auto_topup is false). Free/dev/custom
+  // plans stay opt-in (column default false). isPaidPlanKey matches only the
+  // starter/launch/growth/scale monthly+annual keys, so it never flips on a
+  // Stripe-billed custom plan (where Shopify usage charges are skipped anyway).
+  const enablePaidOverageAutoTopup = isPaidPlanKey(planKey);
+
   // 3. Insert or update vto_stores (no upsert — account_id has no unique constraint)
   const { data: existingStore } = await supabaseAdmin
     .from("vto_stores")
@@ -268,7 +276,13 @@ export async function syncShopifyMerchantToSupabase(
   if (existingStore) {
     const { error: storeError } = await supabaseAdmin
       .from("vto_stores")
-      .update({ store_slug: storeSlug, store_name: shop, shop_domain: shop, widget_enabled: true })
+      .update({
+        store_slug: storeSlug,
+        store_name: shop,
+        shop_domain: shop,
+        widget_enabled: true,
+        ...(enablePaidOverageAutoTopup ? { overage_auto_topup: true } : {}),
+      })
       .eq("account_id", accountId);
     if (storeError) {
       throw new Error(
@@ -288,6 +302,7 @@ export async function syncShopifyMerchantToSupabase(
         minimized_color: "#000000",
         widget_primary_color: "#111827",
         widget_accent_color: "#6EE7B7",
+        ...(enablePaidOverageAutoTopup ? { overage_auto_topup: true } : {}),
       });
     if (storeError) {
       throw new Error(

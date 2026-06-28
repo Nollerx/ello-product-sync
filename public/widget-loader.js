@@ -22,46 +22,175 @@
     // flag to get out of sync between loaders).
     window.__elloInlineQueue = window.__elloInlineQueue || [];
 
+    // Route a queued context to the right widget-main.js entry point. Hub
+    // intents (collection / wardrobe) go to elloOpenHubFromInline; everything
+    // else is a try-on. Returns false when the matching handler isn't defined
+    // yet, so the item stays queued until widget-main.js loads.
+    function __elloDispatch(ctx) {
+        if (ctx && ctx.__elloPanel) {
+            if (typeof window.elloOpenPanelFromInline === 'function') {
+                window.elloOpenPanelFromInline(ctx);
+                return true;
+            }
+            return false;
+        }
+        if (ctx && ctx.__elloHubIntent) {
+            if (typeof window.elloOpenHubFromInline === 'function') {
+                window.elloOpenHubFromInline(ctx);
+                return true;
+            }
+            return false;
+        }
+        if (typeof window.elloOpenTryOnFromInline === 'function') {
+            window.elloOpenTryOnFromInline(ctx);
+            return true;
+        }
+        return false;
+    }
+
     function __elloTryFlush() {
-        if (typeof window.elloOpenTryOnFromInline !== 'function') return;
+        if (typeof window.elloOpenTryOnFromInline !== 'function' &&
+            typeof window.elloOpenHubFromInline !== 'function' &&
+            typeof window.elloOpenPanelFromInline !== 'function') return;
+        var requeue = [];
         while (window.__elloInlineQueue.length) {
-            try { window.elloOpenTryOnFromInline(window.__elloInlineQueue.shift()); }
-            catch (e) { console.error('[Ello] openTryOn from queue failed:', e); }
+            var ctx = window.__elloInlineQueue.shift();
+            try { if (!__elloDispatch(ctx)) requeue.push(ctx); }
+            catch (e) { console.error('[Ello] open from queue failed:', e); }
+        }
+        if (requeue.length) {
+            window.__elloInlineQueue.push.apply(window.__elloInlineQueue, requeue);
         }
     }
 
     // Adopt any pre-queue created by the inline-button block's shim. The shim
     // runs synchronously when the block renders — possibly before this script.
+    // Adopt BOTH pre-queues (not else-if): the inline-button shim writes to
+    // window.Ello.__elloPreQueue while the fitting-room block writes to
+    // window.__elloPreQueue. When both blocks are installed, draining only one
+    // would strand the other surface's early clicks.
     if (window.Ello && Array.isArray(window.Ello.__elloPreQueue)) {
         window.__elloInlineQueue = window.__elloInlineQueue.concat(window.Ello.__elloPreQueue);
         window.Ello.__elloPreQueue.length = 0;
-    } else if (Array.isArray(window.__elloPreQueue)) {
+    }
+    if (Array.isArray(window.__elloPreQueue)) {
         window.__elloInlineQueue = window.__elloInlineQueue.concat(window.__elloPreQueue);
         window.__elloPreQueue.length = 0;
+    }
+
+    // Shared forwarder: dispatch immediately when the matching widget-main.js
+    // handler exists; otherwise queue the click and kick init now so an
+    // explicit shopper action never waits on requestIdleCallback. Reads
+    // window-level handlers at call time, so it survives the multi-loader race.
+    function __elloForward(ctx) {
+        if (__elloDispatch(ctx)) return;
+        window.__elloInlineQueue.push(ctx);
+        if (typeof window.__elloKickInitNow === 'function') {
+            window.__elloKickInitNow();
+        }
     }
 
     // Only install the real Ello API once — subsequent loader executions reuse
     // the first one's queue and forwarding function via window-level state.
     if (typeof window.Ello?.__drain !== 'function') {
         window.Ello = {
+            // Focused PDP try-on popup (the inline-button surface).
             openTryOn: function (ctx) {
-                // Tag the surface so widget-main.js can attribute the event correctly
+                ctx = ctx || {};
+                // Tag the surface so widget-main.js attributes the event correctly
                 // even if the caller forgot to pass source.
-                if (ctx && !ctx.source) ctx.source = 'inline_button';
-                // Check window-level binding at call time — survives multi-loader races.
-                if (typeof window.elloOpenTryOnFromInline === 'function') {
-                    window.elloOpenTryOnFromInline(ctx);
-                } else {
-                    window.__elloInlineQueue.push(ctx);
-                    // User explicitly asked for try-on — don't wait for requestIdleCallback.
-                    if (typeof window.__elloKickInitNow === 'function') {
-                        window.__elloKickInitNow();
-                    }
-                }
+                if (!ctx.source) ctx.source = 'inline_button';
+                __elloForward(ctx);
+            },
+            // Launcher-less Fitting Room hub on the full try-on collection.
+            openCollection: function (ctx) {
+                ctx = ctx || {};
+                ctx.__elloHubIntent = 'collection';
+                if (!ctx.source) ctx.source = 'fitting_room_hub';
+                __elloForward(ctx);
+            },
+            // Fitting Room hub opened straight to the shopper's saved looks.
+            openWardrobe: function (ctx) {
+                ctx = ctx || {};
+                ctx.__elloHubIntent = 'wardrobe';
+                if (!ctx.source) ctx.source = 'fitting_room_hub';
+                __elloForward(ctx);
+            },
+            // Fitting Room — opens the FULL panel (home) so the shopper can change
+            // their photo, browse, view their wardrobe and try on. The primary
+            // entry point for the header link / nav menu.
+            openFittingRoom: function (ctx) {
+                ctx = ctx || {};
+                ctx.__elloPanel = true;
+                if (!ctx.source) ctx.source = 'fitting_room';
+                __elloForward(ctx);
             },
             __drain: __elloTryFlush,
             __queueDepth: function () { return window.__elloInlineQueue.length; }
         };
+    }
+
+    // ─── Launcher-less hub triggers (nav link / data attribute fallback) ─────
+    // The Fitting Room hub has no bottom-right bubble. The header app block
+    // self-wires its own button, but on themes whose header can't take app
+    // blocks, merchants instead add a plain nav menu link (href containing
+    // "ello-fitting-room") or tag any element with data-ello-hub. We bind those
+    // here so the hub works site-wide off a single menu link. Installed once
+    // (survives the multi-loader race) with per-element dedupe.
+    if (!window.__elloHubBindInstalled) {
+        window.__elloHubBindInstalled = true;
+
+        var __elloHubBind = function (el) {
+            if (!el || el.getAttribute('data-ello-hub-bound') === '1') return;
+            el.setAttribute('data-ello-hub-bound', '1');
+            el.addEventListener('click', function (e) {
+                var which = (el.getAttribute('data-ello-hub') || '').toLowerCase();
+                e.preventDefault();
+                try {
+                    // Default: open the FULL panel (everything reachable). The
+                    // explicit data-ello-hub="wardrobe"/"collection" values still
+                    // deep-link straight to those surfaces for anyone who wants it.
+                    if (which === 'wardrobe') window.Ello.openWardrobe({ source: 'nav_link' });
+                    else if (which === 'collection') window.Ello.openCollection({ source: 'nav_link' });
+                    else window.Ello.openFittingRoom({ source: 'nav_link' });
+                } catch (err) { console.error('[Ello] fitting room trigger failed:', err); }
+            });
+        };
+
+        var __elloHubScan = function () {
+            var tagged = document.querySelectorAll('[data-ello-hub]');
+            for (var i = 0; i < tagged.length; i++) __elloHubBind(tagged[i]);
+            // Convention: a normal Shopify nav menu link pointing at
+            // "#ello-fitting-room" (or any href containing it) opens the FULL
+            // Fitting Room panel (no data-ello-hub → openFittingRoom). A merchant
+            // can deep-link instead by adding data-ello-hub="wardrobe"/"collection".
+            var links = document.querySelectorAll('a[href*="ello-fitting-room"]');
+            for (var j = 0; j < links.length; j++) {
+                __elloHubBind(links[j]);
+            }
+        };
+
+        var __elloHubStart = function () {
+            __elloHubScan();
+            // Re-scan on DOM changes (late headers, SPA nav), rAF-debounced so
+            // repeated mutations stay cheap; per-element dedupe avoids re-binding.
+            try {
+                var raf = null;
+                var mo = new MutationObserver(function () {
+                    if (raf) return;
+                    raf = requestAnimationFrame(function () { raf = null; __elloHubScan(); });
+                });
+                mo.observe(document.documentElement, { childList: true, subtree: true });
+            } catch (e) { /* MutationObserver unsupported — initial scan still bound */ }
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', __elloHubStart);
+        } else {
+            __elloHubStart();
+        }
+        // Manual re-scan hook for themes that inject the trigger very late.
+        if (window.Ello) window.Ello.bindHubTriggers = __elloHubScan;
     }
 
     // Prevent duplicate initialization (must come AFTER window.Ello setup
@@ -81,8 +210,12 @@
     let WIDGET_BASE_URL;
     const _loaderScript = document.currentScript;
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        WIDGET_BASE_URL = "http://localhost:5173";
-        elloLog("🔧 Ello Widget: Running in Local Development Mode");
+        // Local dev: serve widget assets from THIS dev server's own origin
+        // (whatever port it's on — 3000, 5173, …) so the dev harness works
+        // without depending on a fixed port. Only ever runs locally; on a real
+        // storefront the hostname is never localhost.
+        WIDGET_BASE_URL = window.location.origin;
+        elloLog("🔧 Ello Widget: Running in Local Development Mode @", WIDGET_BASE_URL);
     } else if (_loaderScript && _loaderScript.src) {
         try {
             WIDGET_BASE_URL = new URL(_loaderScript.src).origin;
@@ -204,6 +337,10 @@
             floatingWidgetPdpEnabled: storeConfig.floating_widget_pdp_enabled === true,
             // Default-on off-PDP — bubble is still the discovery tool for home/collections.
             floatingWidgetNonPdpEnabled: storeConfig.floating_widget_non_pdp_enabled !== false,
+            // Fitting Room hub on/off (dashboard kill switch) — on by default.
+            // Mirrors inlineButtonEnabled: a merchant can disable the whole hub
+            // from the dashboard without removing the theme block / nav link.
+            fittingRoomEnabled: storeConfig.fitting_room_enabled !== false,
             // Lead capture (email after Nth try-on) — off by default.
             leadCaptureEnabled: storeConfig.lead_capture_enabled === true,
             leadCaptureAfterN: storeConfig.lead_capture_after_n || 1
@@ -235,7 +372,8 @@
             inlineButtonTextColor: null,
             inlineButtonHideWhenOos: false,
             floatingWidgetPdpEnabled: false,
-            floatingWidgetNonPdpEnabled: true
+            floatingWidgetNonPdpEnabled: true,
+            fittingRoomEnabled: true
         };
     }
 

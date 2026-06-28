@@ -1,5 +1,12 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { checkAndRecordUsage, createShopifyUsageCharge } from "../lib/usage-billing.server";
+import { checkAndRecordUsage, createShopifyUsageCharge, releaseTryonCredit } from "../lib/usage-billing.server";
+
+// ML render service. Default = shared FASHN service; the custom app overrides
+// via ML_API_URL (cloud_run_env_custom.yaml) to the Gemini engine (ello-vto-custom)
+// so engine rollouts can be tested on the custom app before the public one.
+const ML_API_URL =
+    process.env.ML_API_URL ||
+    "https://ello-vto-13593516897-13593516897.us-central1.run.app";
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -41,6 +48,11 @@ export async function action({ request }: ActionFunctionArgs) {
         ]);
         const entrySource = allowedSources.has(rawEntrySource) ? rawEntrySource : null;
 
+        // Client IP for the per-shopper limit. Cloud Run's LB appends its own
+        // hop to X-Forwarded-For, so the first entry is the real client.
+        const clientIp =
+            request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
+
         const usageResult = await checkAndRecordUsage(
             storeSlug,
             true,
@@ -49,9 +61,33 @@ export async function action({ request }: ActionFunctionArgs) {
             body.sessionId || body.session_id || null,
             body.pageContext || null,
             entrySource,
+            clientIp,
         );
 
         if (!usageResult.allowed) {
+            // Merchant-configured per-shopper limit: 429 → the widget's
+            // handleRateLimitError() shows `message` and disables the button.
+            if (usageResult.error === "SHOPPER_RATE_LIMITED") {
+                const hours = usageResult.shopper_limit_window_hours ?? 24;
+                const windowLabel =
+                    hours === 1 ? "hour" : hours === 24 ? "day" : hours === 168 ? "week" : `${hours} hours`;
+                const count = usageResult.shopper_limit_count;
+                return new Response(
+                    JSON.stringify({
+                        error: "SHOPPER_RATE_LIMITED",
+                        message: count
+                            ? `You've reached this store's try-on limit (${count} per ${windowLabel}). Please come back later.`
+                            : "You've reached this store's try-on limit. Please come back later.",
+                        shopper_limit_count: count ?? null,
+                        shopper_limit_window_hours: hours,
+                    }),
+                    {
+                        status: 429,
+                        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+                    },
+                );
+            }
+
             // Free plan: hard block with distinct error + 403 so the widget can render
             // an "upgrade to continue" message instead of a paid-overage prompt.
             if (usageResult.error === "MONTHLY_LIMIT_REACHED") {
@@ -83,35 +119,59 @@ export async function action({ request }: ActionFunctionArgs) {
             );
         }
 
-        // 3. Forward to ML API service
-        const res = await fetch(
-            "https://ello-vto-13593516897-13593516897.us-central1.run.app/tryon",
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body),
+        // 3. Forward to ML API service. The usage credit was already reserved in
+        //    step 2 (we record before rendering so the limit gate runs before we
+        //    spend compute), so any failure path below must hand the credit back.
+        const sessionId = body.sessionId || body.session_id || null;
+        try {
+            const res = await fetch(
+                `${ML_API_URL}/tryon`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                }
+            );
+
+            const data = await res.json().catch(() => ({}));
+
+            // Did the render actually return an image? Mirror the widget's own
+            // success check (widget-main.js: data.imageB64 || data.image_b64 || data.image).
+            const renderSucceeded =
+                res.ok && Boolean(data?.imageB64 || data?.image_b64 || data?.image);
+
+            // 4. Failed/empty render → release the reserved credit so a try-on that
+            //    produced no photo doesn't consume the merchant's included/overage
+            //    usage. Skip when usage wasn't actually recorded (RPC failed open).
+            if (!renderSucceeded && !usageResult.error) {
+                await releaseTryonCredit(storeSlug, sessionId, usageResult.is_overage);
             }
-        );
 
-        const data = await res.json().catch(() => ({}));
+            // 5. Only on a successful overage render, create the Shopify usage charge
+            //    (fire-and-forget). Skip when SKIP_BILLING is on (custom = billed via Stripe).
+            if (renderSucceeded && process.env.SKIP_BILLING !== "true" && usageResult.is_overage && usageResult.shop_domain && usageResult.shopify_usage_line_item_id) {
+                createShopifyUsageCharge(
+                    usageResult.shop_domain,
+                    usageResult.shopify_usage_line_item_id,
+                    `Virtual try-on overage (try-on #${usageResult.tryons_used})`,
+                ).catch((err) => {
+                    console.error("[TryOn Proxy] Failed to create overage charge:", err);
+                });
+            }
 
-        // 4. If overage, create Shopify usage charge (fire-and-forget)
-        //    Skip when SKIP_BILLING is enabled (custom distribution — billed via Stripe)
-        if (process.env.SKIP_BILLING !== "true" && usageResult.is_overage && usageResult.shop_domain && usageResult.shopify_usage_line_item_id) {
-            createShopifyUsageCharge(
-                usageResult.shop_domain,
-                usageResult.shopify_usage_line_item_id,
-                `Virtual try-on overage (try-on #${usageResult.tryons_used})`,
-            ).catch((err) => {
-                console.error("[TryOn Proxy] Failed to create overage charge:", err);
+            // 6. Return response with CORS headers
+            return new Response(JSON.stringify(data), {
+                status: res.status,
+                headers: { "Content-Type": "application/json", ...CORS_HEADERS },
             });
+        } catch (mlErr) {
+            // ML service unreachable (transport error) — release the reserved credit,
+            // then bubble up to the outer handler so the shopper still gets a 500.
+            if (!usageResult.error) {
+                await releaseTryonCredit(storeSlug, sessionId, usageResult.is_overage);
+            }
+            throw mlErr;
         }
-
-        // 5. Return response with CORS headers
-        return new Response(JSON.stringify(data), {
-            status: res.status,
-            headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-        });
 
     } catch (error) {
         console.error("[TryOn Proxy] Error:", error);

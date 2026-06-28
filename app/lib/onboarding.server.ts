@@ -1,4 +1,8 @@
 import { supabaseAdmin } from "./supabase.server";
+import {
+  APP_EMBED_BLOCK_HANDLE,
+  INLINE_BUTTON_BLOCK_HANDLE,
+} from "./theme-status.server";
 
 export type OnboardingStep =
   | "welcome"
@@ -15,8 +19,15 @@ export const ONBOARDING_ROUTE_BY_STEP: Record<Exclude<OnboardingStep, "billing" 
   placements: "/app/onboarding/placements",
 };
 
-const INLINE_TRYON_BLOCK_HANDLE = "inline-tryon-button";
-const FALLBACK_THEME_APP_API_KEY = "3ab87c3a17258dd8b44f288b81b7dfc7";
+// Per-app api_key (== client_id) is the correct theme-editor deep-link
+// identifier — NOT the extension UUID (that form is deprecated). It is always
+// set in prod via env (public: bf99e755…, custom: 3ab87c3a…). The fallback is
+// the public app's client_id, used only if the env var is somehow unset.
+const FALLBACK_THEME_APP_API_KEY = "bf99e755a15b78cc0dc496d45f1cd75e";
+
+function themeAppApiKey(): string {
+  return process.env.SHOPIFY_API_KEY || FALLBACK_THEME_APP_API_KEY;
+}
 
 // Order: welcome → configure → placements/install → billing → complete.
 // The legacy activate_widget step still has a route so merchants already there
@@ -91,7 +102,14 @@ export function onboardingRouteForStep(step: OnboardingStep): string | null {
   return ONBOARDING_ROUTE_BY_STEP[step];
 }
 
+// Deep link that drops the inline Try-On app block onto the product template's
+// main section — one click adds it for the merchant.
 export function getInlineTryOnBlockEditorUrl(shopDomain: string): string {
-  const apiKey = process.env.SHOPIFY_API_KEY || FALLBACK_THEME_APP_API_KEY;
-  return `https://${shopDomain}/admin/themes/current/editor?template=product&addAppBlockId=${apiKey}/${INLINE_TRYON_BLOCK_HANDLE}&target=mainSection`;
+  return `https://${shopDomain}/admin/themes/current/editor?template=product&addAppBlockId=${themeAppApiKey()}/${INLINE_BUTTON_BLOCK_HANDLE}&target=mainSection`;
+}
+
+// Deep link that opens the App embeds panel with the Ello floating-widget embed
+// pre-selected so the merchant just flips the toggle on and Saves.
+export function getAppEmbedEditorUrl(shopDomain: string): string {
+  return `https://${shopDomain}/admin/themes/current/editor?context=apps&activateAppId=${themeAppApiKey()}/${APP_EMBED_BLOCK_HANDLE}`;
 }

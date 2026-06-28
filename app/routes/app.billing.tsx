@@ -4,8 +4,9 @@ import { useLoaderData, useFetcher, useNavigate } from "react-router";
 import { Page, Banner } from "@shopify/polaris";
 import { motion } from "motion/react";
 import NumberFlow from "@number-flow/react";
-import { Shirt, Tag, Coins, Clock } from "lucide-react";
+import { Shirt, Tag, Coins, Clock, Check } from "lucide-react";
 import { authenticate } from "../shopify.server";
+import { supabaseAdmin } from "../lib/supabase.server";
 import { syncShopifyMerchantToSupabase } from "../lib/shopify-billing.server";
 import {
   AOV_DEFAULT,
@@ -32,6 +33,35 @@ const C = {
   border: "#D8DCE3",
   offwhite: "#FAFBFC",
   white: "#FFFFFF",
+};
+
+// ─── Onboarding recap (shown beside the AOV calculator during onboarding) ────
+
+const DEFAULT_BRAND_COLOR = "#111827";
+
+function normalizeHex(input: string | null | undefined): string {
+  const trimmed = input?.trim() ?? "";
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toLowerCase();
+  return DEFAULT_BRAND_COLOR;
+}
+
+function readableTextColor(hex: string): "#000000" | "#FFFFFF" {
+  const normalized = normalizeHex(hex).replace("#", "");
+  const r = Number.parseInt(normalized.slice(0, 2), 16);
+  const g = Number.parseInt(normalized.slice(2, 4), 16);
+  const b = Number.parseInt(normalized.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.62 ? "#000000" : "#FFFFFF";
+}
+
+type OnboardingRecap = {
+  brandColor: string;
+  position: "left" | "right";
+  inlineEnabled: boolean;
+  floatingNonPdpEnabled: boolean;
+  previewEnabled: boolean;
+  floatingPdpEnabled: boolean;
+  widgetLive: boolean;
 };
 
 // ─── Billing config lookup (mirrors shopify.server.ts) ───────────────────────
@@ -64,10 +94,39 @@ function getBillingPlan(planKey: string, isTest: boolean): { lineItems: BillingL
 // ─── Loader ──────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const url = new URL(request.url);
   const billingError = url.searchParams.get("billingError") ?? null;
-  return { billingError };
+
+  // During onboarding (placements → billing), surface a recap of what the
+  // merchant just set up so the trial reads as "turn on what I built" rather
+  // than a cold paywall. Skipped for existing merchants changing plans.
+  let recap: OnboardingRecap | null = null;
+  if (url.searchParams.get("onboarding") === "1") {
+    const { data } = await supabaseAdmin
+      .from("vto_stores")
+      .select(
+        "inline_button_color, minimized_color, widget_primary_color, widget_position, inline_button_enabled, floating_widget_non_pdp_enabled, desktop_preview_enabled, floating_widget_pdp_enabled, widget_enabled_at",
+      )
+      .eq("shop_domain", session.shop)
+      .maybeSingle();
+
+    if (data) {
+      recap = {
+        brandColor: normalizeHex(
+          data.inline_button_color ?? data.minimized_color ?? data.widget_primary_color,
+        ),
+        position: data.widget_position === "left" ? "left" : "right",
+        inlineEnabled: data.inline_button_enabled ?? true,
+        floatingNonPdpEnabled: data.floating_widget_non_pdp_enabled ?? true,
+        previewEnabled: data.desktop_preview_enabled ?? true,
+        floatingPdpEnabled: data.floating_widget_pdp_enabled ?? false,
+        widgetLive: Boolean(data.widget_enabled_at),
+      };
+    }
+  }
+
+  return { billingError, recap };
 }
 
 // ─── Action: create subscription via GraphQL, return confirmationUrl ─────────
@@ -287,10 +346,117 @@ function PricingSwitch({
   );
 }
 
+// ─── Onboarding recap card ───────────────────────────────────────────────────
+
+function OnboardingRecapCard({ recap }: { recap: OnboardingRecap }) {
+  const placements = [
+    { label: "Inline Try-On button", on: recap.inlineEnabled },
+    { label: "Floating widget", on: recap.floatingNonPdpEnabled },
+    { label: "Desktop preview prompt", on: recap.previewEnabled },
+    { label: "Floating on product pages", on: recap.floatingPdpEnabled },
+  ].filter((p) => p.on);
+
+  const buttonTextColor = readableTextColor(recap.brandColor);
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        gap: 14,
+        height: "100%",
+        padding: "18px 22px",
+        background: C.white,
+        border: `1px solid ${C.border}`,
+        borderRadius: 14,
+        boxShadow: "0 1px 2px rgba(11,18,32,0.05)",
+        overflow: "hidden",
+      }}
+    >
+      {/* Brand-color accent — makes the card feel like theirs */}
+      <div
+        style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: recap.brandColor }}
+      />
+
+      <InlineStackBetween>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.07em",
+            textTransform: "uppercase",
+            color: C.ink500,
+          }}
+        >
+          Your custom setup
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            padding: "2px 9px",
+            borderRadius: 999,
+            whiteSpace: "nowrap",
+            background: recap.widgetLive ? "#E7F6EE" : C.blue50,
+            color: recap.widgetLive ? "#17713F" : C.blue,
+          }}
+        >
+          {recap.widgetLive ? "Live on your store" : "Ready to activate"}
+        </span>
+      </InlineStackBetween>
+
+      {/* Live preview of THEIR button in THEIR color + position */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 7,
+            padding: "8px 16px",
+            borderRadius: 10,
+            background: recap.brandColor,
+            color: buttonTextColor,
+            fontSize: 13,
+            fontWeight: 700,
+            boxShadow: "0 2px 8px rgba(11,18,32,0.16)",
+          }}
+        >
+          <Shirt size={15} /> Try On
+        </span>
+        <span style={{ fontSize: 12.5, color: C.ink500 }}>
+          {recap.brandColor.toUpperCase()} · {recap.position === "left" ? "Bottom-left" : "Bottom-right"}
+        </span>
+      </div>
+
+      {/* What's switched on */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+        {placements.map((p) => (
+          <span
+            key={p.label}
+            style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, color: C.ink700 }}
+          >
+            <Check size={14} strokeWidth={3} color={C.blue} />
+            {p.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InlineStackBetween({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+      {children}
+    </div>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BillingPage() {
-  const { billingError } = useLoaderData<typeof loader>();
+  const { billingError, recap } = useLoaderData<typeof loader>();
   const fetcher = useFetcher();
   const navigate = useNavigate();
   const pricingRef = useRef<HTMLDivElement>(null);
@@ -369,27 +535,17 @@ export default function BillingPage() {
           >
             <h2
               style={{
+                fontFamily: "Georgia, 'Times New Roman', serif",
                 fontSize: "clamp(32px, 5vw, 56px)",
                 fontWeight: 500,
                 color: C.ink,
                 margin: "0 0 14px",
                 lineHeight: 1.05,
-                letterSpacing: "-0.02em",
+                letterSpacing: "-0.01em",
               }}
             >
               Pricing that{" "}
-              <span
-                style={{
-                  display: "inline-block",
-                  border: `1px dashed ${C.blue}`,
-                  background: C.blue100,
-                  color: C.ink,
-                  padding: "2px 12px",
-                  borderRadius: 12,
-                }}
-              >
-                pays for itself
-              </span>
+              <span style={{ color: C.blue, fontStyle: "italic" }}>pays for itself</span>
             </h2>
             <p style={{ fontSize: 16, color: C.ink500, maxWidth: 560, margin: "0 auto", lineHeight: 1.5 }}>
               Every Ello plan is sized so a few extra sales from try-on cover the whole month. Set your
@@ -402,30 +558,54 @@ export default function BillingPage() {
             <PricingSwitch interval={interval} onSwitch={setInterval} />
           </motion.div>
 
-          {/* AOV calculator — drives the break-even number on every card */}
+          {/* Your-setup recap (onboarding only) + AOV calculator, same row */}
           <motion.div custom={2} initial="hidden" animate="visible" variants={reveal}>
             <div
               style={{
-                maxWidth: 640,
+                maxWidth: recap ? 940 : 640,
                 margin: "24px auto 0",
-                display: "flex",
-                gap: 20,
-                alignItems: "center",
-                justifyContent: "center",
-                flexWrap: "wrap",
-                padding: "18px 24px",
-                background: C.white,
-                border: `1px solid ${C.border}`,
-                borderRadius: 14,
-                boxShadow: "0 1px 2px rgba(11,18,32,0.05)",
+                display: "grid",
+                gridTemplateColumns: recap ? "repeat(auto-fit, minmax(290px, 1fr))" : "1fr",
+                gap: 16,
+                alignItems: "stretch",
               }}
             >
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.ink500, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              {recap && <OnboardingRecapCard recap={recap} />}
+
+              <div
+                style={{
+                  position: "relative",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 14,
+                  height: "100%",
+                  padding: "18px 22px",
+                  background: C.white,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 14,
+                  boxShadow: "0 1px 2px rgba(11,18,32,0.05)",
+                  overflow: "hidden",
+                }}
+              >
+                {/* Ello-blue accent — pairs with the brand-color setup card */}
+                <div
+                  style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: C.blue }}
+                />
+
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    letterSpacing: "0.07em",
+                    textTransform: "uppercase",
+                    color: C.ink500,
+                  }}
+                >
                   Your average order value
                 </span>
-                <div style={{ display: "inline-flex", alignItems: "center" }}>
-                  <span style={{ fontSize: 22, fontWeight: 700, color: C.ink, marginRight: 2 }}>$</span>
+
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+                  <span style={{ fontSize: 30, fontWeight: 800, color: C.ink }}>$</span>
                   <input
                     id="average-order-value"
                     type="number"
@@ -434,20 +614,21 @@ export default function BillingPage() {
                     value={averageOrderValue}
                     onChange={(e) => setAverageOrderValue(Number(e.currentTarget.value))}
                     style={{
-                      width: 96,
-                      fontSize: 22,
-                      fontWeight: 700,
+                      width: 110,
+                      fontSize: 30,
+                      fontWeight: 800,
                       color: C.ink,
-                      padding: "6px 10px",
+                      padding: "4px 12px",
                       border: `1px solid ${C.border}`,
-                      borderRadius: 8,
+                      borderRadius: 10,
                       outline: "none",
                     }}
                   />
                 </div>
-              </div>
-              <div style={{ flex: 1, minWidth: 220, fontSize: 14, color: C.ink500, lineHeight: 1.5 }}>
-                Change this to see exactly how many sales each plan needs to pay for itself.
+
+                <span style={{ fontSize: 13.5, color: C.ink500, lineHeight: 1.5, maxWidth: 320 }}>
+                  Change this to see exactly how many sales each plan needs to pay for itself.
+                </span>
               </div>
             </div>
           </motion.div>

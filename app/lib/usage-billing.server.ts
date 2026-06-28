@@ -14,6 +14,8 @@ export type UsageCheckResult = {
   overage_cap_credits?: number;
   shop_domain?: string;
   shopify_usage_line_item_id?: string;
+  shopper_limit_count?: number;
+  shopper_limit_window_hours?: number;
 };
 
 // ─── Check & Record Usage ─────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ export async function checkAndRecordUsage(
   sessionId?: string | null,
   pageContext?: PageContext,
   entrySource?: EntrySource | null,
+  ipAddress?: string | null,
 ): Promise<UsageCheckResult> {
   try {
     const { data, error } = await supabaseAdmin.rpc("record_tryon_event", {
@@ -56,6 +59,7 @@ export async function checkAndRecordUsage(
       p_page_handle: pageContext?.handle ?? null,
       p_page_in_catalog: pageContext?.in_catalog ?? null,
       p_entry_source: entrySource ?? null,
+      p_ip_address: ipAddress ?? null,
     });
 
     if (error) {
@@ -83,6 +87,8 @@ export async function checkAndRecordUsage(
       overage_cap_credits: result.overage_cap_credits as number | undefined,
       shop_domain: result.shop_domain as string | undefined,
       shopify_usage_line_item_id: result.shopify_usage_line_item_id as string | undefined,
+      shopper_limit_count: result.shopper_limit_count as number | undefined,
+      shopper_limit_window_hours: result.shopper_limit_window_hours as number | undefined,
     };
   } catch (err) {
     console.error("[UsageBilling] Exception during usage check:", err);
@@ -156,5 +162,35 @@ export async function createShopifyUsageCharge(
   } catch (err) {
     console.error(`[UsageBilling] Failed to create Shopify usage charge for ${shopDomain}:`, err);
     return { success: false, error: String(err) };
+  }
+}
+
+// ─── Release Usage On Failed Render ───────────────────────────────────────────
+// record_tryon_event increments usage UP FRONT so the limit gate can run before
+// we spend ML compute. When the render then fails to return an image, this hands
+// the metered credit back (decrements tryons_used / overage_credits_used and flips
+// the logged event to failed) so a try-on that produced no photo never consumes
+// the merchant's included or overage allowance. Best-effort: never throws.
+
+export async function releaseTryonCredit(
+  storeSlug: string,
+  sessionId: string | null,
+  wasOverage: boolean,
+): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin.rpc("reverse_tryon_event", {
+      p_store_slug: storeSlug,
+      p_session_id: sessionId,
+      p_was_overage: wasOverage,
+    });
+    if (error) {
+      console.error("[UsageBilling] Failed to release try-on credit:", error.message);
+    } else {
+      console.log(
+        `[UsageBilling] Released try-on credit for ${storeSlug} (overage: ${wasOverage})`,
+      );
+    }
+  } catch (err) {
+    console.error("[UsageBilling] Exception releasing try-on credit:", err);
   }
 }

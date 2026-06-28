@@ -295,12 +295,16 @@
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s ease;
-            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
             border: none;
             position: relative;
             overflow: hidden;
             font-family: 'Poppins', sans-serif;
         }
+        .fro-btn svg { flex: none; }
 
         .fro-btn-primary {
             background: #000000;
@@ -1554,20 +1558,18 @@
         }
 
         .widget-toggle {
-            background: rgba(0, 0, 0, 0.1);
-            border: 1px solid #ccc;
-            color: #333;
-            font-size: 16px;
+            background: #ffffff;
+            border: 1px solid #e6e6e6;
+            color: #555;
             cursor: pointer;
-            padding: 6px;
-            border-radius: 4px;
-            width: 32px;
-            height: 32px;
+            padding: 0;
+            border-radius: 50%;
+            width: 34px;
+            height: 34px;
             display: flex;
             align-items: center;
             justify-content: center;
             transition: all 0.2s ease;
-            backdrop-filter: blur(10px);
             -webkit-tap-highlight-color: transparent;
         }
 
@@ -1586,8 +1588,9 @@
         }
 
         .widget-toggle:hover {
-            background: rgba(0, 0, 0, 0.2);
-            border-color: #999;
+            background: #f3f3f3;
+            border-color: #d8d8d8;
+            color: #1a1a1a;
         }
 
         /* Mode Selector - Light */
@@ -1957,7 +1960,7 @@
 
         .featured-item {
             background: #f8f8f8;
-            border-radius: 6px;
+            border-radius: 16px;
             padding: 16px;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
             border: 1px solid #e0e0e0;
@@ -2076,10 +2079,10 @@
 
         .featured-badge {
             display: inline-block;
-            background: #e0e0e0;
-            color: #333;
-            padding: 2px 8px;
-            border-radius: 2px;
+            background: #efefef;
+            color: #6b6b6b;
+            padding: 4px 10px;
+            border-radius: 8px;
             font-size: 10px;
             font-weight: 600;
             text-transform: uppercase;
@@ -3055,7 +3058,7 @@
             flex: 1;
             padding: 14px;
             border: none;
-            border-radius: 6px;
+            border-radius: 12px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
@@ -3201,91 +3204,96 @@
         }
 
         /* Browse All Button */
-        .browse-all-btn {
-            width: 100%;
-            background: #f0f0f0;
-            border: 1px solid #e0e0e0;
-            color: #666;
-            padding: 14px;
-            border-radius: 6px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            margin-top: 8px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 13px;
-        }
-
-        /* Mobile-specific browse button adjustments */
-        @media (max-width: 768px) {
-            .browse-all-btn {
-                padding: 12px;
-                font-size: 12px;
-                border-radius: 6px;
-            }
-        }
-
-        .browse-all-btn:hover {
-            background: #e0e0e0;
-            border-color: #ccc;
-            color: #333;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-        }
-
-        /* Wardrobe Button */
+        /* Browse + Wardrobe row buttons */
+        .browse-all-btn,
         .wardrobe-btn {
             width: 100%;
-            background: linear-gradient(135deg, #f8f8f8 0%, #f0f0f0 100%);
-            border: 1px solid #e0e0e0;
-            color: #666;
-            padding: 14px;
-            border-radius: 6px;
-            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 13px;
+            background: #fafafa;
+            border: 1px solid #ececec;
+            border-radius: 14px;
+            padding: 11px 13px;
+            margin-top: 11px;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
+            text-align: left;
+            font-family: inherit;
+        }
+
+        .browse-all-btn:hover,
+        .wardrobe-btn:hover {
+            background: #f3f3f3;
+            border-color: #e2e2e2;
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+        }
+
+        .rb-ico {
+            width: 40px;
+            height: 40px;
+            border-radius: 11px;
+            background: #ffffff;
+            border: 1px solid #e8e8e8;
+            color: #2a2a2a;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
-            margin-top: 8px;
+            flex-shrink: 0;
+        }
+
+        .rb-ico svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .rb-ico-dark {
+            background: #1a1a1a;
+            border-color: #1a1a1a;
+            color: #ffffff;
+        }
+
+        .rb-text {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .rb-label {
+            font-size: 12.5px;
+            font-weight: 600;
+            letter-spacing: 0.6px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 13px;
-            position: relative;
+            color: #1a1a1a;
         }
 
-        /* Mobile-specific wardrobe button adjustments */
-        @media (max-width: 768px) {
-            .wardrobe-btn {
-                padding: 12px;
-                font-size: 12px;
-                border-radius: 6px;
-            }
+        .rb-sub {
+            font-size: 10.5px;
+            font-weight: 500;
+            letter-spacing: 0.2px;
+            color: #9a9a9a;
         }
 
-        .wardrobe-btn:hover {
-            background: linear-gradient(135deg, #e0e0e0 0%, #d8d8d8 100%);
-            border-color: #ccc;
-            color: #333;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+        .rb-chev {
+            width: 20px;
+            height: 20px;
+            color: #c4c4c4;
+            flex-shrink: 0;
         }
 
         .wardrobe-btn .wardrobe-count {
-            background: #333;
-            color: white;
-            padding: 2px 6px;
-            border-radius: 10px;
-            font-size: 10px;
+            background: #efefef;
+            color: #555;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
             font-weight: 700;
             min-width: 16px;
             text-align: center;
+            flex-shrink: 0;
         }
 
         /* Input Area */
@@ -4261,30 +4269,60 @@
 
         .wardrobe-empty {
             text-align: center;
-            padding: 60px 20px;
-            color: #999;
+            padding: 56px 28px;
+            max-width: 380px;
+            margin: 0 auto;
+            color: #6b7280;
+            animation: ello-empty-in 0.35s ease both;
+        }
+
+        @keyframes ello-empty-in {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
         }
 
         .wardrobe-empty-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            opacity: 0.5;
+            width: 78px;
+            height: 78px;
+            margin: 0 auto 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background: #f3f4f6;
+            color: #9aa0a6;
         }
 
-        .wardrobe-empty h3 {
+        #virtual-tryon-widget-container .wardrobe-empty h3 {
             font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            color: #666;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            font-weight: 650;
+            margin: 0 0 28px;
+            color: #1f2430;
+            letter-spacing: -0.01em;
+            text-transform: none;
         }
 
-        .wardrobe-empty p {
+        .wardrobe-empty-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 12px 22px;
+            background: #111418;
+            color: #fff;
+            border: none;
+            border-radius: 999px;
+            font: inherit;
             font-size: 14px;
-            color: #999;
-            margin: 0;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.14);
+            transition: transform .14s ease, box-shadow .14s ease, opacity .14s ease;
         }
+
+        .wardrobe-empty-cta svg { transition: transform .14s ease; }
+        .wardrobe-empty-cta:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0,0,0,0.18); }
+        .wardrobe-empty-cta:hover svg { transform: translateX(3px); }
+        .wardrobe-empty-cta:active { transform: translateY(0); box-shadow: 0 3px 10px rgba(0,0,0,0.14); }
 
         .wardrobe-grid {
             display: grid;
@@ -5376,6 +5414,114 @@
             color: #999;
         }
 
+        /* ── Clean modern search field (icon + clear button) ──────────────── */
+        #virtual-tryon-widget-container .epc-search-wrap {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        #virtual-tryon-widget-container .epc-search-icon {
+            position: absolute;
+            left: 15px;
+            width: 18px;
+            height: 18px;
+            color: #9aa0a6;
+            pointer-events: none;
+        }
+        #virtual-tryon-widget-container input.epc-search {
+            width: 100%;
+            padding: 13px 46px 13px 44px;
+            border: 1.5px solid #e6e7eb;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.2;
+            background: #fff;
+            color: #1f2430;
+            outline: none;
+            box-shadow: none;
+            transition: border-color .15s ease, box-shadow .15s ease;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        #virtual-tryon-widget-container input.epc-search::placeholder { color: #9aa0a6; }
+        #virtual-tryon-widget-container input.epc-search:focus {
+            border-color: #111418;
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(17, 20, 24, 0.08);
+        }
+        @media (max-width: 480px) {
+            /* 16px keeps iOS from zooming the page on focus */
+            #virtual-tryon-widget-container input.epc-search { font-size: 16px; }
+        }
+        #virtual-tryon-widget-container .epc-search-clear {
+            position: absolute;
+            right: 9px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 26px;
+            height: 26px;
+            padding: 0;
+            border: none;
+            border-radius: 50%;
+            background: #f1f2f4;
+            color: #6b7280;
+            cursor: pointer;
+            transition: background .15s ease, color .15s ease;
+        }
+        #virtual-tryon-widget-container .epc-search-clear svg { width: 13px; height: 13px; }
+        #virtual-tryon-widget-container .epc-search-clear:hover { background: #e6e7eb; color: #1f2430; }
+        /* Hidden while the field is empty (placeholder visible) */
+        #virtual-tryon-widget-container input.epc-search:placeholder-shown ~ .epc-search-clear {
+            display: none;
+        }
+        .theme-black #virtual-tryon-widget-container input.epc-search,
+        .theme-black input.epc-search {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: rgba(255, 255, 255, 0.18);
+            color: #fff;
+        }
+        .theme-black input.epc-search::placeholder { color: rgba(255, 255, 255, 0.5); }
+        .theme-black .epc-search-clear { background: rgba(255, 255, 255, 0.12); color: rgba(255, 255, 255, 0.8); }
+
+        /* ── Category filter chips (collection) ────────────────────────────── */
+        #virtual-tryon-widget-container .epc-category-bar {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            padding: 2px 2px 12px;
+            margin: 0;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+        }
+        #virtual-tryon-widget-container .epc-category-bar::-webkit-scrollbar { display: none; }
+        #virtual-tryon-widget-container .epc-chip {
+            flex: none;
+            padding: 8px 16px;
+            border-radius: 999px;
+            border: 1.5px solid #e6e7eb;
+            background: #fff;
+            color: #4b5563;
+            font: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 1;
+            white-space: nowrap;
+            cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
+            transition: background .15s ease, color .15s ease, border-color .15s ease;
+        }
+        #virtual-tryon-widget-container .epc-chip:hover { border-color: #c7c9cf; color: #1f2430; }
+        #virtual-tryon-widget-container .epc-chip.active {
+            background: #111418;
+            border-color: #111418;
+            color: #fff;
+        }
+        .theme-black #virtual-tryon-widget-container .epc-chip,
+        .theme-black .epc-chip { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); color: rgba(255,255,255,0.82); }
+        .theme-black .epc-chip.active { background: #fff; border-color: #fff; color: #111418; }
+
         .browser-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -5633,6 +5779,197 @@
 
         .browser-card-price {
             display: none;
+        }
+
+        /* ── Modern collection cards (Fitting Room hub) ──────────────────────
+           Image-forward grid that reads like the storefront's own product grid:
+           edge-to-edge cover images in a 3:4 frame, name + price beneath, no
+           boxy borders. New class names (.epc-*) so none of the legacy
+           .browser-clothing-card rules above apply. Scoped to the widget
+           container ID so it wins the cascade over the global h/p reset. */
+        #virtual-tryon-widget-container .epc-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+            gap: 22px 14px;
+            min-height: 120px;
+            padding: 0;
+            margin: 0;
+            isolation: isolate;
+        }
+        @media (max-width: 768px) {
+            #virtual-tryon-widget-container .epc-grid {
+                grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+                gap: 18px 12px;
+            }
+        }
+        @media (max-width: 480px) {
+            #virtual-tryon-widget-container .epc-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 16px 10px;
+            }
+        }
+
+        #virtual-tryon-widget-container .epc-card {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            cursor: pointer;
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0;
+            text-align: left;
+            -webkit-tap-highlight-color: transparent;
+            /* Off-screen cards skip layout/paint — keeps a long grid cheap. */
+            content-visibility: auto;
+            contain-intrinsic-size: auto 270px;
+        }
+
+        #virtual-tryon-widget-container .epc-media {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 3 / 4;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #f1f2f4;
+        }
+        /* Shimmer placeholder until the image decodes. */
+        #virtual-tryon-widget-container .epc-media::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            background: linear-gradient(100deg, #f1f2f4 28%, #e7e8ea 48%, #f1f2f4 68%);
+            background-size: 220% 100%;
+            animation: epc-shimmer 1.25s ease-in-out infinite;
+            transition: opacity .35s ease;
+        }
+        #virtual-tryon-widget-container .epc-media.epc-ready::after {
+            opacity: 0;
+            animation: none;
+        }
+        @keyframes epc-shimmer {
+            0%   { background-position: 220% 0; }
+            100% { background-position: -220% 0; }
+        }
+
+        #virtual-tryon-widget-container .epc-img {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center top;
+            display: block;
+            opacity: 0;
+            transition: opacity .35s ease, transform .4s ease;
+        }
+        #virtual-tryon-widget-container .epc-img.is-loaded { opacity: 1; }
+        #virtual-tryon-widget-container .epc-card:hover .epc-img { transform: scale(1.05); }
+        #virtual-tryon-widget-container .epc-card:hover .epc-media,
+        #virtual-tryon-widget-container .epc-card:focus-visible .epc-media {
+            box-shadow: 0 10px 26px rgba(0, 0, 0, 0.13);
+        }
+        #virtual-tryon-widget-container .epc-card.is-selected .epc-media {
+            /* clean gapped ring (white gap + thin dark) — reads as "selected",
+               never as a stray black border */
+            box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px #1f2430;
+        }
+
+        #virtual-tryon-widget-container .epc-info {
+            padding: 10px 2px 0;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+        #virtual-tryon-widget-container .epc-name {
+            font-size: 13px;
+            font-weight: 550;
+            color: #1f2430;
+            line-height: 1.3;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        #virtual-tryon-widget-container .epc-price {
+            font-size: 13px;
+            font-weight: 500;
+            color: #6b7280;
+            line-height: 1.2;
+        }
+
+        /* ── Modern wardrobe tiles ─────────────────────────────────────────
+           Reuse the collection card look (.epc-media/.epc-img/.epc-info) and
+           add a clean action row BELOW each tile (always visible, custom icons)
+           instead of the old hover-only emoji pills in the corner. */
+        /* Wardrobe tiles are bigger than collection tiles — shoppers should be
+           able to see their look clearly, not squint. Exactly two per row on
+           phones; larger, fewer columns on desktop. */
+        #virtual-tryon-widget-container #wardrobeGrid.epc-grid {
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 26px 18px;
+        }
+        @media (max-width: 768px) {
+            #virtual-tryon-widget-container #wardrobeGrid.epc-grid {
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+                gap: 18px 12px;
+            }
+            #virtual-tryon-widget-container .ewc-btn {
+                font-size: 12.5px;
+                padding: 11px 10px;
+            }
+        }
+        #virtual-tryon-widget-container .ewc-card {
+            cursor: default;
+            content-visibility: visible;   /* small list — no need to virtualize */
+        }
+        #virtual-tryon-widget-container .ewc-card .epc-img { cursor: zoom-in; }
+        #virtual-tryon-widget-container .ewc-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            padding: 10px 0 0;
+        }
+        #virtual-tryon-widget-container .ewc-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 11px;
+            font: inherit;
+            font-size: 13.5px;
+            font-weight: 600;
+            line-height: 1;
+            white-space: nowrap;
+            cursor: pointer;
+            border: 1.5px solid transparent;
+            -webkit-appearance: none;
+            appearance: none;
+            -webkit-tap-highlight-color: transparent;
+            transition: background .15s ease, border-color .15s ease, transform .12s ease;
+        }
+        #virtual-tryon-widget-container .ewc-btn svg { flex: none; }
+        #virtual-tryon-widget-container .ewc-btn-primary { background: #111418; color: #fff; }
+        #virtual-tryon-widget-container .ewc-btn-primary:hover { background: #000; transform: translateY(-1px); }
+        #virtual-tryon-widget-container .ewc-btn-ghost { background: #fff; color: #1f2430; border-color: #e6e7eb; }
+        #virtual-tryon-widget-container .ewc-btn-ghost:hover { border-color: #111418; background: #fafafa; }
+
+        .theme-black #virtual-tryon-widget-container .ewc-btn-primary,
+        .theme-black .ewc-btn-primary { background: #fff; color: #111418; }
+        .theme-black .ewc-btn-ghost { background: rgba(255,255,255,0.05); color: #fff; border-color: rgba(255,255,255,0.25); }
+
+        /* Dark theme variants */
+        .theme-black .epc-media { background: rgba(255, 255, 255, 0.06); }
+        .theme-black .epc-media::after {
+            background: linear-gradient(100deg, rgba(255,255,255,0.05) 28%, rgba(255,255,255,0.11) 48%, rgba(255,255,255,0.05) 68%);
+            background-size: 220% 100%;
+        }
+        .theme-black .epc-name { color: #fff; }
+        .theme-black .epc-price { color: rgba(255, 255, 255, 0.6); }
+        .theme-black .epc-card.is-selected .epc-media {
+            box-shadow: 0 0 0 2px #1f2430, 0 0 0 3.5px #fff;
         }
 
         /* Mobile-specific browser text adjustments */
@@ -6138,6 +6475,44 @@
             color: #fff !important;
         }
 
+        .theme-black .wardrobe-btn {
+            background: #23272f !important;
+            border: 1px solid #fff !important;
+        }
+
+        .theme-black .wardrobe-btn:hover {
+            background: #181a1b !important;
+            border-color: #fff !important;
+        }
+
+        .theme-black .rb-label {
+            color: #fff !important;
+        }
+
+        .theme-black .rb-sub {
+            color: rgba(255, 255, 255, 0.55) !important;
+        }
+
+        .theme-black .rb-ico {
+            background: rgba(255, 255, 255, 0.08) !important;
+            border-color: rgba(255, 255, 255, 0.25) !important;
+            color: #fff !important;
+        }
+
+        .theme-black .rb-ico-dark {
+            background: #000 !important;
+            border-color: rgba(255, 255, 255, 0.25) !important;
+        }
+
+        .theme-black .rb-chev {
+            color: rgba(255, 255, 255, 0.5) !important;
+        }
+
+        .theme-black .wardrobe-btn .wardrobe-count {
+            background: rgba(255, 255, 255, 0.15) !important;
+            color: #fff !important;
+        }
+
         .theme-black .photo-upload {
             background: #23272f !important;
             border: 2px dashed #fff !important;
@@ -6420,12 +6795,23 @@
             color: #fff !important;
         }
 
+        .theme-black .wardrobe-empty-icon {
+            background: rgba(255,255,255,0.08);
+            color: rgba(255,255,255,0.72);
+        }
+
         .theme-black .wardrobe-empty h3 {
             color: #fff !important;
         }
 
         .theme-black .wardrobe-empty p {
-            color: #fff !important;
+            color: rgba(255,255,255,0.78) !important;
+        }
+
+        .theme-black .wardrobe-empty-cta {
+            background: #fff;
+            color: #111418;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.4);
         }
 
         /* Browser image wrapper - ensures consistent aspect ratio and prevents overlap */
@@ -6920,20 +7306,21 @@
                 <div class="fro-headline">See it on you.<br>Instantly.</div>
                 <div class="fro-subtext">Upload your photo, pick an item, and see exactly how it looks.</div>
 
-                <!-- Buttons -->
+                <!-- Buttons — "Use My Photo" is the primary action (that's the real
+                     try-on value); "Use a Model" is the secondary fallback. -->
                 <div class="onboarding-ctas">
-                    <button id="froDemoBtn" class="fro-btn fro-btn-primary">
-                        Use a Model
-                    </button>
-                    <button id="froRealBtn" class="fro-btn fro-btn-secondary">
+                    <button id="froRealBtn" class="fro-btn fro-btn-primary">
                         <!-- Camera Icon (Simple SVG) -->
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-top: -1px;">
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z">
                             </path>
                             <circle cx="12" cy="13" r="4"></circle>
                         </svg>
-                        Use My Photo
+                        <span>Use My Photo</span>
+                    </button>
+                    <button id="froDemoBtn" class="fro-btn fro-btn-secondary">
+                        Use a Model
                     </button>
                 </div>
             </div>
@@ -6942,7 +7329,7 @@
         <!-- Header -->
         <div class="widget-header">
             <h3 class="widget-title">Virtual Try-On</h3>
-            <button class="widget-toggle" onclick="closeWidget()" aria-label="Close virtual try-on widget">×</button>
+            <button class="widget-toggle" onclick="closeWidget()" aria-label="Close virtual try-on widget"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg></button>
         </div>
 
         <!-- Content -->
@@ -6960,7 +7347,7 @@
                 <!-- Featured Item Section -->
                 <div class="featured-section">
                     <h4 class="section-title">
-                        <span>⭐</span>
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#e0a52e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.5 6.8 19l1-5.8-4.2-4.1 5.8-.8z"></path></svg>
                         Featured Today
                     </h4>
                     <div id="featuredItem" class="featured-item" onclick="selectFeaturedClothing()">
@@ -6971,21 +7358,31 @@
                 <!-- Quick Picks Section -->
                 <div class="quick-picks-section">
                     <h4 class="section-title">
-                        <span>🔥</span>
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#e2613c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.4-.5-2-1-3-1.1-2.1-.2-4 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.2.4-2.3 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path></svg>
                         Trending
                     </h4>
                     <div id="quickPicksGrid" class="quick-picks-grid">
                         <!-- Quick pick items will be populated here -->
                     </div>
                     <button class="browse-all-btn" onclick="openClothingBrowser()">
-                        <span>👗</span>
-                        Browse Full Collection
-                        <span>→</span>
+                        <span class="rb-ico">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>
+                        </span>
+                        <span class="rb-text">
+                            <span class="rb-label">Browse Full Collection</span>
+                            <span class="rb-sub">See every item in the shop</span>
+                        </span>
+                        <svg class="rb-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 6 15 12 9 18"></polyline></svg>
                     </button>
                     <button class="wardrobe-btn" onclick="openWardrobe()">
-                        <span>👔</span>
-                        My Wardrobe
-                        <span>(0)</span>
+                        <span class="rb-ico rb-ico-dark">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6.6V5.4a2 2 0 1 1 2-2"></path><path d="M12 6.6 4.2 13.2a1 1 0 0 0 .65 1.8h14.3a1 1 0 0 0 .65-1.8L12 6.6z"></path></svg>
+                        </span>
+                        <span class="rb-text">
+                            <span class="rb-label">My Wardrobe</span>
+                            <span class="rb-sub">Your saved try-ons</span>
+                        </span>
+                        <span class="wardrobe-count">0</span>
                     </button>
                 </div>
 
@@ -7104,13 +7501,9 @@
 
             <!-- Action Buttons - STRUCTURALLY MOVED HERE TO BE FIXED AT BOTTOM -->
             <div class="action-buttons">
-                <button class="btn btn-secondary" onclick="closeWidget()">
-                    <span>✕</span>
-                    Close
-                </button>
                 <button class="btn btn-primary" id="tryOnBtn" disabled
                     aria-label="Try on selected clothing with your photo. Press Enter to activate.">
-                    <span>✨</span>
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="#ffd66b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M19 14l.7 2.1L22 17l-2.3.9L19 20l-.7-2.1L16 17l2.3-.9z"></path></svg>
                     Try On
                 </button>
                 <!-- Rich Loading State -->
@@ -7159,11 +7552,19 @@
             </div>
             <div class="browser-body">
                 <div class="browser-search-container">
-                    <input type="text" class="browser-search" id="browserSearch"
-                        placeholder="Search for clothes, colors, or categories..." oninput="handleBrowserSearch()">
+                    <div class="epc-search-wrap">
+                        <svg class="epc-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3-3"></path></svg>
+                        <input type="text" class="browser-search epc-search" id="browserSearch" autocomplete="off"
+                            placeholder="Search by name, color, or category" oninput="handleBrowserSearch()">
+                        <button type="button" class="epc-search-clear" aria-label="Clear search"
+                            onclick="var i=document.getElementById('browserSearch');i.value='';i.dispatchEvent(new Event('input'));i.focus();">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>
+                        </button>
+                    </div>
                 </div>
+                <div id="epcCategoryBar" class="epc-category-bar" style="display:none;"></div>
                 <div id="searchResultsCount" class="search-results-count"></div>
-                <div id="browserGrid" class="browser-grid">
+                <div id="browserGrid" class="epc-grid">
                     <!-- Clothing items will be populated here -->
                 </div>
                 <div id="noResultsMessage" class="no-results" style="display: none;">
@@ -7406,11 +7807,18 @@
             </div>
             <div class="wardrobe-body">
                 <div id="wardrobeEmpty" class="wardrobe-empty" style="display: none;">
-                    <div class="wardrobe-empty-icon">👔</div>
-                    <h3>Your Wardrobe is Empty</h3>
-                    <p>Try on some clothes to see them here!</p>
+                    <div class="wardrobe-empty-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+                            <path d="M21.6 18.2 13 11.75v-.62a3.5 3.5 0 1 0-4.2-3.43.9.9 0 0 0 1.8 0 1.7 1.7 0 1 1 1.7 1.7c-.5 0-.9.4-.9.9v1.48L2.4 18.2c-.77.58-.36 1.8.6 1.8h18c.96 0 1.37-1.22.6-1.8Z"></path>
+                        </svg>
+                    </div>
+                    <h3>Your wardrobe is empty</h3>
+                    <button type="button" class="wardrobe-empty-cta" onclick="if(typeof elloHubSwitch==='function'){elloHubSwitch('collection');}">
+                        Browse full collection
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>
+                    </button>
                 </div>
-                <div id="wardrobeGrid" class="wardrobe-grid">
+                <div id="wardrobeGrid" class="epc-grid">
                     <!-- Wardrobe items will be populated here -->
                 </div>
             </div>

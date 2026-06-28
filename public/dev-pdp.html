@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ello — Local Store Harness (dev only)</title>
+<!--
+  LOCAL DEV HARNESS — mimics a Shopify product page so you can test the widget
+  exactly like it runs on a real store, WITHOUT deploying to Cloud Run or the
+  theme extension. .dockerignore excludes this file so it never ships to prod.
+
+  HOW TO RUN
+    1) npm run vite       (note the "Local:" URL it prints, e.g. http://localhost:3000)
+    2) open  http://localhost:3000/dev-pdp.html?shop=YOUR-STORE.myshopify.com
+       (use whatever port step 1 printed. Replace the shop with a store that has
+        the widget configured in your dashboard — a dev store or your real test
+        store. Catalog + config are pulled LIVE from Supabase for that shop, so
+        the hub shows real products.)
+
+  WHY IT WORKS LIKE A REAL STORE
+    widget-loader.js detects the localhost hostname and loads widget-main.js +
+    widget.html + /api/widget-config from this same dev-server origin — i.e. your
+    edited files. Edit public/widget-main.js, refresh this page, see the change.
+
+  WHAT'S MOCKED (everything else is real)
+    • window.Shopify / ShopifyAnalytics — so the widget thinks it's on a store
+    • /cart/add.js, /cart.js — intercepted below and return fake success, so the
+      try-on → Add-to-Cart flow completes locally (no real cart exists)
+    • The theme/CSS is generic — final "matches your header icons" polish must
+      still be eyeballed on the real store via `shopify app dev`.
+-->
+<style>
+  :root { --ink:#111; --muted:#6b6b6b; --line:#e6e6e6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); }
+  .topbar { background:#1d1d1d; color:#fff; font-size:12px; text-align:center; padding:7px; letter-spacing:.04em; }
+  /* Header — the icon cluster is where the "Fitting room" entry lives. The
+     real entry is added via the theme block on a live store; here we render a
+     stand-in with the same wiring (window.Ello.openCollection). */
+  header.site { display:flex; align-items:center; justify-content:space-between; padding:14px 24px; border-bottom:1px solid var(--line); }
+  .brand { font-weight:700; letter-spacing:.06em; font-size:18px; }
+  nav.icons { display:flex; align-items:center; gap:18px; color:#333; }
+  nav.icons button, nav.icons a { background:none; border:none; cursor:pointer; color:inherit; font:inherit; display:inline-flex; align-items:center; gap:6px; text-decoration:none; padding:4px; }
+  .ico { width:22px; height:22px; }
+  main { max-width:1100px; margin:0 auto; padding:28px 24px; display:grid; grid-template-columns: 1fr 1fr; gap:40px; }
+  .gallery img { width:100%; border-radius:8px; background:#f3f3f3; display:block; }
+  .pdp h1 { font-size:22px; margin:0 0 6px; }
+  .price { font-size:18px; margin:0 0 18px; }
+  .pdp label { display:block; font-size:13px; color:var(--muted); margin:14px 0 6px; }
+  .pdp select { width:100%; padding:10px; border:1px solid var(--line); border-radius:6px; font:inherit; }
+  .atc { width:100%; padding:14px; margin-top:18px; background:#111; color:#fff; border:none; border-radius:6px; font-size:15px; cursor:pointer; }
+  .devbar { position:fixed; left:12px; bottom:12px; z-index:2147483000; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 6px 24px rgba(0,0,0,.12); padding:10px 12px; font-size:12px; max-width:280px; }
+  .devbar h4 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .devbar button { display:block; width:100%; text-align:left; margin:4px 0; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:#fafafa; cursor:pointer; font:inherit; }
+  .devbar .shop { color:var(--muted); margin-top:8px; word-break:break-all; }
+  @media (max-width:760px){ main { grid-template-columns: 1fr; } }
+
+  /* Simulate LA Apparel: NO bottom-right launcher, ever. The try-on UI is one
+     element (#virtualTryonWidget); its collapsed "bubble" state carries
+     .widget-minimized. Hiding only that state removes the corner bubble in every
+     state while the opened panel/hub still works — exactly what the dashboard's
+     "floating widget off everywhere" toggle does on a real store. */
+  #virtualTryonWidget.widget-minimized { display: none !important; }
+
+  /* LA Apparel is on the paid custom app, so the free-plan "Powered by Ello VTO"
+     badge (injected only for plan_code === "ello_free") won't render there.
+     Hide it here so the harness matches — and so the panel content (flex:1)
+     fills cleanly to the bottom instead of exposing the bubble-color backdrop. */
+  #ello-branding-footer { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="topbar">FREE SHIPPING ON ORDERS $125 — local dev harness</div>
+
+<header class="site">
+  <div class="brand">DEV APPAREL</div>
+  <nav class="icons">
+    <button aria-label="Search"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg></button>
+    <button aria-label="Wishlist"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.5-7 10-7 10z"/></svg></button>
+    <button aria-label="Account"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="8" r="4"/><path d="M5 21a7 7 0 0 1 14 0"/></svg></button>
+
+    <!-- Entry point #1: a stand-in for the "Ello Fitting Room" header block -->
+    <button id="harness-fitting-room" aria-label="Fitting room">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5V5.2a2 2 0 1 1 2-2"/><path d="M12 6.5 3.6 13.4a1 1 0 0 0 .64 1.77h15.5a1 1 0 0 0 .64-1.77L12 6.5z"/></svg>
+      <span>Fitting room</span>
+    </button>
+
+    <a href="/cart" aria-label="Cart" style="position:relative;display:inline-flex;align-items:center;color:inherit;">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M6 7h12l-1 13H7L6 7z"/><path d="M9 7a3 3 0 0 1 6 0"/></svg>
+      <!-- Stand-in for a theme's cart-count bubble (Dawn-style id + classes) so
+           the harness can prove the in-place cart refresh updates it. -->
+      <span id="cart-icon-bubble" style="position:absolute;top:-6px;right:-9px;min-width:16px;height:16px;padding:0 4px;border-radius:9px;background:#111;color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;line-height:1;"><span class="cart-count-bubble"><span aria-hidden="true">0</span></span></span>
+    </a>
+  </nav>
+</header>
+
+<!-- Entry point #2: nav-link fallback. A plain link whose href contains
+     "ello-fitting-room" — widget-loader.js auto-binds it. -->
+<div style="padding:8px 24px; border-bottom:1px solid var(--line); font-size:13px;">
+  <a href="#ello-fitting-room">Open hub via nav-link fallback</a>
+  &nbsp;·&nbsp;
+  <!-- Entry point #3: data-attribute fallback (opens straight to wardrobe) -->
+  <a href="#" data-ello-hub="wardrobe">Open wardrobe via data-attr</a>
+</div>
+
+<main>
+  <div class="gallery">
+    <!-- id used by the future feature #2 (mobile PDP image swap) -->
+    <img id="pdp-main-image" src="https://placehold.co/600x800?text=Product+Photo" alt="Product">
+  </div>
+  <div class="pdp">
+    <h1 id="pdp-title">Sample Product</h1>
+    <p class="price">$38.00</p>
+
+    <!-- Real Shopify add-to-cart form shape so detectCurrentProduct + variant
+         sync behave as on a store. Replace id values with a REAL enabled
+         product/variant from your store to test the inline try-on path. -->
+    <form action="/cart/add" method="post">
+      <label for="variant">Size</label>
+      <select id="variant" name="id">
+        <option value="00000000000001">XS</option>
+        <option value="00000000000002">S</option>
+        <option value="00000000000003">M</option>
+      </select>
+      <button class="atc" type="button">Add to cart</button>
+    </form>
+
+    <!-- Entry point #4: the inline "Try On" button (PDP try-on, feature foundation) -->
+    <button class="atc" style="background:#fff;color:#111;border:1px solid #111;" id="harness-tryon">Try it on</button>
+  </div>
+</main>
+
+<div class="devbar">
+  <h4>Ello dev harness</h4>
+  <button onclick="window.Ello && window.Ello.openCollection({source:'devbar'})">Open hub → Collection</button>
+  <button onclick="window.Ello && window.Ello.openWardrobe({source:'devbar'})">Open hub → Wardrobe</button>
+  <button onclick="window.Ello && window.Ello.openTryOn({source:'devbar'})">Open inline try-on</button>
+  <div class="shop" id="shop-readout"></div>
+</div>
+
+<script>
+  // ── 1) Resolve which shop to impersonate (?shop= overrides) ────────────────
+  var SHOP = new URLSearchParams(location.search).get('shop') || 'YOUR-STORE.myshopify.com';
+  document.getElementById('shop-readout').textContent = 'shop: ' + SHOP;
+
+  // ── 2) Mock the Shopify globals the widget reads on a real PDP ─────────────
+  window.Shopify = window.Shopify || { shop: SHOP, locale: 'en', currency: { active: 'USD' } };
+  window.Shopify.shop = SHOP;
+  window.ShopifyAnalytics = window.ShopifyAnalytics || {};
+  window.ShopifyAnalytics.meta = window.ShopifyAnalytics.meta || {
+    product: { id: 0, handle: 'sample-product', variants: [{ id: 1, name: 'XS' }] }
+  };
+
+  // ── 3) Mock Shopify cart endpoints so the FULL cart flow works locally ─────
+  // Keeps a live item count: /cart/add.js bumps it, /cart.js reports it, and the
+  // Section Rendering API (?sections=) returns a fresh cart-icon-bubble — exactly
+  // what the widget's in-place cart refresh consumes.
+  (function () {
+    var realFetch = window.fetch.bind(window);
+    var cartCount = 0;
+    window.__elloHarnessCartCount = function () { return cartCount; };
+    function bubbleSection(n) {
+      return '<div id="cart-icon-bubble"><span class="cart-count-bubble"><span aria-hidden="true">' + n + '</span></span></div>';
+    }
+    window.fetch = function (input, init) {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      var json = function (obj) { return Promise.resolve(new Response(JSON.stringify(obj), { status: 200, headers: { 'Content-Type': 'application/json' } })); };
+      // Add to cart → bump the live count
+      if (/\/cart\/add(\.js)?($|\?)/.test(url)) {
+        cartCount += 1;
+        return json({ id: 1, quantity: 1, title: 'Sample Product', sections: { 'cart-icon-bubble': bubbleSection(cartCount) } });
+      }
+      // Section Rendering API → return the bubble with the live count
+      if (/[?&]sections=/.test(url)) {
+        return json({ 'cart-icon-bubble': bubbleSection(cartCount) });
+      }
+      // Cart state / change / update
+      if (/\/cart(\.js)?($|\?)/.test(url) || /\/cart\/(change|update)(\.js)?$/.test(url)) {
+        return json({ item_count: cartCount, items: [], total_price: cartCount * 3800 });
+      }
+      return realFetch(input, init);
+    };
+  })();
+
+  // Turn on verbose widget logs in dev.
+  window.__ELLO_DEBUG__ = true;
+
+  // Wire the harness header/inline buttons to the same public API a real store uses.
+  document.getElementById('harness-fitting-room').addEventListener('click', function () {
+    // Fitting Room opens the FULL panel (home) — change photo, browse, wardrobe,
+    // try-on all reachable. No bottom-right bubble.
+    window.Ello && window.Ello.openFittingRoom({ source: 'fitting_room' });
+  });
+  document.getElementById('harness-tryon').addEventListener('click', function () {
+    window.Ello && window.Ello.openTryOn({ source: 'inline_button' });
+  });
+
+  // Simulate LA Apparel's dashboard settings: floating bubble off on every page
+  // type, and no desktop "preview" peek — so the corner stays completely clean.
+  window.addEventListener('ello:config-resolved', function () {
+    if (window.ELLO_STORE_CONFIG) {
+      window.ELLO_STORE_CONFIG.floatingWidgetPdpEnabled = false;
+      window.ELLO_STORE_CONFIG.floatingWidgetNonPdpEnabled = false;
+      window.ELLO_STORE_CONFIG.desktopPreviewEnabled = false;
+    }
+  });
+
+  // ── 4) Load the real widget loader from localhost (it self-targets :5173) ──
+  (function () {
+    var s = document.createElement('script');
+    s.src = '/widget-loader.js';
+    s.dataset.shop = SHOP;
+    s.defer = true;
+    document.head.appendChild(s);
+  })();
+</script>
+
+</body>
+</html>

@@ -21,10 +21,13 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import {
+  getAppEmbedEditorUrl,
   getInlineTryOnBlockEditorUrl,
   preserveShopifyQuery,
   setOnboardingStep,
 } from "../lib/onboarding.server";
+import { getThemeWidgetStatus } from "../lib/theme-status.server";
+import { InlineButtonPlacementHelp } from "../components/inline-placement-help";
 import { supabaseAdmin } from "../lib/supabase.server";
 
 type PlacementSettings = {
@@ -54,7 +57,10 @@ function readableTextColor(hex: string): "#000000" | "#FFFFFF" {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+
+  // Live theme read — the source of truth for whether each placement is on.
+  const themeStatus = await getThemeWidgetStatus(admin);
 
   const { data, error } = await supabaseAdmin
     .from("vto_stores")
@@ -77,14 +83,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return {
     settings,
-    widgetEnabled: Boolean(data?.widget_enabled_at),
+    // Live theme-derived status (replaces the stale widget_enabled_at latch).
+    widgetEnabled: themeStatus.appEmbedEnabled === true,
+    inlineButtonAdded: themeStatus.inlineButtonAdded === true,
     brandColor: normalizeHex(
       data?.inline_button_color ??
         data?.minimized_color ??
         data?.widget_primary_color,
     ),
     themeEditorUrl: getInlineTryOnBlockEditorUrl(session.shop),
-    appEmbedUrl: `https://${session.shop}/admin/themes/current/editor?context=apps`,
+    appEmbedUrl: getAppEmbedEditorUrl(session.shop),
   };
 };
 
@@ -125,7 +133,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   await setOnboardingStep(session.shop, "billing");
-  return redirect(`/app/billing${preserveShopifyQuery(url)}`);
+  // Flag the billing page so it shows the "here's what you set up" recap —
+  // only during onboarding, not when an existing merchant changes plans.
+  const query = preserveShopifyQuery(url);
+  const billingUrl = `/app/billing${query}${query ? "&" : "?"}onboarding=1`;
+  return redirect(billingUrl);
 };
 
 function SetupCard({
@@ -438,7 +450,7 @@ function ThemeSettingsPreview() {
 }
 
 export default function OnboardingPlacements() {
-  const { settings, themeEditorUrl, appEmbedUrl, widgetEnabled, brandColor } =
+  const { settings, themeEditorUrl, appEmbedUrl, widgetEnabled, inlineButtonAdded, brandColor } =
     useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
@@ -533,8 +545,8 @@ export default function OnboardingPlacements() {
                           </Badge>
                         </InlineStack>
                         <Text as="p" variant="bodyMd" tone="subdued">
-                          Opens Shopify theme settings. Toggle Ello AI Virtual
-                          Try On on, then click Save.
+                          Opens your theme settings with Ello already switched
+                          on — just click Save in the top-right. That&rsquo;s it.
                         </Text>
                       </BlockStack>
                       <Button variant="primary" onClick={handleOpenThemeSettings}>
@@ -547,25 +559,28 @@ export default function OnboardingPlacements() {
                     active={previewMode === "inline"}
                     onSelect={() => setPreviewMode("inline")}
                   >
-                    <InlineStack align="space-between" blockAlign="center" wrap={false} gap="400">
-                      <BlockStack gap="150">
-                        <InlineStack gap="200" blockAlign="center">
-                          <Text as="h2" variant="headingLg">
-                            2. Add the inline Try-On button
+                    <BlockStack gap="300">
+                      <InlineStack align="space-between" blockAlign="center" wrap={false} gap="400">
+                        <BlockStack gap="150">
+                          <InlineStack gap="200" blockAlign="center">
+                            <Text as="h2" variant="headingLg">
+                              2. Add the inline Try-On button
+                            </Text>
+                            <Badge tone={inlineButtonAdded ? "success" : "info"}>
+                              {inlineButtonAdded ? "Added" : openedEditor ? "Opened" : "Recommended"}
+                            </Badge>
+                          </InlineStack>
+                          <Text as="p" variant="bodyMd" tone="subdued">
+                            This is the main conversion placement. Shopify opens
+                            the product template with Ello ready to add.
                           </Text>
-                          <Badge tone={openedEditor ? "success" : "info"}>
-                            {openedEditor ? "Opened" : "Recommended"}
-                          </Badge>
-                        </InlineStack>
-                        <Text as="p" variant="bodyMd" tone="subdued">
-                          This is the main conversion placement. Shopify opens
-                          the product template with Ello ready to add.
-                        </Text>
-                      </BlockStack>
-                      <Button variant="primary" onClick={handleOpenEditor}>
-                        {openedEditor ? "Open inline setup again" : "Add inline button"}
-                      </Button>
-                    </InlineStack>
+                        </BlockStack>
+                        <Button variant="primary" onClick={handleOpenEditor}>
+                          {openedEditor ? "Open inline setup again" : "Add inline button"}
+                        </Button>
+                      </InlineStack>
+                      <InlineButtonPlacementHelp />
+                    </BlockStack>
                   </SetupCard>
 
                   <Card>

@@ -24,6 +24,7 @@ import { resolveStorefront } from "../lib/storefront-names.server";
 import { SectionHeading, brand } from "../components/ui";
 import {
   LineSeries,
+  TrendChart,
   FunnelBar,
   Heatmap,
   InsightsList,
@@ -137,6 +138,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     placement[src] = (placement[src] ?? 0) + 1;
   }
 
+  // Daily series for the engagement chart: try-ons + cart adds (left scale)
+  // and a derived conversion-rate line (carts ÷ try-ons, right scale). All
+  // three share the same day buckets, so they zip by index.
+  const dailyTryonsSeries = dailySeries(core.tryons.map((t) => t.created_at), tz, win.from, win.to);
+  const dailyCartsSeries = dailySeries(core.carts.map((c) => c.created_at), tz, win.from, win.to);
+  const dailyConversionSeries = dailyTryonsSeries.map((d, i) => {
+    const carts = dailyCartsSeries[i]?.count ?? 0;
+    return { day: d.day, count: d.count > 0 ? Math.min(100, Math.round((carts / d.count) * 100)) : 0 };
+  });
+
   const base = {
     hasStore: true as const,
     range,
@@ -152,7 +163,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       carts: pctDelta(counts.carts, prevCounts.carts),
       revenue: pctDelta(summary?.revenue ?? 0, prevCounts.revenue),
     },
-    dailyTryons: dailySeries(core.tryons.map((t) => t.created_at), tz, win.from, win.to),
+    dailyTryons: dailyTryonsSeries,
+    dailyCarts: dailyCartsSeries,
+    dailyConversion: dailyConversionSeries,
     placement,
     topProducts: products.slice(0, 10),
   };
@@ -359,8 +372,22 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
       {/* Daily volume — everyone */}
       <Card padding="500">
         <BlockStack gap="400">
-          <SectionHeading eyebrow="Engagement" title="Daily try-ons" />
-          <LineSeries data={data.dailyTryons} />
+          <SectionHeading eyebrow="Engagement" title="Daily activity" />
+          <TrendChart
+            days={data.dailyTryons.map((d) => d.day)}
+            series={[
+              { label: "Try-ons", color: brand.blue, values: data.dailyTryons.map((d) => d.count), area: true },
+              { label: "Cart adds", color: brand.success, values: data.dailyCarts.map((d) => d.count) },
+              {
+                label: "Conversion",
+                color: brand.ink500,
+                values: data.dailyConversion.map((d) => d.count),
+                dashed: true,
+                axis: "right",
+                suffix: "%",
+              },
+            ]}
+          />
           <Divider />
           <InlineStack align="space-between">
             <Text as="span" variant="bodySm" tone="subdued">{data.dailyTryons[0]?.day}</Text>

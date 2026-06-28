@@ -21,26 +21,26 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import {
-  getOnboardingState,
+  getAppEmbedEditorUrl,
   preserveShopifyQuery,
   setOnboardingStep,
 } from "../lib/onboarding.server";
+import { getThemeWidgetStatus } from "../lib/theme-status.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  const { widgetEnabledAt } = await getOnboardingState(session.shop);
+  const { admin, session } = await authenticate.admin(request);
 
-  // Open the theme editor's App embeds panel. We intentionally do NOT
-  // pre-select a specific block via activateAppId — the per-shop extension
-  // UUID isn't stable across deploys/configs, and passing the wrong one
-  // surfaces "App embed does not exist" in the editor. Sending the merchant
-  // to the App embeds panel is enough: they'll see "Ello AI Virtual Try On"
-  // in the panel and toggle it on.
-  const themeEditorUrl =
-    `https://${session.shop}/admin/themes/current/editor?context=apps`;
+  // Live theme read tells us if the embed is actually on (not a one-way DB flag).
+  const themeStatus = await getThemeWidgetStatus(admin);
+
+  // Deep link opens the App embeds panel with our embed pre-selected via
+  // activateAppId={api_key}/{block-handle} — the api_key (== client_id) is the
+  // correct, stable identifier (the extension-UUID form is deprecated).
+  const themeEditorUrl = getAppEmbedEditorUrl(session.shop);
 
   return {
-    widgetEnabled: Boolean(widgetEnabledAt),
+    widgetEnabled: themeStatus.appEmbedEnabled === true,
+    scopeMissing: themeStatus.reason === "missing_scope",
     themeEditorUrl,
   };
 };
@@ -55,7 +55,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function OnboardingActivateWidget() {
-  const { widgetEnabled, themeEditorUrl } = useLoaderData<typeof loader>();
+  const { widgetEnabled, scopeMissing, themeEditorUrl } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
   const submitting = navigation.state !== "idle";
@@ -119,10 +119,22 @@ export default function OnboardingActivateWidget() {
                       </Text>
                     </BlockStack>
 
-                    {widgetEnabled ? (
+                    {scopeMissing ? (
+                      <Banner tone="warning" title="Reload to verify your widget status">
+                        <Text as="p" variant="bodyMd">
+                          Ello needs a one-time permission to read your theme and confirm the
+                          widget is on. Reload this page to grant it.
+                        </Text>
+                        <Box paddingBlockStart="200">
+                          <Button onClick={() => window.location.reload()} size="slim">
+                            Reload &amp; verify
+                          </Button>
+                        </Box>
+                      </Banner>
+                    ) : widgetEnabled ? (
                       <Banner tone="success" title="Widget is live on your storefront">
                         <Text as="p" variant="bodyMd">
-                          We detected the Ello widget on a recent storefront load.
+                          We detected the Ello widget enabled on your published theme.
                           You&rsquo;re good to continue.
                         </Text>
                       </Banner>

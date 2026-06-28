@@ -11,6 +11,8 @@ import {
   Banner,
   Button,
   ProgressBar,
+  TextField,
+  Select,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
@@ -27,7 +29,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const { data } = await supabaseAdmin
     .from("vto_stores")
-    .select("store_slug, account_id, overage_auto_topup, overage_cap_credits, overage_credits_used")
+    .select(
+      "store_slug, account_id, overage_auto_topup, overage_cap_credits, overage_credits_used, shopper_limit_enabled, shopper_limit_count, shopper_limit_window_hours",
+    )
     .eq("shop_domain", session.shop)
     .maybeSingle();
 
@@ -91,6 +95,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     autoTopup: row?.overage_auto_topup ?? false,
     capCredits: row?.overage_cap_credits ?? null,
     creditsUsed: row?.overage_credits_used ?? 0,
+    shopperLimitEnabled: row?.shopper_limit_enabled ?? false,
+    shopperLimitCount: row?.shopper_limit_count ?? 15,
+    shopperLimitWindowHours: row?.shopper_limit_window_hours ?? 24,
     tryonsUsed,
     includedTryons,
     planDisplayName,
@@ -103,14 +110,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 // ─── Action ─────────────────────────────────────────────────────────────────
+const SHOPPER_LIMIT_WINDOWS = [1, 6, 12, 24, 168];
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const form = await request.formData();
   const autoTopup = form.get("auto_topup") === "true";
+  const shopperLimitEnabled = form.get("shopper_limit_enabled") === "true";
+  const rawCount = parseInt(String(form.get("shopper_limit_count") ?? ""), 10);
+  const shopperLimitCount = Math.min(500, Math.max(1, Number.isFinite(rawCount) ? rawCount : 15));
+  const rawWindow = parseInt(String(form.get("shopper_limit_window_hours") ?? ""), 10);
+  const shopperLimitWindowHours = SHOPPER_LIMIT_WINDOWS.includes(rawWindow) ? rawWindow : 24;
 
   const { data, error } = await supabaseAdmin
     .from("vto_stores")
-    .update({ overage_auto_topup: autoTopup })
+    .update({
+      overage_auto_topup: autoTopup,
+      shopper_limit_enabled: shopperLimitEnabled,
+      shopper_limit_count: shopperLimitCount,
+      shopper_limit_window_hours: shopperLimitWindowHours,
+    })
     .eq("shop_domain", session.shop)
     .select("store_slug")
     .maybeSingle();
@@ -177,15 +196,28 @@ export default function Settings() {
   const navigate = useNavigate();
 
   const [autoTopup, setAutoTopup] = useState<boolean>(initial.autoTopup);
+  const [shopperLimitEnabled, setShopperLimitEnabled] = useState<boolean>(initial.shopperLimitEnabled);
+  const [shopperLimitCount, setShopperLimitCount] = useState<string>(String(initial.shopperLimitCount));
+  const [shopperLimitWindow, setShopperLimitWindow] = useState<string>(String(initial.shopperLimitWindowHours));
 
   const saving = fetcher.state !== "idle";
   const saved = fetcher.data?.ok === true;
   const saveError = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null;
-  const dirty = useMemo(() => autoTopup !== initial.autoTopup, [autoTopup, initial.autoTopup]);
+  const dirty = useMemo(
+    () =>
+      autoTopup !== initial.autoTopup ||
+      shopperLimitEnabled !== initial.shopperLimitEnabled ||
+      shopperLimitCount !== String(initial.shopperLimitCount) ||
+      shopperLimitWindow !== String(initial.shopperLimitWindowHours),
+    [autoTopup, shopperLimitEnabled, shopperLimitCount, shopperLimitWindow, initial],
+  );
 
   const handleSave = () => {
     const fd = new FormData();
     fd.set("auto_topup", String(autoTopup));
+    fd.set("shopper_limit_enabled", String(shopperLimitEnabled));
+    fd.set("shopper_limit_count", shopperLimitCount);
+    fd.set("shopper_limit_window_hours", shopperLimitWindow);
     fetcher.submit(fd, { method: "POST" });
   };
 
@@ -340,6 +372,75 @@ export default function Settings() {
               <Text as="p" variant="bodySm" tone="subdued">
                 Overage charges are billed through your Shopify subscription. Your spend cap is set during plan selection — adjust it from Billing.
               </Text>
+            </BlockStack>
+          </Card>
+
+          {/* ── Per-shopper limit ── */}
+          <Card padding="500">
+            <BlockStack gap="500">
+              <SectionHeading
+                eyebrow="Protection"
+                title="Per-shopper limit"
+                description="Cap how many try-ons one shopper can run, so a single person can't burn through your credits."
+              />
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 16,
+                  border: `1px solid ${brand.ink100}`,
+                  borderRadius: 14,
+                  background: shopperLimitEnabled ? brand.blue50 : brand.white,
+                  padding: "16px 18px",
+                  transition: "background 160ms ease",
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <span style={{ fontWeight: 600, fontSize: 15, color: brand.ink }}>
+                    {shopperLimitEnabled ? "Shopper limit on" : "No per-shopper limit"}
+                  </span>
+                  <span style={{ fontSize: 13, color: brand.ink500, lineHeight: 1.45 }}>
+                    {shopperLimitEnabled
+                      ? "Shoppers who hit the limit see a friendly pause message until the window resets."
+                      : "Every shopper can run unlimited try-ons (up to your plan's monthly amount)."}
+                  </span>
+                </div>
+                <Switch on={shopperLimitEnabled} onChange={setShopperLimitEnabled} />
+              </div>
+
+              {shopperLimitEnabled && (
+                <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                  <TextField
+                    label="Try-ons per shopper"
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={shopperLimitCount}
+                    onChange={setShopperLimitCount}
+                    autoComplete="off"
+                  />
+                  <Select
+                    label="Time window"
+                    options={[
+                      { label: "Per hour", value: "1" },
+                      { label: "Per 6 hours", value: "6" },
+                      { label: "Per 12 hours", value: "12" },
+                      { label: "Per day", value: "24" },
+                      { label: "Per week", value: "168" },
+                    ]}
+                    value={shopperLimitWindow}
+                    onChange={setShopperLimitWindow}
+                  />
+                </InlineGrid>
+              )}
+
+              {shopperLimitEnabled && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Tracked per browser, with an IP backstop at 3× the limit so shared networks aren&apos;t blocked unfairly. Your own test try-ons count too — raise the limit while you&apos;re testing.
+                </Text>
+              )}
             </BlockStack>
           </Card>
 

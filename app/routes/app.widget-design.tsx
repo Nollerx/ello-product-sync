@@ -65,6 +65,7 @@ const DEFAULTS = {
   inlineHideOos: false,
   floatPdp: false,
   floatNonPdp: true,
+  fittingRoomEnabled: true,
   position: "right" as "left" | "right",
   previewEnabled: false,
   previewDelay: 3,
@@ -91,6 +92,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         "inline_button_hide_when_oos",
         "floating_widget_pdp_enabled",
         "floating_widget_non_pdp_enabled",
+        "fitting_room_enabled",
         "widget_position",
         "widget_enabled",
         "desktop_preview_enabled",
@@ -145,6 +147,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     inlineHideOos: row?.inline_button_hide_when_oos ?? DEFAULTS.inlineHideOos,
     floatPdp: row?.floating_widget_pdp_enabled ?? DEFAULTS.floatPdp,
     floatNonPdp: row?.floating_widget_non_pdp_enabled ?? DEFAULTS.floatNonPdp,
+    fittingRoomEnabled: row?.fitting_room_enabled ?? DEFAULTS.fittingRoomEnabled,
     position: (row?.widget_position as "left" | "right") ?? DEFAULTS.position,
     previewEnabled: row?.desktop_preview_enabled ?? DEFAULTS.previewEnabled,
     previewDelay: row?.preview_delay_seconds ?? DEFAULTS.previewDelay,
@@ -195,6 +198,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       inline_button_hide_when_oos: bool("inline_hide_oos"),
       floating_widget_pdp_enabled: bool("float_pdp"),
       floating_widget_non_pdp_enabled: bool("float_non_pdp"),
+      fitting_room_enabled: bool("fitting_room_enabled"),
       widget_position: form.get("position") === "left" ? "left" : "right",
       desktop_preview_enabled: bool("preview_enabled"),
       preview_delay_seconds: previewDelay,
@@ -1052,6 +1056,7 @@ export default function WidgetDesign() {
   const [inlineHideOos, setInlineHideOos] = useState<boolean>(initial.inlineHideOos);
   const [floatPdp, setFloatPdp] = useState<boolean>(initial.floatPdp);
   const [floatNonPdp, setFloatNonPdp] = useState<boolean>(initial.floatNonPdp);
+  const [fittingRoomEnabled, setFittingRoomEnabled] = useState<boolean>(initial.fittingRoomEnabled);
   const [position, setPosition] = useState<"left" | "right">(initial.position);
   const [previewEnabled, setPreviewEnabled] = useState<boolean>(initial.previewEnabled);
   const [previewDelay, setPreviewDelay] = useState<string>(String(initial.previewDelay));
@@ -1101,6 +1106,7 @@ export default function WidgetDesign() {
     fd.set("inline_hide_oos", String(inlineHideOos));
     fd.set("float_pdp", String(floatPdp));
     fd.set("float_non_pdp", String(floatNonPdp));
+    fd.set("fitting_room_enabled", String(fittingRoomEnabled));
     fd.set("position", position);
     fd.set("preview_enabled", String(previewEnabled));
     fd.set("preview_delay", previewDelay);
@@ -1292,6 +1298,18 @@ export default function WidgetDesign() {
               </BlockStack>
             </Card>
             </SpotZone>
+
+            <Card padding="500">
+              <BlockStack gap="400">
+                <SectionHeading
+                  eyebrow="Header / menu"
+                  title="Fitting Room hub"
+                  description="A launcher-less entry — like a “Fitting room” link in your header — that opens the shopper's saved wardrobe and full collection."
+                  why="Lets shoppers reopen their try-ons to decide what to buy, with no floating bubble. Add the “Ello Fitting Room” block to your header (or a menu link pointing to #ello-fitting-room), then turn it on or off here."
+                />
+                <Checkbox label="Enable the Fitting Room hub" checked={fittingRoomEnabled} onChange={setFittingRoomEnabled} />
+              </BlockStack>
+            </Card>
 
             <SpotZone k="popup" onSpot={setSpot}>
             <Card padding="500">

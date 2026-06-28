@@ -1,0 +1,220 @@
+{% comment %}
+  Ello Fitting Room — launcher-less hub entry.
+
+  Renders a header-friendly button (icon + label) that opens the Ello Virtual
+  Try-On hub: the shopper's full try-on collection + their saved wardrobe. This
+  is how shoppers open the experience on stores where the floating bottom-right
+  bubble is turned off (e.g. when the header/footer corners are already taken by
+  chat + accessibility widgets).
+
+  Drag this block into your header (or anywhere a section accepts app blocks).
+  Styling inherits the surrounding text color + font so it sits natively beside
+  your other header icons; every piece is overridable per-block in the theme
+  editor. If your theme's header can't take app blocks, add a normal nav menu
+  link whose URL contains "ello-fitting-room" instead — widget-loader.js binds
+  it automatically.
+
+  Shares the loader + window.Ello API with the floating + inline blocks. The
+  loader's duplicate-init guard handles multiple blocks on one page.
+{% endcomment %}
+{% schema %}
+{
+  "name": "Ello Fitting Room",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "label",
+      "label": "Label",
+      "default": "Fitting room"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_label",
+      "label": "Show label text",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_icon",
+      "label": "Show icon",
+      "default": true
+    },
+    {
+      "type": "range",
+      "id": "icon_size",
+      "label": "Icon size",
+      "min": 14,
+      "max": 32,
+      "step": 1,
+      "unit": "px",
+      "default": 22
+    },
+    {
+      "type": "range",
+      "id": "font_size",
+      "label": "Label size",
+      "min": 11,
+      "max": 22,
+      "step": 1,
+      "unit": "px",
+      "default": 14
+    },
+    {
+      "type": "color",
+      "id": "color",
+      "label": "Color override",
+      "info": "Leave blank to inherit your header's text color so it matches your other icons."
+    },
+    {
+      "type": "select",
+      "id": "align",
+      "label": "Alignment",
+      "options": [
+        { "value": "flex-start", "label": "Left" },
+        { "value": "center", "label": "Center" },
+        { "value": "flex-end", "label": "Right" }
+      ],
+      "default": "center"
+    }
+  ]
+}
+{% endschema %}
+
+{%- comment -%}
+  Backend origin is baked in at deploy time — NOT a merchant setting. The public
+  app ships the public Cloud Run URL below; `deploy:custom` swaps it to the
+  custom service (see scripts/deploy-custom.sh). Store owners cannot repoint it.
+{%- endcomment -%}
+{%- assign ello_backend_url = "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app" -%}
+
+<link rel="preconnect" href="{{ ello_backend_url }}" crossorigin>
+<link rel="dns-prefetch" href="{{ ello_backend_url }}">
+
+<script>
+  // Pre-queue shim — defined synchronously so a shopper tapping the entry
+  // before widget-loader.js boots isn't dropped. The loader adopts
+  // window.__elloPreQueue when it installs the real window.Ello, then routes
+  // each item by __elloHubIntent. We only ADD hub methods; never clobber a
+  // real window.Ello that may already be installed.
+  (function () {
+    window.Ello = window.Ello || {};
+    function pre(intent) {
+      return function (ctx) {
+        ctx = ctx || {};
+        ctx.__elloHubIntent = intent;
+        ctx.source = ctx.source || 'fitting_room_hub';
+        (window.__elloPreQueue = window.__elloPreQueue || []).push(ctx);
+      };
+    }
+    if (typeof window.Ello.openCollection !== 'function') window.Ello.openCollection = pre('collection');
+    if (typeof window.Ello.openWardrobe !== 'function') window.Ello.openWardrobe = pre('wardrobe');
+    if (typeof window.Ello.openFittingRoom !== 'function') window.Ello.openFittingRoom = function (ctx) {
+      ctx = ctx || {};
+      ctx.__elloPanel = true;
+      ctx.source = ctx.source || 'fitting_room';
+      (window.__elloPreQueue = window.__elloPreQueue || []).push(ctx);
+    };
+  })();
+</script>
+
+<div class="ello-fitting-room-block" style="display:flex; align-items:center; justify-content:{{ block.settings.align | default: 'center' }};">
+  <button
+    type="button"
+    class="ello-fitting-room-btn"
+    data-ello-fitting-room="{{ block.id }}"
+    aria-label="{{ block.settings.label | default: 'Fitting room' | escape }}"
+    style="
+      display:inline-flex; align-items:center; gap:8px;
+      background:transparent; border:none; box-shadow:none; margin:0; padding:6px 8px;
+      -webkit-appearance:none; appearance:none;
+      font:inherit; {% if block.settings.font_size %}font-size:{{ block.settings.font_size }}px;{% endif %}
+      line-height:1; cursor:pointer; text-decoration:none;
+      color:{% if block.settings.color != blank %}{{ block.settings.color }}{% else %}inherit{% endif %};
+    "
+  >
+    {%- if block.settings.show_icon -%}
+    <svg viewBox="0 0 24 24" width="{{ block.settings.icon_size | default: 22 }}" height="{{ block.settings.icon_size | default: 22 }}" fill="currentColor" aria-hidden="true" style="flex:none;">
+      <path d="M21.6 18.2 13 11.75v-.62a3.5 3.5 0 1 0-4.2-3.43.9.9 0 0 0 1.8 0 1.7 1.7 0 1 1 1.7 1.7c-.5 0-.9.4-.9.9v1.48L2.4 18.2c-.77.58-.36 1.8.6 1.8h18c.96 0 1.37-1.22.6-1.8Z"></path>
+    </svg>
+    {%- endif -%}
+    {%- if block.settings.show_label -%}<span class="ello-fitting-room-label">{{ block.settings.label | default: 'Fitting room' }}</span>{%- endif -%}
+  </button>
+</div>
+
+<script>
+  (function () {
+    var BACKEND_URL = {{ ello_backend_url | json }};
+    var SHOP_DOMAIN = {{ shop.permanent_domain | json }};
+    var BLOCK_ID = {{ block.id | json }};
+
+    // Make sure widget-loader.js is on the page (it exposes the real
+    // window.Ello). The app embed normally loads it site-wide; inject here if a
+    // merchant has it off. The loader's duplicate-init guard prevents double-run.
+    function ensureLoader() {
+      if (document.querySelector('script[src*="widget-loader.js"]')) return;
+      var s = document.createElement('script');
+      s.src = BACKEND_URL + '/widget-loader.js';
+      s.async = true;
+      s.defer = true;
+      s.dataset.shop = SHOP_DOMAIN;
+      document.head.appendChild(s);
+    }
+
+    // Wire the button. De-duped via data-ello-wired so theme-editor re-renders
+    // don't double-bind. Uses data-ello-fitting-room (NOT data-ello-hub) so the
+    // loader's nav-link auto-binder doesn't ALSO bind it and open twice.
+    function wire() {
+      var btn = document.querySelector('[data-ello-fitting-room="' + BLOCK_ID + '"]');
+      if (!btn || btn.dataset.elloWired === '1') return;
+      btn.dataset.elloWired = '1';
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        try {
+          // Open the FULL try-on panel (home) — everything reachable: change
+          // photo, browse, wardrobe, try-on. No bottom-right bubble.
+          window.Ello.openFittingRoom({ source: 'fitting_room' });
+        } catch (err) {
+          // Last-ditch: queue directly so the click still lands once the loader boots.
+          (window.__elloPreQueue = window.__elloPreQueue || []).push({ __elloPanel: true, source: 'fitting_room' });
+        }
+      });
+    }
+
+    // ── Dashboard kill switch ──────────────────────────────────────────────
+    // The merchant can turn the whole Fitting Room hub off from the Widget
+    // Design page without removing this block from their theme. Hide the entry
+    // when it's disabled. Mirrors the inline button's enforcement.
+    function applyKillSwitch(enabled) {
+      var btn = document.querySelector('[data-ello-fitting-room="' + BLOCK_ID + '"]');
+      if (!btn) return;
+      if (enabled === false) {
+        btn.style.setProperty('display', 'none', 'important');
+      } else if (btn.style.getPropertyValue('display') === 'none') {
+        btn.style.removeProperty('display');
+      }
+    }
+    // Synchronous fast-path from the loader's cached config row (snake_case keys),
+    // so a disabled hub never flashes in for repeat visitors.
+    try {
+      var __frRaw = window.localStorage.getItem('ello_config_' + SHOP_DOMAIN);
+      if (__frRaw) {
+        var __frCfg = JSON.parse(__frRaw);
+        if (__frCfg && __frCfg.config) applyKillSwitch(__frCfg.config.fitting_room_enabled !== false);
+      }
+    } catch (e) { /* private mode — fall through to the event path below */ }
+    // Authoritative: the loader fires ello:config-resolved once config lands
+    // (camelCase), and ELLO_STORE_CONFIG may already be set on a warm load.
+    window.addEventListener('ello:config-resolved', function (ev) {
+      if (ev && ev.detail) applyKillSwitch(ev.detail.fittingRoomEnabled !== false);
+    });
+    if (window.ELLO_STORE_CONFIG) applyKillSwitch(window.ELLO_STORE_CONFIG.fittingRoomEnabled !== false);
+
+    ensureLoader();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', wire);
+    } else {
+      wire();
+    }
+  })();
+</script>

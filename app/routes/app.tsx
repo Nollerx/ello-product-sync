@@ -17,14 +17,16 @@ import {
   getOnboardingState,
   onboardingRouteForStep,
   preserveShopifyQuery,
+  setOnboardingStep,
+  type OnboardingStep,
 } from "../lib/onboarding.server";
+import { WebVitals } from "../components/web-vitals";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing, session, admin } = await authenticate.admin(request);
 
   // Skip the billing gate for the billing pages themselves to avoid an infinite redirect loop.
-  // app.billing.tsx and app.billing.confirm.tsx are child routes of this layout,
-  // so this loader runs for every /app/* URL.
+  // app.billing.tsx is a child route of this layout, so this loader runs for every /app/* URL.
   const url = new URL(request.url);
   const isBillingRoute = url.pathname.startsWith("/app/billing");
   const isOnboardingRoute = url.pathname.startsWith("/app/onboarding");
@@ -34,9 +36,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Onboarding gate — new installs walk through /app/onboarding/* before
   // anything else. Existing merchants have onboarding_step='complete' (set by
   // the 20260514_onboarding_steps.sql migration), so this is a no-op for them.
+  // The resolved step is reused by the billing gate below to mark onboarding
+  // complete once a paid Shopify subscription is confirmed.
+  let onboardingStep: OnboardingStep | null = null;
   if (!isOnboardingRoute && !isBillingRoute) {
     try {
       const { step } = await getOnboardingState(session.shop);
+      onboardingStep = step;
       const onboardingRoute = onboardingRouteForStep(step);
       if (onboardingRoute) {
         throw redirect(`${onboardingRoute}${preserveShopifyQuery(url)}`);
@@ -109,6 +115,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             console.error(`[BillingGate] Sync failed (non-fatal):`, err);
           }
         }
+
+        // Billing approval is the final onboarding step. The old
+        // app.billing.confirm.tsx route used to mark this, but it was
+        // unreachable (returnUrl points at /app), so advance it here once a
+        // paid Shopify subscription is confirmed. Guarded so we only write once.
+        if (onboardingStep && onboardingStep !== "complete") {
+          try {
+            await setOnboardingStep(session.shop, "complete");
+            console.log(`[BillingGate] Marked onboarding complete for ${session.shop}`);
+          } catch (err) {
+            console.error(`[BillingGate] Failed to mark onboarding complete (non-fatal):`, err);
+          }
+        }
         // Subscription is active on Shopify — allow through
       } else if (isBillingActivationRequest) {
         // Billing just approved but Shopify hasn't activated yet — let dashboard show pending banner
@@ -144,15 +163,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  return { apiKey: process.env.SHOPIFY_API_KEY || "", shop: session.shop };
 };
 
 export default function App() {
-  const { apiKey } = useLoaderData<typeof loader>();
+  const { apiKey, shop } = useLoaderData<typeof loader>();
 
   return (
     <AppProvider embedded apiKey={apiKey}>
       <PolarisAppProvider i18n={polarisTranslations}>
+        <WebVitals shop={shop} />
         <s-app-nav>
           <s-link href="/app">Home</s-link>
           <s-link href="/app/products">Products</s-link>
