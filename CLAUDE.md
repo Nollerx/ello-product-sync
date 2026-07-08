@@ -74,6 +74,15 @@ gcloud run deploy custom-ello-app-13593516897 \
   --allow-unauthenticated
 ```
 
+Both web services also bind `TELEGRAM_BOT_TOKEN` from Secret Manager (secret
+`telegram-bot-token`, project `ello-vto` — same bot the social poster uses).
+The binding persists across the plain deploys above; only re-add
+`--update-secrets=TELEGRAM_BOT_TOKEN=telegram-bot-token:latest` if it's ever
+cleared. `TELEGRAM_CHAT_ID` and `CRON_SECRET` live in the (gitignored) env
+yamls. A Cloud Scheduler job `ello-install-followup` (us-central1, every 15
+min) POSTs to `/api/install-followup` on the public service with header
+`x-cron-key=$CRON_SECRET` to drive the 2h post-install Telegram check-ins.
+
 ### ML service
 ```bash
 cd ~/Desktop/ELLO\ VTOW
