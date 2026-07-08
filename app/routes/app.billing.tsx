@@ -61,6 +61,7 @@ type OnboardingRecap = {
   floatingNonPdpEnabled: boolean;
   previewEnabled: boolean;
   floatingPdpEnabled: boolean;
+  completeTheLookEnabled: boolean;
   widgetLive: boolean;
 };
 
@@ -120,7 +121,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const { data } = await supabaseAdmin
       .from("vto_stores")
       .select(
-        "inline_button_color, minimized_color, widget_primary_color, widget_position, inline_button_enabled, floating_widget_non_pdp_enabled, desktop_preview_enabled, floating_widget_pdp_enabled, widget_enabled_at",
+        "inline_button_color, minimized_color, widget_primary_color, widget_position, inline_button_enabled, floating_widget_non_pdp_enabled, desktop_preview_enabled, floating_widget_pdp_enabled, complete_the_look_enabled, widget_enabled_at",
       )
       .eq("shop_domain", session.shop)
       .maybeSingle();
@@ -135,6 +136,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         floatingNonPdpEnabled: data.floating_widget_non_pdp_enabled ?? true,
         previewEnabled: data.desktop_preview_enabled ?? true,
         floatingPdpEnabled: data.floating_widget_pdp_enabled ?? false,
+        completeTheLookEnabled: data.complete_the_look_enabled ?? false,
         widgetLive: Boolean(data.widget_enabled_at),
       };
     }
@@ -364,8 +366,9 @@ function PricingSwitch({
 
 function OnboardingRecapCard({ recap }: { recap: OnboardingRecap }) {
   const placements = [
-    { label: "Inline Try-On button", on: recap.inlineEnabled },
+    { label: "Try-On button on product pages", on: recap.inlineEnabled },
     { label: "Floating widget", on: recap.floatingNonPdpEnabled },
+    { label: "Complete the Look upsells", on: recap.completeTheLookEnabled },
     { label: "Desktop preview prompt", on: recap.previewEnabled },
     { label: "Floating on product pages", on: recap.floatingPdpEnabled },
   ].filter((p) => p.on);

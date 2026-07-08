@@ -16,7 +16,6 @@ import {
   Button,
   ProgressBar,
   Box,
-  Checkbox,
   Badge,
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
@@ -30,14 +29,7 @@ import { getThemeWidgetStatus } from "../lib/theme-status.server";
 import { InlineButtonPlacementHelp } from "../components/inline-placement-help";
 import { supabaseAdmin } from "../lib/supabase.server";
 
-type PlacementSettings = {
-  inlineEnabled: boolean;
-  floatingNonPdpEnabled: boolean;
-  floatingPdpEnabled: boolean;
-  previewEnabled: boolean;
-};
-
-type PreviewMode = "inline" | "theme";
+type PreviewMode = "embed" | "product" | "widget" | "upsell";
 
 const DEFAULT_BRAND_COLOR = "#111827";
 
@@ -65,7 +57,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { data, error } = await supabaseAdmin
     .from("vto_stores")
     .select(
-      "inline_button_enabled, floating_widget_non_pdp_enabled, floating_widget_pdp_enabled, desktop_preview_enabled, widget_enabled_at, inline_button_color, minimized_color, widget_primary_color",
+      "inline_button_enabled, floating_widget_non_pdp_enabled, floating_widget_pdp_enabled, desktop_preview_enabled, complete_the_look_enabled, widget_enabled_at, inline_button_color, minimized_color, widget_primary_color",
     )
     .eq("shop_domain", session.shop)
     .maybeSingle();
@@ -74,15 +66,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     console.error("[Onboarding placements] read error:", error.message);
   }
 
-  const settings: PlacementSettings = {
-    inlineEnabled: data?.inline_button_enabled ?? true,
-    floatingNonPdpEnabled: data?.floating_widget_non_pdp_enabled ?? true,
-    floatingPdpEnabled: data?.floating_widget_pdp_enabled ?? false,
-    previewEnabled: data?.desktop_preview_enabled ?? true,
-  };
-
   return {
-    settings,
+    productPageOn: data?.inline_button_enabled ?? true,
+    widgetOn: data?.floating_widget_non_pdp_enabled ?? true,
+    upsellsOn: data?.complete_the_look_enabled ?? true,
+    previewEnabled: data?.desktop_preview_enabled ?? true,
     // Live theme-derived status (replaces the stale widget_enabled_at latch).
     widgetEnabled: themeStatus.appEmbedEnabled === true,
     inlineButtonAdded: themeStatus.inlineButtonAdded === true,
@@ -103,12 +91,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = formData.get("intent");
 
   if (intent === "continue") {
+    const productPageOn = formData.get("product_page") === "on";
+    const widgetOn = formData.get("widget") === "on";
     const patch = {
-      inline_button_enabled: formData.get("inline_enabled") === "on",
-      floating_widget_non_pdp_enabled:
-        formData.get("floating_non_pdp_enabled") === "on",
-      floating_widget_pdp_enabled:
-        formData.get("floating_pdp_enabled") === "on",
+      inline_button_enabled: productPageOn,
+      floating_widget_non_pdp_enabled: widgetOn,
+      // If the widget is their only placement, let it cover product pages too —
+      // otherwise the PDP would have no try-on entry point at all.
+      floating_widget_pdp_enabled: widgetOn && !productPageOn,
+      complete_the_look_enabled: formData.get("upsells") === "on",
       desktop_preview_enabled: formData.get("preview_enabled") === "on",
       placements_banner_dismissed_at: new Date().toISOString(),
     };
@@ -140,80 +131,98 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return redirect(billingUrl);
 };
 
-function SetupCard({
-  active,
+// ─── Selectable placement card ────────────────────────────────────────────────
+
+function PlacementCard({
+  selected,
+  focused,
+  title,
+  badge,
+  description,
+  onToggle,
+  onFocusPreview,
   children,
-  onSelect,
 }: {
-  active: boolean;
-  children: React.ReactNode;
-  onSelect: () => void;
+  selected: boolean;
+  focused: boolean;
+  title: string;
+  badge?: React.ReactNode;
+  description: string;
+  onToggle: () => void;
+  onFocusPreview: () => void;
+  children?: React.ReactNode;
 }) {
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={onSelect}
+      onClick={() => {
+        onToggle();
+        onFocusPreview();
+      }}
+      onMouseEnter={onFocusPreview}
       onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") onSelect();
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onToggle();
+          onFocusPreview();
+        }
       }}
       style={{
-        border: active ? "2px solid #3B63D4" : "1px solid #D8DCE3",
-        borderRadius: 8,
-        background: active ? "#F4F7FE" : "#FFFFFF",
+        border: selected ? "2px solid #3B63D4" : "1px solid #D8DCE3",
+        borderRadius: 12,
+        background: selected ? "#F4F7FE" : "#FFFFFF",
         padding: 18,
         cursor: "pointer",
-        boxShadow: active ? "0 2px 8px rgba(59, 99, 212, 0.12)" : "none",
+        boxShadow: focused
+          ? "0 4px 14px rgba(59, 99, 212, 0.18)"
+          : selected
+            ? "0 2px 8px rgba(59, 99, 212, 0.12)"
+            : "none",
+        transition: "box-shadow 120ms ease, border-color 120ms ease",
       }}
     >
-      {children}
+      <BlockStack gap="200">
+        <InlineStack align="space-between" blockAlign="center" wrap={false} gap="300">
+          <InlineStack gap="200" blockAlign="center">
+            {/* Selection indicator */}
+            <span
+              aria-hidden
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: 6,
+                flexShrink: 0,
+                border: selected ? "none" : "2px solid #D0D5DD",
+                background: selected ? "#3B63D4" : "#FFFFFF",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#FFFFFF",
+                fontSize: 13,
+                fontWeight: 800,
+              }}
+            >
+              {selected ? "✓" : ""}
+            </span>
+            <Text as="h3" variant="headingMd">
+              {title}
+            </Text>
+          </InlineStack>
+          {badge}
+        </InlineStack>
+        <Text as="p" variant="bodySm" tone="subdued">
+          {description}
+        </Text>
+        {children}
+      </BlockStack>
     </div>
   );
 }
 
-function OptionRow({
-  checked,
-  label,
-  helpText,
-  onChange,
-}: {
-  checked: boolean;
-  label: string;
-  helpText: string;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <BlockStack gap="100">
-      <Checkbox label={label} checked={checked} onChange={onChange} />
-      <Box paddingInlineStart="600">
-        <Text as="p" variant="bodySm" tone="subdued">
-          {helpText}
-        </Text>
-      </Box>
-    </BlockStack>
-  );
-}
+// ─── Storefront preview (right column) ────────────────────────────────────────
 
-function StorefrontPreview({
-  brandColor,
-  showPreview,
-  showProductFloating,
-}: {
-  brandColor: string;
-  showPreview: boolean;
-  showProductFloating: boolean;
-}) {
-  const [tryOnOpen, setTryOnOpen] = useState(false);
-  const [previewVisible, setPreviewVisible] = useState(false);
-  const textColor = readableTextColor(brandColor);
-
-  useEffect(() => {
-    setPreviewVisible(false);
-    if (!showPreview) return undefined;
-    const timeout = window.setTimeout(() => setPreviewVisible(true), 900);
-    return () => window.clearTimeout(timeout);
-  }, [showPreview]);
-
+function BrowserFrame({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div
       style={{
@@ -239,185 +248,326 @@ function StorefrontPreview({
         <span style={{ width: 8, height: 8, borderRadius: 4, background: "#F04438" }} />
         <span style={{ width: 8, height: 8, borderRadius: 4, background: "#FDB022" }} />
         <span style={{ width: 8, height: 8, borderRadius: 4, background: "#12B76A" }} />
-        <span style={{ marginLeft: 10, fontSize: 12, color: "#667085" }}>
-          Product page preview
-        </span>
+        <span style={{ marginLeft: 10, fontSize: 12, color: "#667085" }}>{label}</span>
       </div>
+      {children}
+    </div>
+  );
+}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.02fr 0.98fr", gap: 24, padding: 24 }}>
-        <div>
-          <div
-            style={{
-              aspectRatio: "4 / 5",
-              borderRadius: 10,
-              background: "linear-gradient(145deg, #E8EEFD 0%, #F2F4F7 52%, #D0D5DD 100%)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#667085",
-              fontWeight: 650,
-            }}
-          >
-            Product image
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            {[0, 1, 2].map((item) => (
-              <div key={item} style={{ width: 46, height: 56, borderRadius: 6, background: "#EAECF0" }} />
-            ))}
-          </div>
-        </div>
-
-        <BlockStack gap="300">
-          <div>
-            <div style={{ height: 14, width: "82%", background: "#101828", borderRadius: 4, marginBottom: 8 }} />
-            <div style={{ height: 12, width: "38%", background: "#667085", borderRadius: 4 }} />
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            {["S", "M", "L"].map((size) => (
-              <span
-                key={size}
-                style={{
-                  border: "1px solid #D0D5DD",
-                  borderRadius: 6,
-                  padding: "6px 10px",
-                  fontSize: 12,
-                }}
-              >
-                {size}
-              </span>
-            ))}
-          </div>
-          <button
-            type="button"
-            style={{
-              width: "100%",
-              border: "none",
-              borderRadius: 6,
-              padding: "11px 14px",
-              background: "#101828",
-              color: "#FFFFFF",
-              fontWeight: 650,
-            }}
-          >
-            Add to cart
-          </button>
-          <button
-            type="button"
-            onClick={() => setTryOnOpen(true)}
-            style={{
-              width: "100%",
-              border: "none",
-              borderRadius: 6,
-              padding: "11px 14px",
-              background: brandColor,
-              color: textColor,
-              fontWeight: 650,
-              cursor: "pointer",
-            }}
-          >
-            Try On
-          </button>
-          <div style={{ height: 8, width: "100%", background: "#EAECF0", borderRadius: 4 }} />
-          <div style={{ height: 8, width: "88%", background: "#EAECF0", borderRadius: 4 }} />
-          <div style={{ height: 8, width: "72%", background: "#EAECF0", borderRadius: 4 }} />
-        </BlockStack>
-      </div>
-
-      {showProductFloating ? (
-        <button
-          type="button"
-          onClick={() => setTryOnOpen(true)}
-          style={{
-            position: "absolute",
-            right: 22,
-            bottom: 22,
-            width: 58,
-            height: 58,
-            borderRadius: 999,
-            border: "none",
-            background: brandColor,
-            color: textColor,
-            fontWeight: 800,
-            boxShadow: "0 12px 28px rgba(11, 18, 32, 0.24)",
-            cursor: "pointer",
-          }}
-        >
-          Try
-        </button>
-      ) : null}
-
-      {showPreview && previewVisible ? (
+function ProductColumn({
+  brandColor,
+  highlightInline,
+}: {
+  brandColor: string;
+  highlightInline: boolean;
+}) {
+  const textColor = readableTextColor(brandColor);
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1.02fr 0.98fr", gap: 24, padding: 24 }}>
+      <div>
         <div
           style={{
-            position: "absolute",
-            right: 20,
-            bottom: 20,
-            width: 260,
+            aspectRatio: "4 / 5",
             borderRadius: 10,
-            border: "1px solid #D8DCE3",
-            background: "#FFFFFF",
-            boxShadow: "0 18px 40px rgba(11, 18, 32, 0.18)",
-            padding: 12,
-          }}
-        >
-          <InlineStack gap="300" blockAlign="center" wrap={false}>
-            <div style={{ width: 64, height: 78, borderRadius: 8, background: `${brandColor}22` }} />
-            <BlockStack gap="150">
-              <Text as="p" variant="bodySm" fontWeight="semibold">
-                See it on you
-              </Text>
-              <Text as="p" variant="bodySm" tone="subdued">
-                Try this product before you buy.
-              </Text>
-              <Button size="slim" onClick={() => setTryOnOpen(true)}>
-                Try On
-              </Button>
-            </BlockStack>
-          </InlineStack>
-        </div>
-      ) : null}
-
-      {tryOnOpen ? (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(11, 18, 32, 0.42)",
+            background: "linear-gradient(145deg, #E8EEFD 0%, #F2F4F7 52%, #D0D5DD 100%)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            padding: 24,
+            color: "#667085",
+            fontWeight: 650,
           }}
         >
-          <div
+          Product image
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+          {[0, 1, 2].map((item) => (
+            <div key={item} style={{ width: 46, height: 56, borderRadius: 6, background: "#EAECF0" }} />
+          ))}
+        </div>
+      </div>
+
+      <BlockStack gap="300">
+        <div>
+          <div style={{ height: 14, width: "82%", background: "#101828", borderRadius: 4, marginBottom: 8 }} />
+          <div style={{ height: 12, width: "38%", background: "#667085", borderRadius: 4 }} />
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {["S", "M", "L"].map((size) => (
+            <span
+              key={size}
+              style={{
+                border: "1px solid #D0D5DD",
+                borderRadius: 6,
+                padding: "6px 10px",
+                fontSize: 12,
+              }}
+            >
+              {size}
+            </span>
+          ))}
+        </div>
+        <button
+          type="button"
+          style={{
+            width: "100%",
+            border: "none",
+            borderRadius: 6,
+            padding: "11px 14px",
+            background: "#101828",
+            color: "#FFFFFF",
+            fontWeight: 650,
+          }}
+        >
+          Add to cart
+        </button>
+        {highlightInline ? (
+          <div style={{ position: "relative" }}>
+            <button
+              type="button"
+              style={{
+                width: "100%",
+                border: "none",
+                borderRadius: 6,
+                padding: "11px 14px",
+                background: brandColor,
+                color: textColor,
+                fontWeight: 650,
+                boxShadow: "0 0 0 3px rgba(59, 99, 212, 0.35)",
+              }}
+            >
+              Try It On
+            </button>
+            <span
+              style={{
+                position: "absolute",
+                top: -10,
+                right: -6,
+                background: "#3B63D4",
+                color: "#FFFFFF",
+                fontSize: 10,
+                fontWeight: 700,
+                borderRadius: 999,
+                padding: "2px 8px",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Ello button
+            </span>
+          </div>
+        ) : null}
+        <div style={{ height: 8, width: "100%", background: "#EAECF0", borderRadius: 4 }} />
+        <div style={{ height: 8, width: "88%", background: "#EAECF0", borderRadius: 4 }} />
+        <div style={{ height: 8, width: "72%", background: "#EAECF0", borderRadius: 4 }} />
+      </BlockStack>
+    </div>
+  );
+}
+
+function FloatingWidgetOverlay({ brandColor }: { brandColor: string }) {
+  const textColor = readableTextColor(brandColor);
+  return (
+    <>
+      {/* Opened widget panel */}
+      <div
+        style={{
+          position: "absolute",
+          right: 20,
+          bottom: 92,
+          width: 250,
+          borderRadius: 12,
+          border: "1px solid #D8DCE3",
+          background: "#FFFFFF",
+          boxShadow: "0 18px 40px rgba(11, 18, 32, 0.20)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            padding: "10px 14px",
+            background: brandColor,
+            color: textColor,
+            fontSize: 13,
+            fontWeight: 700,
+          }}
+        >
+          Fitting room
+        </div>
+        <div style={{ padding: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            {[0, 1, 2, 3, 4, 5].map((item) => (
+              <div
+                key={item}
+                style={{
+                  aspectRatio: "3 / 4",
+                  borderRadius: 6,
+                  background: item === 1 ? `${brandColor}33` : "#F2F4F7",
+                  border: item === 1 ? `2px solid ${brandColor}` : "1px solid #EAECF0",
+                }}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
             style={{
-              width: 360,
-              borderRadius: 12,
-              background: "#FFFFFF",
-              padding: 18,
-              boxShadow: "0 18px 40px rgba(11, 18, 32, 0.28)",
+              width: "100%",
+              marginTop: 10,
+              border: "none",
+              borderRadius: 6,
+              padding: "9px 12px",
+              background: brandColor,
+              color: textColor,
+              fontWeight: 650,
+              fontSize: 13,
             }}
           >
-            <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="center">
-                <Text as="h3" variant="headingMd">
-                  Try-On result
-                </Text>
-                <Button variant="plain" onClick={() => setTryOnOpen(false)}>
-                  Close
-                </Button>
-              </InlineStack>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div style={{ aspectRatio: "3 / 4", borderRadius: 8, background: "#F2F4F7" }} />
-                <div style={{ aspectRatio: "3 / 4", borderRadius: 8, background: `${brandColor}22` }} />
-              </div>
-              <Text as="p" variant="bodySm" tone="subdued">
-                This is the shopper experience after they click Try On.
-              </Text>
-            </BlockStack>
-          </div>
+            Try It On
+          </button>
         </div>
-      ) : null}
+      </div>
+      {/* Bubble */}
+      <div style={{ position: "absolute", right: 22, bottom: 22 }}>
+        <div style={{ position: "relative" }}>
+          <button
+            type="button"
+            style={{
+              width: 58,
+              height: 58,
+              borderRadius: 999,
+              border: "none",
+              background: brandColor,
+              color: textColor,
+              fontWeight: 800,
+              boxShadow: "0 12px 28px rgba(11, 18, 32, 0.24)",
+            }}
+          >
+            Try
+          </button>
+          <span
+            style={{
+              position: "absolute",
+              top: -12,
+              right: 52,
+              background: "#3B63D4",
+              color: "#FFFFFF",
+              fontSize: 10,
+              fontWeight: 700,
+              borderRadius: 999,
+              padding: "2px 8px",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Follows every page
+          </span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function UpsellPreview({ brandColor }: { brandColor: string }) {
+  const textColor = readableTextColor(brandColor);
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        background: "rgba(11, 18, 32, 0.42)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+      }}
+    >
+      <div
+        style={{
+          width: 430,
+          borderRadius: 12,
+          background: "#FFFFFF",
+          padding: 18,
+          boxShadow: "0 18px 40px rgba(11, 18, 32, 0.28)",
+        }}
+      >
+        <BlockStack gap="300">
+          <Text as="h3" variant="headingMd">
+            Your try-on result
+          </Text>
+          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 12 }}>
+            {/* Try-on result */}
+            <div
+              style={{
+                aspectRatio: "3 / 4",
+                borderRadius: 8,
+                background: `linear-gradient(160deg, ${brandColor}22 0%, #F2F4F7 100%)`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#667085",
+                fontSize: 12,
+                fontWeight: 650,
+                textAlign: "center",
+                padding: 8,
+              }}
+            >
+              Shopper wearing your product
+            </div>
+            {/* Complete the look rail */}
+            <div>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                  color: "#667085",
+                  marginBottom: 8,
+                }}
+              >
+                Complete the look
+              </div>
+              <BlockStack gap="200">
+                {["Matching jacket", "Relaxed jeans"].map((item) => (
+                  <div
+                    key={item}
+                    style={{
+                      border: "1px solid #EAECF0",
+                      borderRadius: 8,
+                      padding: 8,
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ width: 34, height: 42, borderRadius: 5, background: "#F2F4F7", flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, fontWeight: 650, color: "#101828" }}>{item}</div>
+                      <button
+                        type="button"
+                        style={{
+                          marginTop: 4,
+                          border: "none",
+                          borderRadius: 999,
+                          padding: "3px 10px",
+                          background: brandColor,
+                          color: textColor,
+                          fontSize: 10,
+                          fontWeight: 700,
+                        }}
+                      >
+                        + Add
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </BlockStack>
+            </div>
+          </div>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Ello suggests matching items from your catalog right in the try-on
+            result — shoppers add the whole outfit to cart.
+          </Text>
+        </BlockStack>
+      </div>
     </div>
   );
 }
@@ -449,22 +599,37 @@ function ThemeSettingsPreview() {
   );
 }
 
+const PREVIEW_LABELS: Record<PreviewMode, string> = {
+  embed: "Theme editor — one click, then Save",
+  product: "What shoppers see on your product page",
+  widget: "The widget follows shoppers on every page",
+  upsell: "After the try-on — upsells that build the cart",
+};
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
 export default function OnboardingPlacements() {
-  const { settings, themeEditorUrl, appEmbedUrl, widgetEnabled, inlineButtonAdded, brandColor } =
-    useLoaderData<typeof loader>();
+  const {
+    productPageOn: initialProduct,
+    widgetOn: initialWidget,
+    upsellsOn: initialUpsells,
+    previewEnabled,
+    themeEditorUrl,
+    appEmbedUrl,
+    widgetEnabled,
+    inlineButtonAdded,
+    brandColor,
+  } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
   const submitting = navigation.state !== "idle";
 
-  const [inlineEnabled] = useState(settings.inlineEnabled);
-  const [floatingNonPdpEnabled, setFloatingNonPdpEnabled] = useState(
-    settings.floatingNonPdpEnabled,
+  const [productPageOn, setProductPageOn] = useState<boolean>(Boolean(initialProduct));
+  const [widgetOn, setWidgetOn] = useState<boolean>(Boolean(initialWidget));
+  const [upsellsOn, setUpsellsOn] = useState<boolean>(Boolean(initialUpsells));
+  const [previewMode, setPreviewMode] = useState<PreviewMode>(
+    widgetEnabled ? "product" : "embed",
   );
-  const [floatingPdpEnabled, setFloatingPdpEnabled] = useState(
-    settings.floatingPdpEnabled,
-  );
-  const [previewEnabled, setPreviewEnabled] = useState(settings.previewEnabled);
-  const [previewMode, setPreviewMode] = useState<PreviewMode>("theme");
   const [openedEditor, setOpenedEditor] = useState(false);
   const [openedThemeSettings, setOpenedThemeSettings] = useState(false);
 
@@ -477,13 +642,13 @@ export default function OnboardingPlacements() {
   }, [revalidator]);
 
   function handleOpenEditor() {
-    setPreviewMode("inline");
+    setPreviewMode("product");
     setOpenedEditor(true);
     window.open(themeEditorUrl, "_blank", "noopener");
   }
 
   function handleOpenThemeSettings() {
-    setPreviewMode("theme");
+    setPreviewMode("embed");
     setOpenedThemeSettings(true);
     window.open(appEmbedUrl, "_blank", "noopener");
   }
@@ -522,98 +687,117 @@ export default function OnboardingPlacements() {
                 <BlockStack gap="500">
                   <BlockStack gap="300">
                     <Text as="h1" variant="heading2xl">
-                      Add Try-On to your store
+                      Put Try-On where it sells
                     </Text>
                     <Text as="p" variant="bodyLg" tone="subdued">
-                      Two quick steps in your theme editor: turn Ello on, then
-                      drop the inline button onto your product page.
+                      Turn Ello on, pick where shoppers try things on, and switch
+                      on outfit upsells.
                     </Text>
                   </BlockStack>
 
-                  <SetupCard
-                    active={previewMode === "theme"}
-                    onSelect={() => setPreviewMode("theme")}
+                  {/* Step 1 — app embed (required) */}
+                  <div
+                    style={{
+                      border: "1px solid #D8DCE3",
+                      borderRadius: 12,
+                      background: widgetEnabled ? "#F6FEF9" : "#FFFFFF",
+                      padding: 16,
+                    }}
                   >
                     <InlineStack align="space-between" blockAlign="center" wrap={false} gap="400">
-                      <BlockStack gap="150">
+                      <BlockStack gap="100">
                         <InlineStack gap="200" blockAlign="center">
-                          <Text as="h2" variant="headingLg">
+                          <Text as="h2" variant="headingMd">
                             1. Turn on Ello in your theme
                           </Text>
                           <Badge tone={widgetEnabled ? "success" : "attention"}>
-                            {widgetEnabled ? "Enabled" : openedThemeSettings ? "Opened" : "Required"}
+                            {widgetEnabled ? "Enabled" : openedThemeSettings ? "Opened — click Save" : "Required"}
                           </Badge>
                         </InlineStack>
-                        <Text as="p" variant="bodyMd" tone="subdued">
-                          Opens your theme settings with Ello already switched
-                          on — just click Save in the top-right. That&rsquo;s it.
-                        </Text>
-                      </BlockStack>
-                      <Button variant="primary" onClick={handleOpenThemeSettings}>
-                        {openedThemeSettings ? "Open theme settings again" : "Open theme settings"}
-                      </Button>
-                    </InlineStack>
-                  </SetupCard>
-
-                  <SetupCard
-                    active={previewMode === "inline"}
-                    onSelect={() => setPreviewMode("inline")}
-                  >
-                    <BlockStack gap="300">
-                      <InlineStack align="space-between" blockAlign="center" wrap={false} gap="400">
-                        <BlockStack gap="150">
-                          <InlineStack gap="200" blockAlign="center">
-                            <Text as="h2" variant="headingLg">
-                              2. Add the inline Try-On button
-                            </Text>
-                            <Badge tone={inlineButtonAdded ? "success" : "info"}>
-                              {inlineButtonAdded ? "Added" : openedEditor ? "Opened" : "Recommended"}
-                            </Badge>
-                          </InlineStack>
-                          <Text as="p" variant="bodyMd" tone="subdued">
-                            This is the main conversion placement. Shopify opens
-                            the product template with Ello ready to add.
-                          </Text>
-                        </BlockStack>
-                        <Button variant="primary" onClick={handleOpenEditor}>
-                          {openedEditor ? "Open inline setup again" : "Add inline button"}
-                        </Button>
-                      </InlineStack>
-                      <InlineButtonPlacementHelp />
-                    </BlockStack>
-                  </SetupCard>
-
-                  <Card>
-                    <BlockStack gap="300">
-                      <BlockStack gap="100">
-                        <Text as="h2" variant="headingMd">
-                          Optional visibility
-                        </Text>
                         <Text as="p" variant="bodySm" tone="subdued">
-                          These are good defaults. You can change them later in
-                          the dashboard.
+                          Opens your theme settings with Ello switched on — just
+                          click Save in the top-right.
                         </Text>
                       </BlockStack>
-                      <OptionRow
-                        checked={floatingNonPdpEnabled}
-                        label="Show floating Try-On widget on non-product pages"
-                        helpText="The full Try-On widget appears in the bottom corner on home, collection, and cart pages."
-                        onChange={setFloatingNonPdpEnabled}
-                      />
-                      <OptionRow
-                        checked={previewEnabled}
-                        label="Show desktop preview prompt on product pages"
-                        helpText="A small desktop popup nudges shoppers to try the product."
-                        onChange={setPreviewEnabled}
-                      />
-                      <OptionRow
-                        checked={floatingPdpEnabled}
-                        label="Also show the floating widget on product pages"
-                        helpText="On top of the inline button. Most stores leave this off — the inline button already handles product pages."
-                        onChange={setFloatingPdpEnabled}
-                      />
+                      {!widgetEnabled ? (
+                        <Button variant="primary" onClick={handleOpenThemeSettings}>
+                          {openedThemeSettings ? "Open again" : "Turn on Ello"}
+                        </Button>
+                      ) : null}
+                    </InlineStack>
+                  </div>
+
+                  {/* Step 2 — the two placements */}
+                  <BlockStack gap="300">
+                    <BlockStack gap="100">
+                      <Text as="h2" variant="headingMd">
+                        2. Where should shoppers try things on?
+                      </Text>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        Pick one or both — hover to preview what shoppers see.
+                      </Text>
                     </BlockStack>
-                  </Card>
+
+                    <PlacementCard
+                      selected={productPageOn}
+                      focused={previewMode === "product"}
+                      title="On the product page"
+                      badge={
+                        inlineButtonAdded ? (
+                          <Badge tone="success">Added to theme</Badge>
+                        ) : (
+                          <Badge tone="info">Recommended</Badge>
+                        )
+                      }
+                      description="A Try It On button right under Add to cart — shoppers try the exact product they're looking at. The highest-converting placement."
+                      onToggle={() => setProductPageOn((v) => !v)}
+                      onFocusPreview={() => setPreviewMode("product")}
+                    >
+                      {productPageOn && !inlineButtonAdded ? (
+                        <div
+                          role="presentation"
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => event.stopPropagation()}
+                        >
+                          <BlockStack gap="200">
+                            <InlineStack gap="200">
+                              <Button size="slim" variant="primary" onClick={handleOpenEditor}>
+                                {openedEditor ? "Open theme editor again" : "Add button to your product page"}
+                              </Button>
+                            </InlineStack>
+                            <InlineButtonPlacementHelp />
+                          </BlockStack>
+                        </div>
+                      ) : null}
+                    </PlacementCard>
+
+                    <PlacementCard
+                      selected={widgetOn}
+                      focused={previewMode === "widget"}
+                      title="Inside the floating widget"
+                      description="A try-on bubble in the corner of every page — home, collections, cart. Shoppers browse your catalog and try on from anywhere. No theme edits needed."
+                      onToggle={() => setWidgetOn((v) => !v)}
+                      onFocusPreview={() => setPreviewMode("widget")}
+                    />
+                  </BlockStack>
+
+                  {/* Step 3 — upsells */}
+                  <BlockStack gap="300">
+                    <BlockStack gap="100">
+                      <Text as="h2" variant="headingMd">
+                        3. Turn try-ons into bigger carts
+                      </Text>
+                    </BlockStack>
+                    <PlacementCard
+                      selected={upsellsOn}
+                      focused={previewMode === "upsell"}
+                      title="Complete the Look upsells"
+                      badge={<Badge tone="success">Boosts order value</Badge>}
+                      description="After every try-on, Ello suggests matching items from your catalog — shoppers add the whole outfit, not just one piece. Included on all plans."
+                      onToggle={() => setUpsellsOn((v) => !v)}
+                      onFocusPreview={() => setPreviewMode("upsell")}
+                    />
+                  </BlockStack>
 
                   <InlineStack align="space-between" blockAlign="center">
                     <Form method="post">
@@ -624,26 +808,10 @@ export default function OnboardingPlacements() {
                     </Form>
                     <Form method="post">
                       <input type="hidden" name="intent" value="continue" />
-                      <input
-                        type="hidden"
-                        name="inline_enabled"
-                        value={inlineEnabled ? "on" : "off"}
-                      />
-                      <input
-                        type="hidden"
-                        name="floating_non_pdp_enabled"
-                        value={floatingNonPdpEnabled ? "on" : "off"}
-                      />
-                      <input
-                        type="hidden"
-                        name="floating_pdp_enabled"
-                        value={floatingPdpEnabled ? "on" : "off"}
-                      />
-                      <input
-                        type="hidden"
-                        name="preview_enabled"
-                        value={previewEnabled ? "on" : "off"}
-                      />
+                      <input type="hidden" name="product_page" value={productPageOn ? "on" : "off"} />
+                      <input type="hidden" name="widget" value={widgetOn ? "on" : "off"} />
+                      <input type="hidden" name="upsells" value={upsellsOn ? "on" : "off"} />
+                      <input type="hidden" name="preview_enabled" value={previewEnabled ? "on" : "off"} />
                       <Button
                         submit
                         variant="primary"
@@ -665,14 +833,21 @@ export default function OnboardingPlacements() {
                   padding: 32,
                 }}
               >
-                {previewMode === "theme" ? (
+                {previewMode === "embed" ? (
                   <ThemeSettingsPreview />
                 ) : (
-                  <StorefrontPreview
-                    brandColor={brandColor}
-                    showPreview={previewEnabled}
-                    showProductFloating={floatingPdpEnabled}
-                  />
+                  <BrowserFrame label={PREVIEW_LABELS[previewMode]}>
+                    <ProductColumn
+                      brandColor={brandColor}
+                      highlightInline={previewMode === "product"}
+                    />
+                    {previewMode === "widget" ? (
+                      <FloatingWidgetOverlay brandColor={brandColor} />
+                    ) : null}
+                    {previewMode === "upsell" ? (
+                      <UpsellPreview brandColor={brandColor} />
+                    ) : null}
+                  </BrowserFrame>
                 )}
               </div>
             </div>
