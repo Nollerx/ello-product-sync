@@ -17,7 +17,15 @@ import {
   ProgressBar,
   Box,
   Badge,
+  Icon,
 } from "@shopify/polaris";
+import {
+  ThemeIcon,
+  ButtonIcon,
+  ImageIcon,
+  ChatIcon,
+  CartUpIcon,
+} from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import {
   getAppEmbedEditorUrl,
@@ -29,7 +37,8 @@ import { getThemeWidgetStatus } from "../lib/theme-status.server";
 import { InlineButtonPlacementHelp } from "../components/inline-placement-help";
 import { supabaseAdmin } from "../lib/supabase.server";
 
-type PreviewMode = "embed" | "product" | "widget" | "upsell";
+type TryOnStyle = "product" | "widget";
+type PreviewMode = "embed" | "button" | "product" | "widget" | "upsell";
 
 const DEFAULT_BRAND_COLOR = "#111827";
 
@@ -57,7 +66,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { data, error } = await supabaseAdmin
     .from("vto_stores")
     .select(
-      "inline_button_enabled, floating_widget_non_pdp_enabled, floating_widget_pdp_enabled, desktop_preview_enabled, complete_the_look_enabled, widget_enabled_at, inline_button_color, minimized_color, widget_primary_color",
+      "pdp_image_swap_enabled, complete_the_look_enabled, desktop_preview_enabled, placements_banner_dismissed_at, inline_button_color, minimized_color, widget_primary_color",
     )
     .eq("shop_domain", session.shop)
     .maybeSingle();
@@ -66,9 +75,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     console.error("[Onboarding placements] read error:", error.message);
   }
 
+  // Default to the recommended product-page style. Only fall back to "widget"
+  // when the merchant already made an explicit choice on a previous pass
+  // (placements saved before) and image swap is off.
+  const madeChoiceBefore = Boolean(data?.placements_banner_dismissed_at);
+  const initialStyle: TryOnStyle =
+    madeChoiceBefore && data?.pdp_image_swap_enabled === false ? "widget" : "product";
+
   return {
-    productPageOn: data?.inline_button_enabled ?? true,
-    widgetOn: data?.floating_widget_non_pdp_enabled ?? true,
+    initialStyle,
     upsellsOn: data?.complete_the_look_enabled ?? true,
     previewEnabled: data?.desktop_preview_enabled ?? true,
     // Live theme-derived status (replaces the stale widget_enabled_at latch).
@@ -91,14 +106,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = formData.get("intent");
 
   if (intent === "continue") {
-    const productPageOn = formData.get("product_page") === "on";
-    const widgetOn = formData.get("widget") === "on";
+    const style: TryOnStyle = formData.get("style") === "widget" ? "widget" : "product";
+    // Same flag mapping as the "Choose your try-on style" presets in
+    // app.widget-design.tsx — keep the two in sync.
     const patch = {
-      inline_button_enabled: productPageOn,
-      floating_widget_non_pdp_enabled: widgetOn,
-      // If the widget is their only placement, let it cover product pages too —
-      // otherwise the PDP would have no try-on entry point at all.
-      floating_widget_pdp_enabled: widgetOn && !productPageOn,
+      inline_button_enabled: true,
+      pdp_image_swap_enabled: style === "product",
+      floating_widget_pdp_enabled: style === "widget",
+      floating_widget_non_pdp_enabled: style === "widget",
       complete_the_look_enabled: formData.get("upsells") === "on",
       desktop_preview_enabled: formData.get("preview_enabled") === "on",
       placements_banner_dismissed_at: new Date().toISOString(),
@@ -131,90 +146,151 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   return redirect(billingUrl);
 };
 
-// ─── Selectable placement card ────────────────────────────────────────────────
+// ─── Left-column building blocks ─────────────────────────────────────────────
 
-function PlacementCard({
-  selected,
-  focused,
+function SetupRow({
+  icon,
   title,
-  badge,
   description,
-  onToggle,
+  badge,
+  action,
+  help,
   onFocusPreview,
-  children,
 }: {
-  selected: boolean;
-  focused: boolean;
+  icon: React.FunctionComponent<React.SVGProps<SVGSVGElement>>;
   title: string;
-  badge?: React.ReactNode;
   description: string;
-  onToggle: () => void;
+  badge: React.ReactNode;
+  action?: React.ReactNode;
+  help?: React.ReactNode;
   onFocusPreview: () => void;
-  children?: React.ReactNode;
 }) {
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={() => {
-        onToggle();
-        onFocusPreview();
-      }}
       onMouseEnter={onFocusPreview}
+      style={{
+        border: "1px solid #D8DCE3",
+        borderRadius: 12,
+        background: "#FFFFFF",
+        padding: 16,
+      }}
+    >
+      <InlineStack align="space-between" blockAlign="start" wrap={false} gap="400">
+        <InlineStack gap="300" blockAlign="start" wrap={false}>
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              background: "#EEF3FE",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+            }}
+          >
+            <Icon source={icon} tone="info" />
+          </div>
+          <BlockStack gap="100">
+            <InlineStack gap="200" blockAlign="center">
+              <Text as="h3" variant="headingMd">
+                {title}
+              </Text>
+              {badge}
+            </InlineStack>
+            <Text as="p" variant="bodySm" tone="subdued">
+              {description}
+            </Text>
+            {help}
+          </BlockStack>
+        </InlineStack>
+        {action}
+      </InlineStack>
+    </div>
+  );
+}
+
+function StyleChoice({
+  selected,
+  focused,
+  icon,
+  title,
+  badge,
+  description,
+  onSelect,
+}: {
+  selected: boolean;
+  focused: boolean;
+  icon: React.FunctionComponent<React.SVGProps<SVGSVGElement>>;
+  title: string;
+  badge?: React.ReactNode;
+  description: string;
+  onSelect: () => void;
+}) {
+  return (
+    <div
+      role="radio"
+      aria-checked={selected}
+      tabIndex={0}
+      onClick={onSelect}
+      onMouseEnter={onSelect}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onToggle();
-          onFocusPreview();
+          onSelect();
         }
       }}
       style={{
         border: selected ? "2px solid #3B63D4" : "1px solid #D8DCE3",
         borderRadius: 12,
         background: selected ? "#F4F7FE" : "#FFFFFF",
-        padding: 18,
+        padding: 16,
         cursor: "pointer",
-        boxShadow: focused
-          ? "0 4px 14px rgba(59, 99, 212, 0.18)"
-          : selected
-            ? "0 2px 8px rgba(59, 99, 212, 0.12)"
-            : "none",
+        flex: 1,
+        boxShadow: focused ? "0 4px 14px rgba(59, 99, 212, 0.18)" : "none",
         transition: "box-shadow 120ms ease, border-color 120ms ease",
       }}
     >
       <BlockStack gap="200">
-        <InlineStack align="space-between" blockAlign="center" wrap={false} gap="300">
-          <InlineStack gap="200" blockAlign="center">
-            {/* Selection indicator */}
-            <span
-              aria-hidden
-              style={{
-                width: 20,
-                height: 20,
-                borderRadius: 6,
-                flexShrink: 0,
-                border: selected ? "none" : "2px solid #D0D5DD",
-                background: selected ? "#3B63D4" : "#FFFFFF",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#FFFFFF",
-                fontSize: 13,
-                fontWeight: 800,
-              }}
-            >
-              {selected ? "✓" : ""}
+        <InlineStack align="space-between" blockAlign="center" wrap={false}>
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              background: selected ? "#3B63D4" : "#EEF3FE",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <span style={{ color: selected ? "#FFFFFF" : undefined }}>
+              <Icon source={icon} tone={selected ? "inherit" : "info"} />
             </span>
+          </div>
+          <span
+            aria-hidden
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: 999,
+              border: selected ? "6px solid #3B63D4" : "2px solid #D0D5DD",
+              background: "#FFFFFF",
+              flexShrink: 0,
+            }}
+          />
+        </InlineStack>
+        <BlockStack gap="100">
+          <InlineStack gap="200" blockAlign="center">
             <Text as="h3" variant="headingMd">
               {title}
             </Text>
+            {badge}
           </InlineStack>
-          {badge}
-        </InlineStack>
-        <Text as="p" variant="bodySm" tone="subdued">
-          {description}
-        </Text>
-        {children}
+          <Text as="p" variant="bodySm" tone="subdued">
+            {description}
+          </Text>
+        </BlockStack>
       </BlockStack>
     </div>
   );
@@ -255,31 +331,167 @@ function BrowserFrame({ label, children }: { label: string; children: React.Reac
   );
 }
 
-function ProductColumn({
+// Schematic shopper figure so "the photo becomes your shopper" reads instantly.
+function ShopperFigure({ brandColor }: { brandColor: string }) {
+  return (
+    <svg viewBox="0 0 120 190" style={{ height: "78%", maxWidth: "70%" }} aria-hidden>
+      <circle cx="60" cy="30" r="18" fill="#C7CEDC" />
+      <path d="M30 185 q-4 -70 12 -92 q8 -12 18 -12 q10 0 18 12 q16 22 12 92 z" fill={brandColor} opacity="0.85" />
+      <rect x="24" y="88" width="12" height="52" rx="6" fill="#C7CEDC" />
+      <rect x="84" y="88" width="12" height="52" rx="6" fill="#C7CEDC" />
+    </svg>
+  );
+}
+
+// The hero cell: either the plain product photo, or the try-on result
+// (shopper wearing the item) with the real flip-back thumbnail — plus,
+// optionally, the real Complete-the-Look bottom sheet pinned to its base.
+function HeroCell({
+  brandColor,
+  showResult,
+  showBottomSheet,
+}: {
+  brandColor: string;
+  showResult: boolean;
+  showBottomSheet: boolean;
+}) {
+  const textColor = readableTextColor(brandColor);
+  return (
+    <div
+      style={{
+        position: "relative",
+        aspectRatio: "4 / 5",
+        borderRadius: 10,
+        overflow: "hidden",
+        background: showResult
+          ? `linear-gradient(165deg, ${brandColor}26 0%, #F2F4F7 60%, #E4E7EC 100%)`
+          : "linear-gradient(145deg, #E8EEFD 0%, #F2F4F7 52%, #D0D5DD 100%)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "#667085",
+        fontWeight: 650,
+      }}
+    >
+      {showResult ? (
+        <>
+          <ShopperFigure brandColor={brandColor} />
+          <span
+            style={{
+              position: "absolute",
+              top: 10,
+              left: 10,
+              background: "rgba(255,255,255,0.92)",
+              borderRadius: 999,
+              padding: "3px 10px",
+              fontSize: 10,
+              fontWeight: 700,
+              color: "#101828",
+              boxShadow: "0 2px 6px rgba(11,18,32,0.12)",
+            }}
+          >
+            ✨ Your shopper, wearing it
+          </span>
+          {/* Flip-back thumbnail — the real widget pins this to the swapped hero */}
+          <span
+            style={{
+              position: "absolute",
+              top: 10,
+              right: 10,
+              width: 34,
+              height: 42,
+              borderRadius: 6,
+              background: "linear-gradient(145deg, #E8EEFD 0%, #D0D5DD 100%)",
+              border: "2px solid #FFFFFF",
+              boxShadow: "0 2px 6px rgba(11,18,32,0.2)",
+            }}
+          />
+        </>
+      ) : (
+        "Product image"
+      )}
+
+      {showBottomSheet ? (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(255,255,255,0.96)",
+            backdropFilter: "blur(4px)",
+            borderRadius: "10px 10px 0 0",
+            padding: "8px 10px",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            boxShadow: "0 -4px 14px rgba(11,18,32,0.10)",
+          }}
+        >
+          <div
+            style={{
+              width: 30,
+              height: 38,
+              borderRadius: 5,
+              background: "#EAECF0",
+              flexShrink: 0,
+            }}
+          />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 9,
+                fontWeight: 800,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "#667085",
+              }}
+            >
+              Complete the look
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 650, color: "#101828" }}>Matching jacket</div>
+          </div>
+          <button
+            type="button"
+            style={{
+              border: "none",
+              borderRadius: 999,
+              padding: "6px 12px",
+              background: brandColor,
+              color: textColor,
+              fontSize: 11,
+              fontWeight: 700,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Try it on too
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PdpMock({
   brandColor,
   highlightInline,
+  heroResult,
+  heroBottomSheet,
 }: {
   brandColor: string;
   highlightInline: boolean;
+  heroResult: boolean;
+  heroBottomSheet: boolean;
 }) {
   const textColor = readableTextColor(brandColor);
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1.02fr 0.98fr", gap: 24, padding: 24 }}>
       <div>
-        <div
-          style={{
-            aspectRatio: "4 / 5",
-            borderRadius: 10,
-            background: "linear-gradient(145deg, #E8EEFD 0%, #F2F4F7 52%, #D0D5DD 100%)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#667085",
-            fontWeight: 650,
-          }}
-        >
-          Product image
-        </div>
+        <HeroCell
+          brandColor={brandColor}
+          showResult={heroResult}
+          showBottomSheet={heroBottomSheet}
+        />
         <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
           {[0, 1, 2].map((item) => (
             <div key={item} style={{ width: 46, height: 56, borderRadius: 6, background: "#EAECF0" }} />
@@ -321,23 +533,23 @@ function ProductColumn({
         >
           Add to cart
         </button>
-        {highlightInline ? (
-          <div style={{ position: "relative" }}>
-            <button
-              type="button"
-              style={{
-                width: "100%",
-                border: "none",
-                borderRadius: 6,
-                padding: "11px 14px",
-                background: brandColor,
-                color: textColor,
-                fontWeight: 650,
-                boxShadow: "0 0 0 3px rgba(59, 99, 212, 0.35)",
-              }}
-            >
-              Try It On
-            </button>
+        <div style={{ position: "relative" }}>
+          <button
+            type="button"
+            style={{
+              width: "100%",
+              border: "none",
+              borderRadius: 6,
+              padding: "11px 14px",
+              background: brandColor,
+              color: textColor,
+              fontWeight: 650,
+              boxShadow: highlightInline ? "0 0 0 3px rgba(59, 99, 212, 0.35)" : "none",
+            }}
+          >
+            Try It On
+          </button>
+          {highlightInline ? (
             <span
               style={{
                 position: "absolute",
@@ -352,10 +564,10 @@ function ProductColumn({
                 whiteSpace: "nowrap",
               }}
             >
-              Ello button
+              Your Ello button
             </span>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
         <div style={{ height: 8, width: "100%", background: "#EAECF0", borderRadius: 4 }} />
         <div style={{ height: 8, width: "88%", background: "#EAECF0", borderRadius: 4 }} />
         <div style={{ height: 8, width: "72%", background: "#EAECF0", borderRadius: 4 }} />
@@ -364,17 +576,24 @@ function ProductColumn({
   );
 }
 
-function FloatingWidgetOverlay({ brandColor }: { brandColor: string }) {
+// Widget-style preview: the result renders inside the Ello panel; the page
+// itself stays untouched. Optionally shows the in-panel Complete-the-Look rail.
+function WidgetPanelOverlay({
+  brandColor,
+  withRail,
+}: {
+  brandColor: string;
+  withRail: boolean;
+}) {
   const textColor = readableTextColor(brandColor);
   return (
     <>
-      {/* Opened widget panel */}
       <div
         style={{
           position: "absolute",
           right: 20,
           bottom: 92,
-          width: 250,
+          width: 260,
           borderRadius: 12,
           border: "1px solid #D8DCE3",
           background: "#FFFFFF",
@@ -391,41 +610,85 @@ function FloatingWidgetOverlay({ brandColor }: { brandColor: string }) {
             fontWeight: 700,
           }}
         >
-          Fitting room
+          Try-on result
         </div>
         <div style={{ padding: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            {[0, 1, 2, 3, 4, 5].map((item) => (
-              <div
-                key={item}
-                style={{
-                  aspectRatio: "3 / 4",
-                  borderRadius: 6,
-                  background: item === 1 ? `${brandColor}33` : "#F2F4F7",
-                  border: item === 1 ? `2px solid ${brandColor}` : "1px solid #EAECF0",
-                }}
-              />
-            ))}
-          </div>
-          <button
-            type="button"
+          <div
             style={{
-              width: "100%",
-              marginTop: 10,
-              border: "none",
-              borderRadius: 6,
-              padding: "9px 12px",
-              background: brandColor,
-              color: textColor,
-              fontWeight: 650,
-              fontSize: 13,
+              position: "relative",
+              aspectRatio: "3 / 4",
+              borderRadius: 8,
+              background: `linear-gradient(165deg, ${brandColor}26 0%, #F2F4F7 100%)`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              overflow: "hidden",
             }}
           >
-            Try It On
-          </button>
+            <ShopperFigure brandColor={brandColor} />
+          </div>
+          {withRail ? (
+            <div
+              style={{
+                marginTop: 10,
+                border: "1px solid #EAECF0",
+                borderRadius: 8,
+                padding: 8,
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+              }}
+            >
+              <div style={{ width: 30, height: 38, borderRadius: 5, background: "#EAECF0", flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 800,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    color: "#667085",
+                  }}
+                >
+                  Complete the look
+                </div>
+                <div style={{ fontSize: 11, fontWeight: 650, color: "#101828" }}>Matching jacket</div>
+              </div>
+              <button
+                type="button"
+                style={{
+                  border: "none",
+                  borderRadius: 999,
+                  padding: "5px 10px",
+                  background: brandColor,
+                  color: textColor,
+                  fontSize: 10,
+                  fontWeight: 700,
+                }}
+              >
+                Try on
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              style={{
+                width: "100%",
+                marginTop: 10,
+                border: "none",
+                borderRadius: 6,
+                padding: "9px 12px",
+                background: brandColor,
+                color: textColor,
+                fontWeight: 650,
+                fontSize: 13,
+              }}
+            >
+              Add to cart
+            </button>
+          )}
         </div>
       </div>
-      {/* Bubble */}
       <div style={{ position: "absolute", right: 22, bottom: 22 }}>
         <div style={{ position: "relative" }}>
           <button
@@ -457,118 +720,11 @@ function FloatingWidgetOverlay({ brandColor }: { brandColor: string }) {
               whiteSpace: "nowrap",
             }}
           >
-            Follows every page
+            On every page
           </span>
         </div>
       </div>
     </>
-  );
-}
-
-function UpsellPreview({ brandColor }: { brandColor: string }) {
-  const textColor = readableTextColor(brandColor);
-  return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        background: "rgba(11, 18, 32, 0.42)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-      }}
-    >
-      <div
-        style={{
-          width: 430,
-          borderRadius: 12,
-          background: "#FFFFFF",
-          padding: 18,
-          boxShadow: "0 18px 40px rgba(11, 18, 32, 0.28)",
-        }}
-      >
-        <BlockStack gap="300">
-          <Text as="h3" variant="headingMd">
-            Your try-on result
-          </Text>
-          <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 12 }}>
-            {/* Try-on result */}
-            <div
-              style={{
-                aspectRatio: "3 / 4",
-                borderRadius: 8,
-                background: `linear-gradient(160deg, ${brandColor}22 0%, #F2F4F7 100%)`,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "#667085",
-                fontSize: 12,
-                fontWeight: 650,
-                textAlign: "center",
-                padding: 8,
-              }}
-            >
-              Shopper wearing your product
-            </div>
-            {/* Complete the look rail */}
-            <div>
-              <div
-                style={{
-                  fontSize: 11,
-                  fontWeight: 800,
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                  color: "#667085",
-                  marginBottom: 8,
-                }}
-              >
-                Complete the look
-              </div>
-              <BlockStack gap="200">
-                {["Matching jacket", "Relaxed jeans"].map((item) => (
-                  <div
-                    key={item}
-                    style={{
-                      border: "1px solid #EAECF0",
-                      borderRadius: 8,
-                      padding: 8,
-                      display: "flex",
-                      gap: 8,
-                      alignItems: "center",
-                    }}
-                  >
-                    <div style={{ width: 34, height: 42, borderRadius: 5, background: "#F2F4F7", flexShrink: 0 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 11, fontWeight: 650, color: "#101828" }}>{item}</div>
-                      <button
-                        type="button"
-                        style={{
-                          marginTop: 4,
-                          border: "none",
-                          borderRadius: 999,
-                          padding: "3px 10px",
-                          background: brandColor,
-                          color: textColor,
-                          fontSize: 10,
-                          fontWeight: 700,
-                        }}
-                      >
-                        + Add
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </BlockStack>
-            </div>
-          </div>
-          <Text as="p" variant="bodySm" tone="subdued">
-            Ello suggests matching items from your catalog right in the try-on
-            result — shoppers add the whole outfit to cart.
-          </Text>
-        </BlockStack>
-      </div>
-    </div>
   );
 }
 
@@ -599,19 +755,11 @@ function ThemeSettingsPreview() {
   );
 }
 
-const PREVIEW_LABELS: Record<PreviewMode, string> = {
-  embed: "Theme editor — one click, then Save",
-  product: "What shoppers see on your product page",
-  widget: "The widget follows shoppers on every page",
-  upsell: "After the try-on — upsells that build the cart",
-};
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function OnboardingPlacements() {
   const {
-    productPageOn: initialProduct,
-    widgetOn: initialWidget,
+    initialStyle,
     upsellsOn: initialUpsells,
     previewEnabled,
     themeEditorUrl,
@@ -624,11 +772,10 @@ export default function OnboardingPlacements() {
   const revalidator = useRevalidator();
   const submitting = navigation.state !== "idle";
 
-  const [productPageOn, setProductPageOn] = useState<boolean>(Boolean(initialProduct));
-  const [widgetOn, setWidgetOn] = useState<boolean>(Boolean(initialWidget));
+  const [style, setStyle] = useState<TryOnStyle>(initialStyle);
   const [upsellsOn, setUpsellsOn] = useState<boolean>(Boolean(initialUpsells));
   const [previewMode, setPreviewMode] = useState<PreviewMode>(
-    widgetEnabled ? "product" : "embed",
+    widgetEnabled ? (initialStyle as PreviewMode) : "embed",
   );
   const [openedEditor, setOpenedEditor] = useState(false);
   const [openedThemeSettings, setOpenedThemeSettings] = useState(false);
@@ -642,7 +789,7 @@ export default function OnboardingPlacements() {
   }, [revalidator]);
 
   function handleOpenEditor() {
-    setPreviewMode("product");
+    setPreviewMode("button");
     setOpenedEditor(true);
     window.open(themeEditorUrl, "_blank", "noopener");
   }
@@ -652,6 +799,17 @@ export default function OnboardingPlacements() {
     setOpenedThemeSettings(true);
     window.open(appEmbedUrl, "_blank", "noopener");
   }
+
+  const previewLabel: Record<PreviewMode, string> = {
+    embed: "Theme editor — one click, then Save",
+    button: "The Try It On button, under Add to cart",
+    product: "Tap Try It On → the product photo becomes your shopper",
+    widget: "Tap Try It On → the result opens in the Ello panel",
+    upsell:
+      style === "product"
+        ? "Right on the result — one tap tries the matching piece"
+        : "Right under the result — one tap tries the matching piece",
+  };
 
   return (
     <Page fullWidth>
@@ -685,118 +843,180 @@ export default function OnboardingPlacements() {
             >
               <Box padding="800">
                 <BlockStack gap="500">
-                  <BlockStack gap="300">
+                  <BlockStack gap="200">
                     <Text as="h1" variant="heading2xl">
-                      Put Try-On where it sells
+                      Set up your try-on
                     </Text>
                     <Text as="p" variant="bodyLg" tone="subdued">
-                      Turn Ello on, pick where shoppers try things on, and switch
-                      on outfit upsells.
+                      Two quick theme steps, one choice, one upsell switch.
                     </Text>
                   </BlockStack>
 
-                  {/* Step 1 — app embed (required) */}
-                  <div
-                    style={{
-                      border: "1px solid #D8DCE3",
-                      borderRadius: 12,
-                      background: widgetEnabled ? "#F6FEF9" : "#FFFFFF",
-                      padding: 16,
-                    }}
-                  >
-                    <InlineStack align="space-between" blockAlign="center" wrap={false} gap="400">
-                      <BlockStack gap="100">
-                        <InlineStack gap="200" blockAlign="center">
-                          <Text as="h2" variant="headingMd">
-                            1. Turn on Ello in your theme
-                          </Text>
-                          <Badge tone={widgetEnabled ? "success" : "attention"}>
-                            {widgetEnabled ? "Enabled" : openedThemeSettings ? "Opened — click Save" : "Required"}
-                          </Badge>
-                        </InlineStack>
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Opens your theme settings with Ello switched on — just
-                          click Save in the top-right.
-                        </Text>
-                      </BlockStack>
-                      {!widgetEnabled ? (
-                        <Button variant="primary" onClick={handleOpenThemeSettings}>
-                          {openedThemeSettings ? "Open again" : "Turn on Ello"}
-                        </Button>
-                      ) : null}
-                    </InlineStack>
-                  </div>
-
-                  {/* Step 2 — the two placements */}
+                  {/* 1 — required setup */}
                   <BlockStack gap="300">
-                    <BlockStack gap="100">
-                      <Text as="h2" variant="headingMd">
-                        2. Where should shoppers try things on?
-                      </Text>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Pick one or both — hover to preview what shoppers see.
-                      </Text>
-                    </BlockStack>
-
-                    <PlacementCard
-                      selected={productPageOn}
-                      focused={previewMode === "product"}
-                      title="On the product page"
+                    <Text as="h2" variant="headingMd">
+                      1. Turn it on
+                    </Text>
+                    <SetupRow
+                      icon={ThemeIcon}
+                      title="Enable Ello in your theme"
+                      description="Opens theme settings with Ello switched on — just hit Save."
                       badge={
-                        inlineButtonAdded ? (
-                          <Badge tone="success">Added to theme</Badge>
-                        ) : (
-                          <Badge tone="info">Recommended</Badge>
-                        )
+                        <Badge tone={widgetEnabled ? "success" : "attention"}>
+                          {widgetEnabled ? "Enabled" : openedThemeSettings ? "Opened — click Save" : "Required"}
+                        </Badge>
                       }
-                      description="A Try It On button right under Add to cart — shoppers try the exact product they're looking at. The highest-converting placement."
-                      onToggle={() => setProductPageOn((v) => !v)}
-                      onFocusPreview={() => setPreviewMode("product")}
-                    >
-                      {productPageOn && !inlineButtonAdded ? (
-                        <div
-                          role="presentation"
-                          onClick={(event) => event.stopPropagation()}
-                          onKeyDown={(event) => event.stopPropagation()}
-                        >
-                          <BlockStack gap="200">
-                            <InlineStack gap="200">
-                              <Button size="slim" variant="primary" onClick={handleOpenEditor}>
-                                {openedEditor ? "Open theme editor again" : "Add button to your product page"}
-                              </Button>
-                            </InlineStack>
-                            <InlineButtonPlacementHelp />
-                          </BlockStack>
-                        </div>
-                      ) : null}
-                    </PlacementCard>
-
-                    <PlacementCard
-                      selected={widgetOn}
-                      focused={previewMode === "widget"}
-                      title="Inside the floating widget"
-                      description="A try-on bubble in the corner of every page — home, collections, cart. Shoppers browse your catalog and try on from anywhere. No theme edits needed."
-                      onToggle={() => setWidgetOn((v) => !v)}
-                      onFocusPreview={() => setPreviewMode("widget")}
+                      action={
+                        !widgetEnabled ? (
+                          <Button variant="primary" onClick={handleOpenThemeSettings}>
+                            {openedThemeSettings ? "Open again" : "Turn on Ello"}
+                          </Button>
+                        ) : undefined
+                      }
+                      onFocusPreview={() => setPreviewMode("embed")}
+                    />
+                    <SetupRow
+                      icon={ButtonIcon}
+                      title="Add the Try It On button"
+                      description="Goes right under Add to cart on your product pages."
+                      badge={
+                        <Badge tone={inlineButtonAdded ? "success" : "attention"}>
+                          {inlineButtonAdded ? "Added" : openedEditor ? "Opened — click Save" : "Required"}
+                        </Badge>
+                      }
+                      action={
+                        !inlineButtonAdded ? (
+                          <Button variant="primary" onClick={handleOpenEditor}>
+                            {openedEditor ? "Open again" : "Add button"}
+                          </Button>
+                        ) : undefined
+                      }
+                      help={!inlineButtonAdded ? <InlineButtonPlacementHelp /> : undefined}
+                      onFocusPreview={() => setPreviewMode("button")}
                     />
                   </BlockStack>
 
-                  {/* Step 3 — upsells */}
+                  {/* 2 — the one choice */}
                   <BlockStack gap="300">
                     <BlockStack gap="100">
                       <Text as="h2" variant="headingMd">
-                        3. Turn try-ons into bigger carts
+                        2. Where does the result show up?
+                      </Text>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        When a shopper taps Try It On — pick one. You can switch anytime.
                       </Text>
                     </BlockStack>
-                    <PlacementCard
-                      selected={upsellsOn}
-                      focused={previewMode === "upsell"}
-                      title="Complete the Look upsells"
-                      badge={<Badge tone="success">Boosts order value</Badge>}
-                      description="After every try-on, Ello suggests matching items from your catalog — shoppers add the whole outfit, not just one piece. Included on all plans."
-                      onToggle={() => setUpsellsOn((v) => !v)}
-                      onFocusPreview={() => setPreviewMode("upsell")}
-                    />
+                    <InlineStack gap="300" wrap={false}>
+                      <StyleChoice
+                        selected={style === "product"}
+                        focused={previewMode === "product"}
+                        icon={ImageIcon}
+                        title="On the product photo"
+                        badge={<Badge tone="info">Recommended</Badge>}
+                        description="The product photo becomes your shopper wearing it. Native, no popups."
+                        onSelect={() => {
+                          setStyle("product");
+                          setPreviewMode("product");
+                        }}
+                      />
+                      <StyleChoice
+                        selected={style === "widget"}
+                        focused={previewMode === "widget"}
+                        icon={ChatIcon}
+                        title="Inside the widget"
+                        description="A corner panel shows the result. Your page stays untouched."
+                        onSelect={() => {
+                          setStyle("widget");
+                          setPreviewMode("widget");
+                        }}
+                      />
+                    </InlineStack>
+                  </BlockStack>
+
+                  {/* 3 — upsells */}
+                  <BlockStack gap="300">
+                    <Text as="h2" variant="headingMd">
+                      3. Turn try-ons into bigger carts
+                    </Text>
+                    <div
+                      role="checkbox"
+                      aria-checked={upsellsOn}
+                      tabIndex={0}
+                      onClick={() => {
+                        setUpsellsOn((v: boolean) => !v);
+                        setPreviewMode("upsell");
+                      }}
+                      onMouseEnter={() => setPreviewMode("upsell")}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setUpsellsOn((v: boolean) => !v);
+                          setPreviewMode("upsell");
+                        }
+                      }}
+                      style={{
+                        border: upsellsOn ? "2px solid #3B63D4" : "1px solid #D8DCE3",
+                        borderRadius: 12,
+                        background: upsellsOn ? "#F4F7FE" : "#FFFFFF",
+                        padding: 16,
+                        cursor: "pointer",
+                        boxShadow:
+                          previewMode === "upsell" ? "0 4px 14px rgba(59, 99, 212, 0.18)" : "none",
+                        transition: "box-shadow 120ms ease, border-color 120ms ease",
+                      }}
+                    >
+                      <InlineStack align="space-between" blockAlign="start" wrap={false} gap="400">
+                        <InlineStack gap="300" blockAlign="start" wrap={false}>
+                          <div
+                            style={{
+                              width: 36,
+                              height: 36,
+                              borderRadius: 10,
+                              background: upsellsOn ? "#3B63D4" : "#EEF3FE",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              flexShrink: 0,
+                            }}
+                          >
+                            <span style={{ color: upsellsOn ? "#FFFFFF" : undefined }}>
+                              <Icon source={CartUpIcon} tone={upsellsOn ? "inherit" : "info"} />
+                            </span>
+                          </div>
+                          <BlockStack gap="100">
+                            <InlineStack gap="200" blockAlign="center">
+                              <Text as="h3" variant="headingMd">
+                                Complete the Look upsells
+                              </Text>
+                              <Badge tone="success">Boosts order value</Badge>
+                            </InlineStack>
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              After the result, Ello offers a matching item — one tap adds the
+                              whole outfit to cart.
+                            </Text>
+                          </BlockStack>
+                        </InlineStack>
+                        <span
+                          aria-hidden
+                          style={{
+                            width: 20,
+                            height: 20,
+                            borderRadius: 6,
+                            flexShrink: 0,
+                            border: upsellsOn ? "none" : "2px solid #D0D5DD",
+                            background: upsellsOn ? "#3B63D4" : "#FFFFFF",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: "#FFFFFF",
+                            fontSize: 13,
+                            fontWeight: 800,
+                          }}
+                        >
+                          {upsellsOn ? "✓" : ""}
+                        </span>
+                      </InlineStack>
+                    </div>
                   </BlockStack>
 
                   <InlineStack align="space-between" blockAlign="center">
@@ -808,8 +1028,7 @@ export default function OnboardingPlacements() {
                     </Form>
                     <Form method="post">
                       <input type="hidden" name="intent" value="continue" />
-                      <input type="hidden" name="product_page" value={productPageOn ? "on" : "off"} />
-                      <input type="hidden" name="widget" value={widgetOn ? "on" : "off"} />
+                      <input type="hidden" name="style" value={style} />
                       <input type="hidden" name="upsells" value={upsellsOn ? "on" : "off"} />
                       <input type="hidden" name="preview_enabled" value={previewEnabled ? "on" : "off"} />
                       <Button
@@ -836,16 +1055,21 @@ export default function OnboardingPlacements() {
                 {previewMode === "embed" ? (
                   <ThemeSettingsPreview />
                 ) : (
-                  <BrowserFrame label={PREVIEW_LABELS[previewMode]}>
-                    <ProductColumn
+                  <BrowserFrame label={previewLabel[previewMode]}>
+                    <PdpMock
                       brandColor={brandColor}
-                      highlightInline={previewMode === "product"}
+                      highlightInline={previewMode === "button"}
+                      heroResult={
+                        previewMode === "product" ||
+                        (previewMode === "upsell" && style === "product")
+                      }
+                      heroBottomSheet={previewMode === "upsell" && style === "product"}
                     />
-                    {previewMode === "widget" ? (
-                      <FloatingWidgetOverlay brandColor={brandColor} />
-                    ) : null}
-                    {previewMode === "upsell" ? (
-                      <UpsellPreview brandColor={brandColor} />
+                    {previewMode === "widget" || (previewMode === "upsell" && style === "widget") ? (
+                      <WidgetPanelOverlay
+                        brandColor={brandColor}
+                        withRail={previewMode === "upsell"}
+                      />
                     ) : null}
                   </BrowserFrame>
                 )}
