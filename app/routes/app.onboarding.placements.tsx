@@ -218,6 +218,7 @@ function StyleChoice({
   badge,
   description,
   onSelect,
+  onPreview,
 }: {
   selected: boolean;
   focused: boolean;
@@ -226,6 +227,7 @@ function StyleChoice({
   badge?: React.ReactNode;
   description: string;
   onSelect: () => void;
+  onPreview: () => void;
 }) {
   return (
     <div
@@ -233,7 +235,7 @@ function StyleChoice({
       aria-checked={selected}
       tabIndex={0}
       onClick={onSelect}
-      onMouseEnter={onSelect}
+      onMouseEnter={onPreview}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -331,14 +333,51 @@ function BrowserFrame({ label, children }: { label: string; children: React.Reac
   );
 }
 
-// Schematic shopper figure so "the photo becomes your shopper" reads instantly.
+// Fashion-illustration shopper so "the photo becomes your shopper" reads
+// instantly — flat-style figure wearing the merchant's brand color.
 function ShopperFigure({ brandColor }: { brandColor: string }) {
+  const skin = "#E3BA96";
+  const hair = "#3E2F23";
   return (
-    <svg viewBox="0 0 120 190" style={{ height: "78%", maxWidth: "70%" }} aria-hidden>
-      <circle cx="60" cy="30" r="18" fill="#C7CEDC" />
-      <path d="M30 185 q-4 -70 12 -92 q8 -12 18 -12 q10 0 18 12 q16 22 12 92 z" fill={brandColor} opacity="0.85" />
-      <rect x="24" y="88" width="12" height="52" rx="6" fill="#C7CEDC" />
-      <rect x="84" y="88" width="12" height="52" rx="6" fill="#C7CEDC" />
+    <svg viewBox="0 0 160 240" style={{ height: "84%", maxWidth: "72%" }} aria-hidden>
+      {/* ground shadow */}
+      <ellipse cx="80" cy="230" rx="36" ry="6" fill="#101828" opacity="0.08" />
+      {/* hair behind shoulders */}
+      <path
+        d="M80 12 c-17 0 -27 12 -27 28 c0 10 1 20 -2 28 c-2 6 2 10 8 10 l42 0 c6 0 10 -4 8 -10 c-3 -8 -2 -18 -2 -28 c0 -16 -10 -28 -27 -28 z"
+        fill={hair}
+      />
+      {/* neck */}
+      <rect x="74" y="46" width="12" height="14" rx="5" fill={skin} />
+      {/* face */}
+      <circle cx="80" cy="34" r="15.5" fill={skin} />
+      {/* hair front sweep */}
+      <path d="M64 30 c1 -12 8 -18 16 -18 c9 0 15 6 16 18 c-6 -7 -10 -9 -16 -9 c-6 0 -11 2 -16 9 z" fill={hair} />
+      {/* arms (skin, behind dress edges) */}
+      <path d="M58 70 C50 92 46 112 45 132" stroke={skin} strokeWidth="10" strokeLinecap="round" fill="none" />
+      <path d="M102 70 C110 92 114 112 115 132" stroke={skin} strokeWidth="10" strokeLinecap="round" fill="none" />
+      {/* dress — brand color, fitted waist, A-line hem */}
+      <path
+        d="M62 62 c5 5 12 7 18 7 c6 0 13 -2 18 -7 c8 4 12 12 13 22 c1 9 -2 18 -4 27 c5 20 8 40 9 58 l-72 0 c1 -18 4 -38 9 -58 c-2 -9 -5 -18 -4 -27 c1 -10 5 -18 13 -22 z"
+        fill={brandColor}
+      />
+      {/* dress shading for depth */}
+      <path
+        d="M98 62 c8 4 12 12 13 22 c1 9 -2 18 -4 27 c5 20 8 40 9 58 l-18 0 c0 -18 -1 -38 -3 -58 c2 -9 3 -18 3 -27 c0 -8 0 -15 0 -22 z"
+        fill="#101828"
+        opacity="0.14"
+      />
+      {/* waist seam */}
+      <path d="M67 111 q13 6 26 0" stroke="#101828" strokeWidth="1.5" opacity="0.18" fill="none" />
+      {/* hands */}
+      <circle cx="45" cy="136" r="5.5" fill={skin} />
+      <circle cx="115" cy="136" r="5.5" fill={skin} />
+      {/* legs */}
+      <path d="M71 169 L69 220" stroke={skin} strokeWidth="11" strokeLinecap="round" />
+      <path d="M89 169 L91 220" stroke={skin} strokeWidth="11" strokeLinecap="round" />
+      {/* shoes */}
+      <path d="M62 224 q7 -4 14 0 l0 4 l-14 0 z" fill="#101828" />
+      <path d="M84 224 q7 -4 14 0 l0 4 l-14 0 z" fill="#101828" />
     </svg>
   );
 }
@@ -918,6 +957,7 @@ export default function OnboardingPlacements() {
                           setStyle("product");
                           setPreviewMode("product");
                         }}
+                        onPreview={() => setPreviewMode("product")}
                       />
                       <StyleChoice
                         selected={style === "widget"}
@@ -929,6 +969,7 @@ export default function OnboardingPlacements() {
                           setStyle("widget");
                           setPreviewMode("widget");
                         }}
+                        onPreview={() => setPreviewMode("widget")}
                       />
                     </InlineStack>
                   </BlockStack>
