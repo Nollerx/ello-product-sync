@@ -501,9 +501,9 @@ export default function OnboardingPlacements() {
         <Box>
           <BlockStack gap="200">
             <Text as="p" variant="bodySm" tone="subdued">
-              Step 3 of 4
+              Step 4 of 5
             </Text>
-            <ProgressBar progress={75} size="small" />
+            <ProgressBar progress={80} size="small" />
           </BlockStack>
         </Box>
 

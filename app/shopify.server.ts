@@ -9,6 +9,8 @@ import {
 import { SupabaseSessionStorage } from "./lib/supabase-session-storage.server";
 import { runTokenSync } from "./lib/sync.server";
 import { syncShopifyMerchantToSupabase } from "./lib/shopify-billing.server";
+import { supabaseAdmin } from "./lib/supabase.server";
+import { sendTelegramMessage, escapeHtml } from "./lib/telegram.server";
 import { OVERAGE_USD_PER_TRYON, PRICING_PLANS, type PricingPlan } from "./lib/pricing-plans";
 import dns from "node:dns";
 
@@ -66,11 +68,55 @@ const shopify = shopifyApp({
         //    Otherwise uses "developer_free" as the provisional plan (idempotent — the billing gate in app.tsx will upgrade it).
         try {
           const provisionPlan = process.env.SKIP_BILLING === "true" ? "custom_distribution" : "ello_free";
-          const shopQuery = await admin.graphql(`query { shop { email } }`);
+          const shopQuery = await admin.graphql(
+            `query { shop { email name plan { displayName partnerDevelopment shopifyPlus } } }`,
+          );
           const shopJson = await shopQuery.json();
-          const shopEmail = shopJson?.data?.shop?.email ?? shop;
+          const shopInfo = shopJson?.data?.shop;
+          const shopEmail = shopInfo?.email ?? shop;
           await syncShopifyMerchantToSupabase(shop, shopEmail, provisionPlan, undefined);
           console.log(`[AutoSync:${requestId}] Supabase merchant records provisioned for ${shop} (plan: ${provisionPlan})`);
+
+          // 3b. Record the shop's Shopify plan (Plus = strong enterprise signal)
+          //     and ping Andrew on Telegram. Deduped so re-auths within a day
+          //     don't spam — but a reinstall weeks later alerts again.
+          try {
+            const planName: string = shopInfo?.plan?.displayName ?? "";
+            const isPlus: boolean = Boolean(shopInfo?.plan?.shopifyPlus);
+            const isDevStore: boolean = Boolean(shopInfo?.plan?.partnerDevelopment);
+
+            const patch: Record<string, unknown> = { shopify_plan: planName };
+            if (isPlus) patch.merchant_segment = "enterprise";
+            await supabaseAdmin.from("vto_stores").update(patch).eq("shop_domain", shop);
+
+            const { data: storeRow } = await supabaseAdmin
+              .from("vto_stores")
+              .select("install_alert_sent_at")
+              .eq("shop_domain", shop)
+              .maybeSingle();
+            const lastAlert = storeRow?.install_alert_sent_at
+              ? Date.parse(storeRow.install_alert_sent_at)
+              : 0;
+            if (Date.now() - lastAlert > 24 * 60 * 60 * 1000) {
+              const lines = [
+                `🆕 <b>New install: ${escapeHtml(shopInfo?.name ?? shop)}</b>`,
+                `Store: ${escapeHtml(shop)}`,
+                `Email: ${escapeHtml(shopEmail)}`,
+                `Shopify plan: ${escapeHtml(planName || "unknown")}${isPlus ? " ⭐ PLUS — enterprise target" : ""}${isDevStore ? " (dev store — someone's evaluating)" : ""}`,
+                `Provisioned on: ${provisionPlan}`,
+                `Onboarding progress report follows in ~2h.`,
+              ];
+              const sent = await sendTelegramMessage(lines.join("\n"));
+              if (sent) {
+                await supabaseAdmin
+                  .from("vto_stores")
+                  .update({ install_alert_sent_at: new Date().toISOString() })
+                  .eq("shop_domain", shop);
+              }
+            }
+          } catch (alertErr) {
+            console.error(`[AutoSync:${requestId}] Install alert failed (non-fatal):`, alertErr);
+          }
         } catch (syncErr) {
           console.error(`[AutoSync:${requestId}] Supabase merchant sync failed (non-fatal):`, syncErr);
         }

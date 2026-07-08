@@ -98,6 +98,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
   const billingError = url.searchParams.get("billingError") ?? null;
 
+  // Enterprise-tagged stores ($1M+/yr answer in onboarding, or Shopify Plus)
+  // get steered to a setup call before the self-serve grid.
+  let isEnterprise = false;
+  try {
+    const { data: segRow } = await supabaseAdmin
+      .from("vto_stores")
+      .select("merchant_segment")
+      .eq("shop_domain", session.shop)
+      .maybeSingle();
+    isEnterprise = segRow?.merchant_segment === "enterprise";
+  } catch {
+    // Non-fatal — banner is a nudge, not a gate.
+  }
+
   // During onboarding (placements → billing), surface a recap of what the
   // merchant just set up so the trial reads as "turn on what I built" rather
   // than a cold paywall. Skipped for existing merchants changing plans.
@@ -126,7 +140,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     }
   }
 
-  return { billingError, recap };
+  return { billingError, recap, isEnterprise, shop: session.shop };
 }
 
 // ─── Action: create subscription via GraphQL, return confirmationUrl ─────────
@@ -456,7 +470,7 @@ function InlineStackBetween({ children }: { children: React.ReactNode }) {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function BillingPage() {
-  const { billingError, recap } = useLoaderData<typeof loader>();
+  const { billingError, recap, isEnterprise, shop } = useLoaderData<typeof loader>();
   const fetcher = useFetcher();
   const navigate = useNavigate();
   const pricingRef = useRef<HTMLDivElement>(null);
@@ -522,6 +536,52 @@ export default function BillingPage() {
               <Banner title="Billing Error" tone="critical">
                 {actionError || billingError}
               </Banner>
+            </div>
+          )}
+
+          {/* Enterprise steer — shown when the store is tagged $1M+/yr or Shopify Plus */}
+          {isEnterprise && (
+            <div
+              style={{
+                maxWidth: 1280,
+                margin: "0 auto 24px",
+                background: C.blue,
+                color: C.white,
+                borderRadius: 16,
+                padding: "18px 24px",
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 14,
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 2 }}>
+                  You qualify for a custom enterprise deal
+                </div>
+                <div style={{ fontSize: 13.5, opacity: 0.85 }}>
+                  At your volume, don't self-serve — we build ROI-focused deals with
+                  white-glove setup and custom pricing.
+                </div>
+              </div>
+              <a
+                href={`https://calendly.com/andrew-ello/ello-setup-call?utm_source=app_billing&utm_campaign=${encodeURIComponent(shop)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  background: C.white,
+                  color: C.ink,
+                  borderRadius: 999,
+                  padding: "10px 22px",
+                  fontWeight: 600,
+                  fontSize: 14,
+                  textDecoration: "none",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Book your setup call
+              </a>
             </div>
           )}
 

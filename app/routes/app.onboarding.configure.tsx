@@ -230,8 +230,8 @@ export default function OnboardingConfigure() {
           >
             <Box>
               <BlockStack gap="200">
-                <Text as="p" variant="bodySm" tone="subdued">Step 2 of 4</Text>
-                <ProgressBar progress={50} size="small" />
+                <Text as="p" variant="bodySm" tone="subdued">Step 3 of 5</Text>
+                <ProgressBar progress={60} size="small" />
               </BlockStack>
             </Box>
 

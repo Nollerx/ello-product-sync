@@ -6,6 +6,8 @@ import {
 
 export type OnboardingStep =
   | "welcome"
+  | "segment"
+  | "enterprise"
   | "activate_widget"
   | "configure"
   | "placements"
@@ -14,6 +16,8 @@ export type OnboardingStep =
 
 export const ONBOARDING_ROUTE_BY_STEP: Record<Exclude<OnboardingStep, "billing" | "complete">, string> = {
   welcome: "/app/onboarding/welcome",
+  segment: "/app/onboarding/segment",
+  enterprise: "/app/onboarding/enterprise",
   configure: "/app/onboarding/configure",
   activate_widget: "/app/onboarding/activate-widget",
   placements: "/app/onboarding/placements",
@@ -29,10 +33,12 @@ function themeAppApiKey(): string {
   return process.env.SHOPIFY_API_KEY || FALLBACK_THEME_APP_API_KEY;
 }
 
-// Order: welcome → configure → placements/install → billing → complete.
+// Order: welcome → segment → configure → placements/install → billing → complete.
+// "enterprise" is a branch off segment ($1M+/yr stores), not part of the linear
+// order — from there merchants either book a call or drop back into configure.
 // The legacy activate_widget step still has a route so merchants already there
 // can proceed, but new onboarding uses the unified placements page.
-const STEP_ORDER: OnboardingStep[] = ["welcome", "configure", "placements", "billing", "complete"];
+const STEP_ORDER: OnboardingStep[] = ["welcome", "segment", "configure", "placements", "billing", "complete"];
 
 export function nextStep(current: OnboardingStep): OnboardingStep {
   const idx = STEP_ORDER.indexOf(current);

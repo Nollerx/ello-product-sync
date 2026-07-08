@@ -22,8 +22,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const url = new URL(request.url);
-  await setOnboardingStep(session.shop, "configure");
-  return redirect(`/app/onboarding/configure${preserveShopifyQuery(url)}`);
+  await setOnboardingStep(session.shop, "segment");
+  return redirect(`/app/onboarding/segment${preserveShopifyQuery(url)}`);
 };
 
 export default function OnboardingWelcome() {
@@ -44,8 +44,8 @@ export default function OnboardingWelcome() {
           >
             <Box>
               <BlockStack gap="200">
-                <Text as="p" variant="bodySm" tone="subdued">Step 1 of 4</Text>
-                <ProgressBar progress={25} size="small" />
+                <Text as="p" variant="bodySm" tone="subdued">Step 1 of 5</Text>
+                <ProgressBar progress={20} size="small" />
               </BlockStack>
             </Box>
 
