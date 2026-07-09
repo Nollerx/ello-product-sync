@@ -8,6 +8,7 @@ import { Shirt, Tag, Coins, Clock, Check } from "lucide-react";
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
 import { syncShopifyMerchantToSupabase } from "../lib/shopify-billing.server";
+import { CalendlyEmbed, EnterprisePillarsGrid } from "../components/enterprise-panel";
 import {
   AOV_DEFAULT,
   OVERAGE_USD_PER_TRYON,
@@ -480,6 +481,8 @@ export default function BillingPage() {
   const [interval, setInterval] = useState<"monthly" | "annual">("monthly");
   const [selectedPlan, setSelectedPlan] = useState<string | null>(null);
   const [averageOrderValue, setAverageOrderValue] = useState(AOV_DEFAULT);
+  const [showPlansAnyway, setShowPlansAnyway] = useState(false);
+  const [callBooked, setCallBooked] = useState(false);
 
   // When the action returns a confirmationUrl, redirect the TOP frame to it.
   // This is the correct way to handle billing redirects in embedded Shopify apps —
@@ -504,6 +507,120 @@ export default function BillingPage() {
     setSelectedPlan(planKey);
     fetcher.submit({ planKey, interval }, { method: "POST" });
   };
+
+  // $1M+/yr (or Shopify Plus) stores never see the self-serve grid — they get
+  // the book-a-call panel instead, mirroring the website's enterprise offer.
+  if (isEnterprise && !showPlansAnyway) {
+    return (
+      <Page fullWidth>
+        <div style={{ background: C.offwhite, minHeight: "100vh", padding: "28px 24px 48px" }}>
+          <div
+            style={{
+              maxWidth: 1180,
+              margin: "0 auto",
+              display: "grid",
+              gridTemplateColumns: "minmax(380px, 0.9fr) minmax(420px, 1.1fr)",
+              gap: 28,
+              alignItems: "start",
+            }}
+          >
+            <div>
+              <p
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  letterSpacing: "0.18em",
+                  textTransform: "uppercase",
+                  color: C.ink500,
+                  margin: "4px 0 14px",
+                }}
+              >
+                Enterprise — what we prioritize
+              </p>
+              <h2
+                style={{
+                  fontFamily: "Georgia, 'Times New Roman', serif",
+                  fontSize: "clamp(30px, 4vw, 44px)",
+                  fontWeight: 500,
+                  color: C.ink,
+                  margin: "0 0 12px",
+                  lineHeight: 1.1,
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                Let&rsquo;s build <span style={{ color: C.blue, fontStyle: "italic" }}>your deal</span>.
+              </h2>
+              <p style={{ fontSize: 15, color: C.ink500, lineHeight: 1.6, maxWidth: 460, margin: "0 0 22px" }}>
+                At your volume, self-serve tiers sell you short. Every enterprise
+                partnership is built on custom, ROI-focused deliverables — sized to
+                your traffic and designed to give your shoppers the best try-on
+                experience anywhere. Grab a time and we&rsquo;ll take it from there.
+              </p>
+
+              <EnterprisePillarsGrid />
+
+              {callBooked ? (
+                <div
+                  style={{
+                    marginTop: 18,
+                    background: "#E7F6EE",
+                    color: "#17713F",
+                    borderRadius: 12,
+                    padding: "12px 16px",
+                    fontSize: 14,
+                    fontWeight: 600,
+                  }}
+                >
+                  Call booked — check your email for the confirmation. We&rsquo;ll take it from here.
+                </div>
+              ) : null}
+
+              <div style={{ marginTop: 22, display: "flex", gap: 18, alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => navigate("/app")}
+                  style={{
+                    border: `1px solid ${C.border}`,
+                    background: C.white,
+                    color: C.ink,
+                    borderRadius: 999,
+                    padding: "10px 22px",
+                    fontWeight: 600,
+                    fontSize: 14,
+                    cursor: "pointer",
+                  }}
+                >
+                  Go to dashboard
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPlansAnyway(true)}
+                  style={{
+                    border: "none",
+                    background: "none",
+                    color: C.ink500,
+                    fontSize: 13,
+                    cursor: "pointer",
+                    textDecoration: "underline",
+                    padding: 0,
+                  }}
+                >
+                  Prefer self-serve plans?
+                </button>
+              </div>
+            </div>
+
+            <CalendlyEmbed
+              shop={shop}
+              source="app_billing"
+              height={700}
+              onBooked={() => setCallBooked(true)}
+            />
+          </div>
+        </div>
+      </Page>
+    );
+  }
 
   return (
     <Page fullWidth>

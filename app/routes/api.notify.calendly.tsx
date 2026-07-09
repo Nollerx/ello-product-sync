@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { sendTelegramMessage } from "../lib/telegram.server";
+import { sendTelegramMessage, escapeHtml } from "../lib/telegram.server";
 
 // Public endpoint the marketing site's Calendly embed calls when a visitor
 // completes a booking (Calendly fires a `calendly.event_scheduled` postMessage
@@ -45,17 +45,21 @@ export async function action({ request }: ActionFunctionArgs) {
   windowCount += 1;
 
   let source = "website";
+  let shop = "";
   try {
     const body = await request.json();
     if (typeof body?.source === "string" && ALLOWED_SOURCES.has(body.source)) {
       source = body.source;
+    }
+    if (typeof body?.shop === "string") {
+      shop = body.shop.slice(0, 100);
     }
   } catch {
     // Body optional — default source stands.
   }
 
   await sendTelegramMessage(
-    `📅 <b>New Calendly booking</b> just came through via the ${source}.\nCheck email for the invitee details.`,
+    `📅 <b>New Calendly booking</b> just came through via the ${source}${shop ? ` (${escapeHtml(shop)})` : ""}.\nCheck email for the invitee details.`,
   );
 
   return json(200, { ok: true });

@@ -42,15 +42,6 @@ const SEGMENT_OPTIONS: Array<{ value: Segment; label: string; helpText: string }
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
-  // Custom-distribution installs (SKIP_BILLING) are hand-held single-merchant
-  // deals — the size question is moot, skip straight to configure.
-  // eslint-disable-next-line no-undef
-  if (process.env.SKIP_BILLING === "true") {
-    const url = new URL(request.url);
-    await setOnboardingStep(session.shop, "configure");
-    throw redirect(`/app/onboarding/configure${preserveShopifyQuery(url)}`);
-  }
-
   let isShopifyPlus = false;
   try {
     const { data } = await supabaseAdmin
