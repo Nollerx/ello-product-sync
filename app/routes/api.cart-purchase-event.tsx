@@ -68,6 +68,36 @@ export async function action({ request }: ActionFunctionArgs) {
       p_currency: (body.currency as string) ?? null,
       p_line_items: JSON.stringify(body.line_items ?? []),
     });
+  } else if (event_type === "ab_exposure") {
+    // Widget-loader A/B holdout exposure beacon. The RPC re-computes the
+    // bucket server-side and rejects rows whose variant doesn't match the
+    // hash or whose experiment isn't running — forged/drifted rows never land.
+    const experimentId = body.experiment_id as string | undefined;
+    const variant = body.variant as string | undefined;
+    const bucket = Number(body.bucket);
+    const UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (
+      experimentId &&
+      UUID_RE.test(experimentId) &&
+      (variant === "exposed" || variant === "holdout") &&
+      Number.isInteger(bucket) &&
+      bucket >= 0 &&
+      bucket <= 99 &&
+      // Length caps: real session ids are ~17 chars; the RPC hashes
+      // session_id char-by-char, so unbounded input is a CPU amplifier.
+      session_id.length <= 64 &&
+      store_slug.length <= 100
+    ) {
+      await supabase.rpc("record_ab_exposure", {
+        p_store_slug: store_slug,
+        p_session_id: session_id,
+        p_experiment_id: experimentId,
+        p_variant: variant,
+        p_bucket: bucket,
+        p_page_type: (body.page_type as string) ?? null,
+      });
+    }
   }
 
   return new Response(JSON.stringify({ ok: true }), {

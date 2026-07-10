@@ -255,7 +255,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.7.16';
+    const WIDGET_VERSION = '2.8.0';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -385,7 +385,14 @@
             ctlHoldoutEnabled: storeConfig.ctl_holdout_enabled === true,
             // Lead capture (email after Nth try-on) — off by default.
             leadCaptureEnabled: storeConfig.lead_capture_enabled === true,
-            leadCaptureAfterN: storeConfig.lead_capture_after_n || 1
+            leadCaptureAfterN: storeConfig.lead_capture_after_n || 1,
+            // Widget-wide A/B holdout (proof test) — OFF by default. When a
+            // merchant starts an experiment from the dashboard, a slice of
+            // shoppers (ab_holdout_percent) never sees ANY Ello surface while
+            // both groups' conversions keep flowing through the pixel.
+            abExperimentEnabled: storeConfig.ab_experiment_enabled === true,
+            abExperimentId: storeConfig.ab_experiment_id || null,
+            abHoldoutPercent: typeof storeConfig.ab_holdout_percent === 'number' ? storeConfig.ab_holdout_percent : 10
         };
     }
 
@@ -419,8 +426,175 @@
             pdpImageSwapEnabled: false,
             pdpImageSelector: null,
             completeTheLookEnabled: false,
-            ctlHoldoutEnabled: false
+            ctlHoldoutEnabled: false,
+            abExperimentEnabled: false,
+            abExperimentId: null,
+            abHoldoutPercent: 10
         };
+    }
+
+    // ─── Widget-wide A/B holdout (proof test) ────────────────────────────────
+    // When a merchant runs an experiment, shoppers are split deterministically:
+    // hash(session_id + ':' + experiment_id) mod 100, holdout when the bucket is
+    // below ab_holdout_percent. The hash is FNV-1a 32-bit and is mirrored
+    // byte-for-byte by public.ello_ab_bucket() in Postgres, so the widget and
+    // the dashboard report can never disagree about who was in which group.
+    // (Deliberately NOT the CTL last-char-parity split — independent hashes keep
+    // the two experiments unconfounded.)
+    //
+    // Holdout shoppers still get a session id + pixel cookie (so their views and
+    // purchases keep flowing — without that the control group is unmeasurable),
+    // and an exposure beacon records both groups' denominators. They just never
+    // see any Ello surface: every kill switch in the config is forced off before
+    // 'ello:config-resolved' fires, and initializeWidget() bails before any DOM
+    // injection or widget-main.js load.
+    //
+    // Testing overrides (never logged as data): ?ello_ab=holdout / ?ello_ab=exposed
+    // persist in localStorage; ?ello_ab=off clears. ?ello_preview=1 always sees
+    // the widget and logs nothing.
+    var ELLO_AB = { active: false, variant: null, bucket: null, experimentId: null, sessionId: null, override: null };
+    window.__elloAbState = ELLO_AB;
+
+    function elloAbFnvBucket(sessionIdStr, experimentIdStr) {
+        var str = sessionIdStr + ':' + experimentIdStr;
+        var h = 0x811c9dc5;
+        for (var i = 0; i < str.length; i++) {
+            h ^= str.charCodeAt(i);
+            h = Math.imul(h, 0x01000193);
+        }
+        return (h >>> 0) % 100;
+    }
+
+    function elloAbGenerateSessionId() {
+        return 'session_' + Math.random().toString(36).substring(2, 11);
+    }
+
+    // Mint or refresh the shopper session id — EXACT mirror of widget-main.js's
+    // algorithm (same keys, same 7-day sliding window, same cookie mirror), so
+    // whichever script runs first both use one id. widget-main.js reads the same
+    // localStorage key and reuses it; for storage-blocked browsers it adopts
+    // window.__elloLoaderSessionId instead of minting a second ephemeral id.
+    function elloAbEnsureSessionId(slug) {
+        var key = 'ello_session_id_' + slug;
+        var tsKey = 'ello_session_ts_' + slug;
+        var maxAgeSec = 7 * 24 * 60 * 60;
+        var sid = null;
+        try {
+            var existing = window.localStorage.getItem(key);
+            var lastActive = parseInt(window.localStorage.getItem(tsKey) || '0', 10);
+            var now = Date.now();
+            if (existing && now - lastActive < maxAgeSec * 1000) {
+                sid = existing;
+            } else {
+                sid = elloAbGenerateSessionId();
+                window.localStorage.setItem(key, sid);
+            }
+            window.localStorage.setItem(tsKey, now.toString());
+        } catch (e) {
+            sid = elloAbGenerateSessionId();
+        }
+        try {
+            document.cookie = 'ello_session_id=' + sid + '; path=/; max-age=' + maxAgeSec + '; SameSite=Lax';
+        } catch (e) { /* cookie blocked — pixel linkage falls back to cart attribute */ }
+        window.__elloLoaderSessionId = sid;
+        return sid;
+    }
+
+    function elloAbReadOverride() {
+        try {
+            var q = new URLSearchParams(window.location.search).get('ello_ab');
+            if (q === 'off' || q === '0') { window.localStorage.removeItem('ello_ab_override'); return null; }
+            if (q === 'exposed' || q === 'holdout') { window.localStorage.setItem('ello_ab_override', q); return q; }
+            return window.localStorage.getItem('ello_ab_override');
+        } catch (e) { return null; }
+    }
+
+    function elloAbLogExposure(state, cfg) {
+        try {
+            // Once per (experiment, session): marker stores the session id so a
+            // rotated session re-fires; the server also dedupes on conflict.
+            var marker = 'ello_ab_seen_' + state.experimentId;
+            try { if (window.localStorage.getItem(marker) === state.sessionId) return; } catch (e) { }
+            var payload = JSON.stringify({
+                event_type: 'ab_exposure',
+                store_slug: cfg.storeSlug || storeSlug,
+                session_id: state.sessionId,
+                experiment_id: state.experimentId,
+                variant: state.variant,
+                bucket: state.bucket,
+                page_type: window.location.pathname.indexOf('/products/') !== -1 ? 'product' : 'other'
+            });
+            var url = WIDGET_BASE_URL + '/api/cart-purchase-event';
+            var sent = false;
+            if (navigator.sendBeacon) {
+                try { sent = navigator.sendBeacon(url, new Blob([payload], { type: 'text/plain' })); } catch (e) { }
+            }
+            if (!sent) {
+                fetch(url, {
+                    method: 'POST',
+                    credentials: 'omit',
+                    keepalive: true,
+                    headers: { 'Content-Type': 'text/plain' },
+                    body: payload
+                }).catch(function () { });
+            }
+            try { window.localStorage.setItem(marker, state.sessionId); } catch (e) { }
+        } catch (e) { /* exposure logging must never break the page */ }
+    }
+
+    // Decide the shopper's variant and, for holdout, force every surface's kill
+    // switch off IN the config object so the inline button, preview popup,
+    // fitting-room hub and PDP swap all hide through their normal pathways.
+    // Runs inside applyConfig — the single choke point for both the localStorage
+    // fast path and the fresh fetch.
+    function elloAbApplyHoldout(cfg) {
+        if (!cfg || cfg.abExperimentEnabled !== true || !cfg.abExperimentId) return cfg;
+        var isPreview = false;
+        try { isPreview = new URLSearchParams(window.location.search).get('ello_preview') === '1'; } catch (e) { }
+        var override = elloAbReadOverride();
+        // CRITICAL: mint under the loader's script-tag slug (`storeSlug`), NOT
+        // cfg.storeSlug. widget-main.js keys its session on window.ELLO_STORE_ID,
+        // which THIS loader sets from the same `storeSlug` variable — the DB
+        // row's store_slug can differ (e.g. 'ecmxv0-vh' vs the full
+        // '*.myshopify.com' domain), and a key mismatch would mint two different
+        // ids, overwrite the pixel cookie, and silently orphan every exposed-arm
+        // purchase from its exposure row. Keep cfg.storeSlug for the beacon's
+        // store_slug FIELD only (that must match the event tables).
+        var sid = ELLO_AB.sessionId || elloAbEnsureSessionId(storeSlug);
+        var bucket = elloAbFnvBucket(sid, cfg.abExperimentId);
+        var pct = typeof cfg.abHoldoutPercent === 'number' ? cfg.abHoldoutPercent : 10;
+        var variant = bucket < pct ? 'holdout' : 'exposed';
+        if (override === 'exposed' || override === 'holdout') variant = override;
+        if (isPreview) variant = 'exposed';
+        ELLO_AB.active = true;
+        ELLO_AB.variant = variant;
+        ELLO_AB.bucket = bucket;
+        ELLO_AB.experimentId = cfg.abExperimentId;
+        ELLO_AB.sessionId = sid;
+        ELLO_AB.override = override || (isPreview ? 'preview' : null);
+
+        // Late-arriving experiment config (cached config had no experiment, UI
+        // already injected): don't half-hide the page and don't log a
+        // contaminated holdout exposure — the next pageview decides cleanly.
+        if (variant === 'holdout' && window.__elloAbUiInjected === true) {
+            ELLO_AB.lateHoldout = true;
+            return cfg;
+        }
+
+        // Overridden/preview sessions are excluded from the data entirely.
+        if (!ELLO_AB.override) elloAbLogExposure(ELLO_AB, cfg);
+
+        if (variant === 'holdout') {
+            cfg.__elloAbHoldout = true;
+            cfg.inlineButtonEnabled = false;
+            cfg.floatingWidgetPdpEnabled = false;
+            cfg.floatingWidgetNonPdpEnabled = false;
+            cfg.fittingRoomEnabled = false;
+            cfg.pdpImageSwapEnabled = false;
+            cfg.completeTheLookEnabled = false;
+            cfg.desktopPreviewEnabled = false;
+        }
+        return cfg;
     }
 
     function getMinimizedFirstPaintStyles(color) {
@@ -458,6 +632,7 @@
     }
 
     function applyConfig(cfg) {
+        cfg = elloAbApplyHoldout(cfg);
         window.ELLO_STORE_CONFIG = cfg;
         window.elloStoreConfig = {
             id: cfg.storeId,
@@ -725,6 +900,29 @@
                 storeConfigPromise,
                 htmlPromise
             ]);
+
+            // A/B holdout: this shopper is in the control group — no Ello UI at
+            // all this pageview. Session id + pixel cookie + exposure beacon
+            // were already handled in applyConfig, so their conversions still
+            // count; we simply never inject DOM or load widget-main.js.
+            if (storeConfig && storeConfig.__elloAbHoldout === true) {
+                // Exception: the inline button's 1500ms force-reveal can race a
+                // slow cold-visit config fetch, so a holdout shopper may have
+                // already CLICKED Try On before the decision landed. A queued
+                // click with no widget would be swallowed forever — a visibly
+                // broken button on the merchant's PDP. Serving the shopper wins
+                // over experiment purity: load the widget for this rare
+                // contaminated pageview (their exposure row slightly dilutes
+                // holdout; the effect is conservative — it shrinks lift, never
+                // inflates it).
+                if (window.__elloInlineQueue && window.__elloInlineQueue.length > 0) {
+                    console.warn('[Ello] holdout shopper clicked before config resolved — serving widget to honor the click');
+                } else {
+                    elloLog('[Ello Loader] A/B holdout — widget suppressed for this shopper');
+                    return;
+                }
+            }
+            window.__elloAbUiInjected = true;
 
             // Merge bootstrap data when it resolves (non-blocking)
             bootstrapPromise.then(bootstrapData => {

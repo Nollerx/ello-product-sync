@@ -2181,7 +2181,10 @@ try {
     window.localStorage.setItem(ELLO_SESSION_TS_KEY, now.toString());
 } catch (e) {
     console.warn('⚠️ localStorage blocked, using ephemeral session ID:', e);
-    sessionId = generateSessionId();
+    // Adopt the loader's ephemeral id when it minted one (A/B experiments mint
+    // in widget-loader.js) — two independent ephemeral ids would break the
+    // exposure ↔ try-on ↔ purchase joins for storage-blocked browsers.
+    sessionId = window.__elloLoaderSessionId || generateSessionId();
 }
 
 // Mirror the id into a cookie the Web Pixel can read (pixels can't touch
