@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prospect PDP (sim) — Ello demo engine harness</title>
+<!--
+  LOCAL-ONLY harness that mimics a PROSPECT Shopify PDP (a store that never
+  installed Ello) so the demo bookmarklet's engine can be exercised end-to-end
+  without needing a CSP-free real store. Excluded from the Docker build.
+
+  Difference vs dev-pdp.html: this does NOT load widget-loader.js itself and does
+  NOT pretend to be the demo store. It sets up a *prospect* (window.Shopify.shop
+  = a different myshopify domain, real product meta + og tags + ATC form) and then
+  loads /demo-bookmarklet.js — the same file the bookmarklet injects — so we test
+  that the engine: boots, forces demo config, injects the loader as ello-dev-store,
+  resolves config to the demo store despite the prospect shop, and renders a native
+  inline button + floating launcher.
+
+  Run:  npm run vite   →   http://localhost:3000/demo-prospect-sim.html
+-->
+<meta property="og:title" content="Monogram Silk Scarf">
+<meta property="og:image" content="https://cdn.shopify.com/s/files/1/1775/6429/files/w6120_monogram_001_03_31_floor_0b2052b5-70af-4a7e-83f7-5948ec001a7e.jpg?v=1774896248">
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:#111;}
+  header{display:flex;align-items:center;justify-content:space-between;padding:16px 28px;border-bottom:1px solid #eee;}
+  .brand{font-weight:800;letter-spacing:.08em;}
+  main{max-width:1080px;margin:0 auto;padding:32px 24px;display:grid;grid-template-columns:1fr 1fr;gap:44px;}
+  .gallery img{width:100%;border-radius:10px;background:#f4f4f4;display:block;}
+  h1{font-size:24px;margin:0 0 6px;}
+  .price{font-size:19px;color:#111;margin:0 0 20px;}
+  label{display:block;font-size:13px;color:#666;margin:14px 0 6px;}
+  select{width:100%;padding:11px;border:1px solid #ddd;border-radius:8px;font:inherit;}
+  .swatches{display:flex;gap:10px;margin:4px 0 4px;}
+  .swatch{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border:1px solid #ddd;border-radius:8px;cursor:pointer;font-size:14px;}
+  .swatch:has(input:checked){border-color:#111;box-shadow:0 0 0 1px #111;}
+  /* Horizontal buy row with SQUARE, uppercase buttons — mimics LA Apparel so the
+     injected Ello button must break out to its own full-width line and match. */
+  .buy-row{display:flex;gap:10px;margin-top:18px;}
+  .atc{flex:1;height:54px;padding:0 18px;border:none;border-radius:0;background:#111;color:#fff;font-size:15px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;cursor:pointer;}
+  .wishlist{width:54px;height:54px;border:1px solid #111;border-radius:0;background:#fff;font-size:20px;cursor:pointer;}
+  @media(max-width:760px){main{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">PROSPECT CO.</div>
+  <div style="color:#888;font-size:13px;">simulated prospect storefront (no Ello install)</div>
+</header>
+<main>
+  <div class="gallery">
+    <img id="pdp-main-image" src="https://cdn.shopify.com/s/files/1/1775/6429/files/w6120_monogram_001_03_31_floor_0b2052b5-70af-4a7e-83f7-5948ec001a7e.jpg?v=1774896248" alt="Monogram Silk Scarf">
+  </div>
+  <div>
+    <h1 class="product__title">Monogram Silk Scarf</h1>
+    <p class="price">$38.00</p>
+    <form action="/cart/add" method="post">
+      <!-- Deliberately STALE: this stays on the Monogram id and the URL never gets
+           ?variant=. Only the radio below changes on selection, so this exercises
+           the demo engine's swatch→variant option-matching path. -->
+      <input type="hidden" name="id" value="45452857573564">
+      <label>Color</label>
+      <div class="swatches">
+        <label class="swatch"><input type="radio" name="option1" value="Monogram" checked> Monogram</label>
+        <label class="swatch"><input type="radio" name="option1" value="Sunset"> Sunset</label>
+      </div>
+      <div class="buy-row">
+        <button class="atc" type="submit" name="add">Add to cart</button>
+        <button class="wishlist" type="button" aria-label="Add to wishlist">&#9825;</button>
+      </div>
+    </form>
+  </div>
+</main>
+
+<script>
+  // ── Make the URL look like a real PDP so getProductIdFromUrl() finds a handle ─
+  try { history.replaceState({}, '', '/products/monogram-silk-scarf'); } catch (e) {}
+
+  // ── Prospect Shopify globals (NOT the demo store) ───────────────────────────
+  // A different myshopify domain on purpose: proves config still resolves to
+  // ello-dev-store via the injected data-store-slug, not this shop.
+  window.Shopify = window.Shopify || {};
+  window.Shopify.shop = 'prospect-co-demo.myshopify.com';
+  window.Shopify.routes = { root: '/' };
+  window.ShopifyAnalytics = window.ShopifyAnalytics || {};
+  window.ShopifyAnalytics.meta = {
+    product: {
+      id: 9064563671228,
+      handle: 'monogram-silk-scarf',
+      variants: [{ id: 45452857573564, name: 'Monogram' }, { id: 45452857606332, name: 'Sunset' }]
+    }
+  };
+
+  // Real per-color images (from youngla's actual w6120) so a color change is visible.
+  var VARIANT_IMG = {
+    'Monogram': 'https://cdn.shopify.com/s/files/1/1775/6429/files/w6120_monogram_001_03_31_floor_0b2052b5-70af-4a7e-83f7-5948ec001a7e.jpg?v=1774896248',
+    'Sunset':   'https://cdn.shopify.com/s/files/1/1775/6429/files/w6120_sunset_001_03_31_floor_6fe9e4a9-64a5-4a78-9681-21c7b2ab4909.jpg?v=1774896248'
+  };
+  // Theme behavior: selecting a color swaps the gallery image (but NOT the form id
+  // or the URL) — the demo engine must still resolve the right color on its own.
+  document.querySelectorAll('input[name="option1"]').forEach(function (r) {
+    r.addEventListener('change', function () {
+      if (r.checked && VARIANT_IMG[r.value]) document.getElementById('pdp-main-image').src = VARIANT_IMG[r.value];
+    });
+  });
+
+  // ── Mock cart endpoints so ATC + in-place cart refresh don't error locally ──
+  (function () {
+    var realFetch = window.fetch.bind(window);
+    var count = 0;
+    window.fetch = function (input, init) {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      var json = function (o) { return Promise.resolve(new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } })); };
+      // Product JSON with two colors carrying distinct featured_images — what the
+      // widget reads (/products/<handle>.js) to swap the garment to the chosen color.
+      if (/\/products\/monogram-silk-scarf\.js/.test(url)) {
+        return json({
+          id: 9064563671228, handle: 'monogram-silk-scarf', title: 'Monogram Silk Scarf', product_type: 'Scarf',
+          options: [{ name: 'Color', position: 1, values: ['Monogram', 'Sunset'] }],
+          featured_image: VARIANT_IMG.Monogram,
+          variants: [
+            { id: 45452857573564, title: 'Monogram', option1: 'Monogram', options: ['Monogram'], available: true, price: 3800, featured_image: { src: VARIANT_IMG.Monogram } },
+            { id: 45452857606332, title: 'Sunset',   option1: 'Sunset',   options: ['Sunset'],   available: true, price: 3800, featured_image: { src: VARIANT_IMG.Sunset } }
+          ]
+        });
+      }
+      if (/\/cart\/add(\.js)?($|\?)/.test(url)) { count++; return json({ id: 1, quantity: 1, sections: {} }); }
+      if (/\/cart(\.js)?($|\?)/.test(url)) return json({ item_count: count, items: [] });
+      return realFetch(input, init);
+    };
+  })();
+
+  // ── Load the demo engine exactly as the bookmarklet does (same-origin here) ──
+  var s = document.createElement('script');
+  s.src = '/demo-bookmarklet.js?t=' + Date.now();
+  document.head.appendChild(s);
+</script>
+</body>
+</html>

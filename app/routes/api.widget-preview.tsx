@@ -55,6 +55,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return jsonError(400, "Missing 'shop' or 'store_slug' query parameter");
   }
 
+  // `shop` is interpolated into a PostgREST .or() filter — reject anything
+  // outside the legit shop-domain/slug charset so a comma/paren can't inject
+  // extra filter terms. (storeSlug is used only via .eq(), parameterized.)
+  if (shop && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(shop)) {
+    return jsonError(400, "Invalid 'shop' parameter");
+  }
+
   try {
     // 1. Resolve store config (includes featured_item_id + quick_picks_ids).
     const storeQuery = supabaseAdmin
@@ -221,7 +228,11 @@ async function resolveSupabasePreview(
   currentProduct: WidgetProduct | null;
 }> {
   const ids = [featuredId, ...quickPicksIds, currentHandle].filter(
-    (v): v is string => Boolean(v),
+    // Boolean AND safe-charset: these are joined into a PostgREST .in.(…)
+    // filter below, and currentHandle is attacker-controlled. GIDs/numeric
+    // ids/handles only ever use [A-Za-z0-9._:/-]; a value with a comma or
+    // paren would inject filter terms, so drop it.
+    (v): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(v),
   );
   if (ids.length === 0) {
     return { featured: null, quickPicks: [], currentProduct: null };
@@ -334,7 +345,8 @@ async function resolveShopifyPreview(
 
   quickPicksIds.forEach((id, idx) => {
     if (id != null && id !== "") {
-      aliases.push(makeAlias(`qp_${idx}`, id));
+      const qpAlias = makeAlias(`qp_${idx}`, id);
+      if (qpAlias) aliases.push(qpAlias);
     }
   });
 
@@ -391,31 +403,46 @@ async function resolveShopifyPreview(
 // - GID         → product(id: "gid://shopify/Product/123") { ...ProductFields }
 // - numeric "123" → product(id: "gid://shopify/Product/123") { ...ProductFields }
 // - "blue-dress"  → productByHandle(handle: "blue-dress") { ...ProductFields }
+//
+// SECURITY: `currentHandle` comes straight off the storefront URL, so rawId is
+// attacker-controlled. The value is (a) validated against the exact shape it's
+// supposed to be — anything else is rejected (returns null) rather than
+// interpolated — and (b) emitted through JSON.stringify, which produces a fully
+// escaped GraphQL string literal (backslashes, quotes, control chars and all).
+// The old code escaped only `"`, so an input containing `\"` collapsed to `\\"`
+// and broke out of the string → GraphQL injection into the merchant's
+// Storefront API.
 function makeAlias(
   alias: string,
   rawId: string,
-): { alias: string; query: string } {
-  const escaped = rawId.replace(/"/g, '\\"');
-
-  if (rawId.startsWith("gid://")) {
+): { alias: string; query: string } | null {
+  // Full GID form: gid://shopify/Product/<digits>
+  if (/^gid:\/\/shopify\/Product\/\d+$/.test(rawId)) {
     return {
       alias,
-      query: `${alias}: product(id: "${escaped}") { ...ProductFields }`,
+      query: `${alias}: product(id: ${JSON.stringify(rawId)}) { ...ProductFields }`,
     };
   }
 
+  // Bare numeric id → wrap into a GID.
   if (/^\d+$/.test(rawId)) {
     return {
       alias,
-      query: `${alias}: product(id: "gid://shopify/Product/${escaped}") { ...ProductFields }`,
+      query: `${alias}: product(id: ${JSON.stringify(`gid://shopify/Product/${rawId}`)}) { ...ProductFields }`,
     };
   }
 
-  // Treat anything else as a handle.
-  return {
-    alias,
-    query: `${alias}: productByHandle(handle: "${escaped}") { ...ProductFields }`,
-  };
+  // Shopify product handle: lowercase alphanumerics + hyphens (be lenient on
+  // case/underscore). Reject anything outside this charset — never interpolate
+  // unexpected input into the query.
+  if (/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(rawId)) {
+    return {
+      alias,
+      query: `${alias}: productByHandle(handle: ${JSON.stringify(rawId)}) { ...ProductFields }`,
+    };
+  }
+
+  return null;
 }
 
 const PRODUCT_FRAGMENT = `fragment ProductFields on Product {

@@ -21,6 +21,15 @@ export const brand = {
   success: "#17A673",
   warning: "#E2A93A",
   danger: "#D94E4E",
+  // Semantic tint pairs (light fill + readable ink of the same family) for
+  // status pills and icon chips. Money reuses blue100/blue700; neutral reuses
+  // ink50/ink600.
+  successBg: "#E7F6F0",
+  successInk: "#0F6E56",
+  warningBg: "#FBF3E1",
+  warningInk: "#8A6410",
+  dangerBg: "#FBEAEA",
+  dangerInk: "#A32D2D",
 };
 
 // Small uppercase editorial label that sits above a heading.

@@ -33,8 +33,11 @@ export async function action({ request }: ActionFunctionArgs) {
         const body = await request.json();
         const shop = body.shop;
 
-        if (!shop) {
-            return new Response(JSON.stringify({ error: "Missing shop" }), {
+        // Must be present, a string, and shaped like a real shop domain/slug.
+        // `shop` is interpolated into PostgREST .or() filters here and in
+        // markWidgetEnabled, so a comma/paren would inject extra filter terms.
+        if (!shop || typeof shop !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(shop)) {
+            return new Response(JSON.stringify({ error: "Missing or invalid shop" }), {
                 status: 400,
                 headers: {
                     "Content-Type": "application/json",

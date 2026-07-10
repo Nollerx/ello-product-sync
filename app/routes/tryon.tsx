@@ -44,6 +44,12 @@ export async function action({ request }: ActionFunctionArgs) {
             "inline_button",
             "floating_widget",
             "preview_popup",
+            // Upsell layer pass — the proof layer segments AOV by this tag.
+            "complete_the_look",
+            // Fitting Room surfaces (the widget was already sending these;
+            // they were silently dropped to null before).
+            "fitting_room",
+            "fitting_room_hub",
             "unknown",
         ]);
         const entrySource = allowedSources.has(rawEntrySource) ? rawEntrySource : null;

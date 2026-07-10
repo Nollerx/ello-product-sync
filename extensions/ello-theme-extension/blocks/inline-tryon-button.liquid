@@ -142,7 +142,8 @@
     text-align: center;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.2s ease;
+    transform: translateY(6px);
+    transition: opacity 0.35s cubic-bezier(0.22, 0.61, 0.36, 1), transform 0.35s cubic-bezier(0.22, 0.61, 0.36, 1);
     background-color: {% if block_bg_color != '' %}{{ block_bg_color }}{% else %}#000000{% endif %};
     color: {% if block_text_color != '' %}{{ block_text_color }}{% else %}#FFFFFF{% endif %};
   "
@@ -179,6 +180,7 @@
       // hide-when-oos). display:none wins over opacity anyway.
       if (btn.style.getPropertyValue('display') === 'none') return;
       btn.style.setProperty('opacity', '1');
+      btn.style.setProperty('transform', 'translateY(0)');
       revealed = true;
     }
     function maybeReveal() {
@@ -216,6 +218,7 @@
 
       // Kill switch first — if disabled in cache, hide and skip rest.
       if (row.inline_button_enabled === false) {
+        btn.dataset.elloHiddenBy = 'killswitch';
         btn.style.setProperty('display', 'none', 'important');
         return true;
       }
@@ -472,14 +475,23 @@
 
       // Hard kill switch
       if (cfg.inlineButtonEnabled === false) {
+        btn.dataset.elloHiddenBy = 'killswitch';
         btn.style.setProperty('display', 'none', 'important');
         return;
       } else {
-        // Clear any forced-hide left over from a previous config that disabled it
-        if (btn.style.getPropertyValue('display') === 'none') {
+        // Clear a forced-hide ONLY if the KILL SWITCH put it there. A hide from
+        // the catalog gate (this product isn't enabled for try-on) must survive
+        // — otherwise a late ello:config-resolved re-shows the Try-On button on
+        // a disabled product, and the shopper can start a try-on the merchant
+        // turned off. Track the reason and re-assert the catalog gate after.
+        if (btn.style.getPropertyValue('display') === 'none' && btn.dataset.elloHiddenBy !== 'catalog') {
           btn.style.removeProperty('display');
           // Restore display from data-width
           btn.style.display = btn.dataset.width === 'auto' ? 'inline-block' : 'block';
+          btn.dataset.elloHiddenBy = '';
+          // The catalog may have already resolved this product as disabled while
+          // the button was kill-switch-hidden — re-check so we don't leak it.
+          maybeHideIfDisabled();
         }
       }
 
@@ -528,6 +540,8 @@
       var result = window.elloIsProductEnabled(handle);
       if (result === null) return false; // catalog not loaded yet
       if (result === false) {
+        // Mark WHY we're hiding so a later kill-switch un-hide can't clear it.
+        btn.dataset.elloHiddenBy = 'catalog';
         btn.style.setProperty('display', 'none', 'important');
       }
       // result === true → no-op; button stays as it is.

@@ -44,6 +44,17 @@
   .ico { width:22px; height:22px; }
   main { max-width:1100px; margin:0 auto; padding:28px 24px; display:grid; grid-template-columns: 1fr 1fr; gap:40px; }
   .gallery img { width:100%; border-radius:8px; background:#f3f3f3; display:block; }
+
+  /* Horizon-replica gallery rules, copied from ello-dev-store's compiled theme
+     CSS (Horizon 3.5.1). The load-bearing hazards for anything Ello mounts near
+     the hero: the grid stretches items to 100% height, and an absolutely
+     positioned full-cover zoom button paints over everything inside the item. */
+  media-gallery { display:block; }
+  .media-gallery__grid { display:grid; grid-template-columns:1fr; gap:8px; margin:0; padding:0; list-style:none; }
+  .media-gallery__grid .product-media-container { height:100%; position:relative; }
+  .product-media-container__zoom-button { position:absolute; width:100%; height:100%; z-index:1; cursor:zoom-in; background:transparent; border:none; padding:0; }
+  .product-media { height:100%; }
+  .media-fit-contain img { object-fit:contain; width:100%; height:100%; }
   .pdp h1 { font-size:22px; margin:0 0 6px; }
   .price { font-size:18px; margin:0 0 18px; }
   .pdp label { display:block; font-size:13px; color:var(--muted); margin:14px 0 6px; }
@@ -105,9 +116,23 @@
 </div>
 
 <main>
-  <div class="gallery">
-    <!-- id used by the future feature #2 (mobile PDP image swap) -->
-    <img id="pdp-main-image" src="https://placehold.co/600x800?text=Product+Photo" alt="Product">
+  <div class="gallery product-information__media">
+    <!-- Horizon-replica media gallery matching ello-dev-store's real theme:
+         a <media-gallery> custom element holding a grid item with a full-cover
+         zoom button. Anything Ello mounts must land AFTER </media-gallery> —
+         inside it, the zoom button eats clicks and the grid stretches cards. -->
+    <media-gallery class="media-gallery--grid">
+      <ul class="media-gallery__grid list-unstyled">
+        <li class="product-media-container constrain-height media-fit-contain product-media-container--image">
+          <button type="button" class="product-media-container__zoom-button" aria-label="Zoom"
+                  onclick="alert('Theme zoom opened — this click landed on the zoom overlay, NOT on Ello UI. If an Ello button was under the cursor, that is the regression.')"></button>
+          <div class="product-media">
+            <!-- id used by feature #2 (mobile PDP image swap) -->
+            <img id="pdp-main-image" class="product-media__image" src="https://placehold.co/600x800?text=Product+Photo" alt="Product">
+          </div>
+        </li>
+      </ul>
+    </media-gallery>
   </div>
   <div class="pdp">
     <h1 id="pdp-title">Sample Product</h1>
@@ -203,6 +228,10 @@
       window.ELLO_STORE_CONFIG.floatingWidgetPdpEnabled = false;
       window.ELLO_STORE_CONFIG.floatingWidgetNonPdpEnabled = false;
       window.ELLO_STORE_CONFIG.desktopPreviewEnabled = false;
+      // Simulate a store opted into the PDP image-swap hub (LA Apparel).
+      window.ELLO_STORE_CONFIG.pdpImageSwapEnabled = true;
+      // Increment 0 — opt this dev store into the Complete the Look rail too.
+      window.ELLO_STORE_CONFIG.completeTheLookEnabled = true;
     }
   });
 

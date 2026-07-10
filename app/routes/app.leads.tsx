@@ -50,7 +50,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       .select("email, created_at, product_id, source")
       .eq("store_slug", slug)
       .order("created_at", { ascending: false })
-      .limit(500),
+      // 5000 gives ~10× headroom over the old 500 cap so the table AND the CSV
+      // export cover any realistic early/mid-stage store. Beyond this a proper
+      // streaming export route (cf. app.analytics.export.tsx) is the real fix;
+      // the UI surfaces a truncation note when `total` exceeds what's loaded.
+      .limit(5000),
   ]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -116,7 +120,14 @@ export default function Leads() {
 
   const exportCsv = () => {
     const header = ["email", "captured_at", "product_id", "source"];
-    const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const escape = (v: string) => {
+      // Neutralize spreadsheet formula injection: a cell beginning with = + - @
+      // (or tab/CR) is executed as a formula by Excel/Sheets, and lead emails
+      // are shopper-controlled. Prefix a single quote so it renders as literal
+      // text — CSV quoting alone does NOT stop this. Then apply normal quoting.
+      const guarded = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+      return `"${guarded.replace(/"/g, '""')}"`;
+    };
     const lines = [
       header.join(","),
       ...initial.leads.map((l) =>
@@ -203,8 +214,12 @@ export default function Leads() {
                 rows={tableRows}
               />
             )}
-            {initial.leads.length >= 500 && (
-              <Text as="p" variant="bodySm" tone="subdued">Showing the 500 most recent. Export CSV for the full list.</Text>
+            {initial.total > initial.leads.length && (
+              <Text as="p" variant="bodySm" tone="subdued">
+                Showing the {initial.leads.length.toLocaleString()} most recent of{" "}
+                {initial.total.toLocaleString()} leads. The CSV export covers this same set —
+                contact us if you need the full history.
+              </Text>
             )}
           </BlockStack>
         </Card>

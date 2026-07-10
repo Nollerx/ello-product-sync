@@ -27,11 +27,19 @@ import {
   TrendChart,
   FunnelBar,
   Heatmap,
+  HeadlineStrip,
   InsightsList,
   KpiTile,
   LockedCard,
   TimeRangeSelector,
+  verdictFromDelta,
 } from "../components/analytics";
+import {
+  CashDollarIcon,
+  TargetIcon,
+  ViewIcon,
+  CameraIcon,
+} from "@shopify/polaris-icons";
 import { parseRange, pctDelta, rangeWindow } from "../lib/timerange";
 import {
   buildInsights,
@@ -42,6 +50,8 @@ import {
   fetchCoreEvents,
   getCatalogCategories,
   getConversionSummary,
+  getCtlPerformance,
+  type CtlPerformance,
   getPlanTier,
   getPreviewMetrics,
   getPrevCounts,
@@ -95,13 +105,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
   const slug = store.slug;
 
-  const [core, summary, counts, prevCounts, productConv, preview] = await Promise.all([
+  const [core, summary, counts, prevCounts, productConv, preview, ctl] = await Promise.all([
     fetchCoreEvents(slug, win.from, win.to),
     getConversionSummary(slug, win.from, win.to),
     getPrevCounts(slug, win.from, win.to),
     getPrevCounts(slug, win.prevFrom, win.prevTo),
     getProductConversion(slug, win.from, win.to),
     store.storeId ? getPreviewMetrics(store.storeId, win.from, win.to) : Promise.resolve(null),
+    getCtlPerformance(slug, win.from, win.to),
   ]);
 
   // Names + currency for every product we might display.
@@ -168,6 +179,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     dailyConversion: dailyConversionSeries,
     placement,
     topProducts: products.slice(0, 10),
+    ctl,
   };
 
   // Free plan: basic analytics only — don't compute or ship the deep cuts.
@@ -296,6 +308,40 @@ export default function Analytics() {
   const t = data.summary;
   const adv = data.advanced;
 
+  // Headline TL;DR — a money clause + a weak-spot clause, both from real
+  // computed numbers. The weak spot prefers the advanced funnel's biggest leak;
+  // on the free plan it derives the worst drop from the attributed summary.
+  const revenue = t?.revenue ?? 0;
+  const rd = data.deltas.revenue;
+  const trendWord = rd == null || rd === 0 ? null : rd > 0 ? `up ${Math.abs(rd)}%` : `down ${Math.abs(rd)}%`;
+
+  let leak: { pct: number; from: string; to: string } | null = null;
+  if (adv?.funnel.biggestLeak) {
+    leak = {
+      pct: adv.funnel.biggestLeak.lostPct,
+      from: adv.funnel.biggestLeak.fromLabel.toLowerCase(),
+      to: adv.funnel.biggestLeak.toLabel.toLowerCase(),
+    };
+  } else if (t) {
+    const stages = [
+      { label: "trying on", v: t.tryonSessions },
+      { label: "viewing the product", v: t.viewed },
+      { label: "adding to cart", v: t.addedToCart },
+      { label: "buying", v: t.purchased },
+    ];
+    let worst = { pct: 0, i: -1 };
+    for (let i = 0; i < stages.length - 1; i++) {
+      const a = stages[i].v;
+      if (a > 0) {
+        const drop = Math.round(((a - stages[i + 1].v) / a) * 100);
+        if (drop > worst.pct) worst = { pct: drop, i };
+      }
+    }
+    if (worst.i >= 0) leak = { pct: worst.pct, from: stages[worst.i].label, to: stages[worst.i + 1].label };
+  }
+
+  const bold = (s: string) => <Text as="span" fontWeight="semibold">{s}</Text>;
+
   const tabs = [
     { id: "funnel", content: "Funnel" },
     { id: "performance", content: "Performance" },
@@ -327,22 +373,62 @@ export default function Analytics() {
           </Popover>
         </InlineStack>
 
-        {/* KPI row — visible on every plan */}
+        {/* Headline TL;DR — the two-second read above everything else. */}
+        {(revenue > 0 || data.totalTryons > 0) && (
+          <HeadlineStrip>
+            {revenue > 0 ? (
+              <>Try-ons drove {bold(money(revenue))} in sales{trendWord ? <>, {trendWord}</> : null}.</>
+            ) : (
+              <>No attributed sales yet this period, but {bold(data.totalTryons.toLocaleString())} try-ons are feeding your funnel.</>
+            )}
+            {leak ? <> Your weak spot: a {bold(`${leak.pct}%`)} drop from {leak.from} to {leak.to}.</> : null}
+          </HeadlineStrip>
+        )}
+
+        {/* KPI row — visible on every plan. Blue chips = money metrics, ink chips
+            = volume; the pill carries the trend verdict (vs the prior period). */}
         <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
-          <KpiTile label="Attributed revenue" value={money(t?.revenue ?? 0)} delta={data.deltas.revenue} accent />
           <KpiTile
-            label="Purchase conversion"
+            label="Attributed revenue"
+            value={money(t?.revenue ?? 0)}
+            delta={data.deltas.revenue}
+            accent
+            icon={CashDollarIcon}
+            iconTone="money"
+            status={verdictFromDelta(data.deltas.revenue)}
+          />
+          <KpiTile
+            label="Buy rate after try-on"
             value={t?.purchaseConversionPct != null ? `${t.purchaseConversionPct}%` : "—"}
             hint="Sessions that bought"
+            icon={TargetIcon}
+            iconTone="money"
           />
-          <KpiTile label="Widget opens" value={data.widgetOpens.toLocaleString()} delta={data.deltas.opens} />
+          <KpiTile
+            label="Shoppers who opened it"
+            value={data.widgetOpens.toLocaleString()}
+            delta={data.deltas.opens}
+            icon={ViewIcon}
+            iconTone="neutral"
+            status={verdictFromDelta(data.deltas.opens)}
+          />
           <KpiTile
             label="Total try-ons"
             value={data.totalTryons.toLocaleString()}
             delta={data.deltas.tryons}
             hint={`${data.successCount.toLocaleString()} successful`}
+            icon={CameraIcon}
+            iconTone="neutral"
+            status={verdictFromDelta(data.deltas.tryons)}
           />
         </InlineGrid>
+
+        {/* Complete the Look — the proof layer. Only shown once there's any
+            upsell signal, and every number is a real computed aggregate with
+            its sample size next to it — no projections. */}
+        {data.ctl && (data.ctl.ctlTryons > 0 || data.ctl.ordersWithLook > 0 || data.ctl.holdoutActive) && (
+          <CtlProofCard ctl={data.ctl} money={money} />
+        )}
 
         <Tabs tabs={tabs} selected={selectedTab} onSelect={onTabSelect} />
 
@@ -431,7 +517,7 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
             <KpiTile
               label="Try-on → Cart"
               value={adv.funnel.tryonToCartPct != null ? `${adv.funnel.tryonToCartPct}%` : "—"}
-              delta={data.deltas.carts}
+              hint="Tried on, then added to cart"
             />
             <KpiTile
               label="Bounce rate"
@@ -458,9 +544,19 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
                       description="Every stage a shopper passes through, from opening the widget to buying."
                     />
                     <BlockStack gap="300">
-                      {adv.funnel.stages.map((s) => (
-                        <FunnelBar key={s.key} label={s.label} value={s.count} max={adv.funnel.stages[0]?.count ?? 1} />
-                      ))}
+                      {adv.funnel.stages.map((s) => {
+                        const isLeak = adv.funnel.biggestLeak?.toLabel === s.label;
+                        return (
+                          <FunnelBar
+                            key={s.key}
+                            label={s.label}
+                            value={s.count}
+                            max={adv.funnel.stages[0]?.count ?? 1}
+                            tone={isLeak ? "bad" : "money"}
+                            note={isLeak ? `▼ ${adv.funnel.biggestLeak!.lostPct}% drop` : undefined}
+                          />
+                        );
+                      })}
                     </BlockStack>
                     {adv.funnel.biggestLeak && (
                       <div
@@ -915,4 +1011,120 @@ function MiniMetric({
 
 function capitalize(s: string) {
   return s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s;
+}
+
+// ─── Complete the Look — proof card ─────────────────────────────────────────
+// Two proofs, weakest to strongest: (1) AOV of attributed orders whose session
+// used the look vs those that didn't (correlational, always available), and
+// (2) treatment-vs-holdout AOV while the 50/50 test runs (causal). Lift
+// percentages only render once both sides clear a minimum sample — below
+// that we show the raw counts and say we're still collecting, never a number
+// that could be noise.
+const CTL_MIN_ORDERS_SPLIT = 5;   // per side, for the with/without AOV compare
+const CTL_MIN_ORDERS_HOLDOUT = 10; // per arm, for the causal lift number
+
+function CtlProofCard({
+  ctl,
+  money,
+}: {
+  ctl: CtlPerformance;
+  money: (n: number) => string;
+}) {
+  const splitReady =
+    ctl.aovWithLook != null && ctl.aovWithoutLook != null &&
+    ctl.ordersWithLook >= CTL_MIN_ORDERS_SPLIT && ctl.ordersWithoutLook >= CTL_MIN_ORDERS_SPLIT;
+  const splitLift =
+    splitReady && ctl.aovWithoutLook! > 0
+      ? Math.round(((ctl.aovWithLook! - ctl.aovWithoutLook!) / ctl.aovWithoutLook!) * 100)
+      : null;
+
+  const holdoutReady =
+    ctl.tAov != null && ctl.hAov != null &&
+    ctl.tOrders >= CTL_MIN_ORDERS_HOLDOUT && ctl.hOrders >= CTL_MIN_ORDERS_HOLDOUT;
+  const holdoutLift =
+    holdoutReady && ctl.hAov! > 0
+      ? Math.round(((ctl.tAov! - ctl.hAov!) / ctl.hAov!) * 100)
+      : null;
+
+  return (
+    <Card padding="500">
+      <BlockStack gap="400">
+        <InlineStack align="space-between" blockAlign="center">
+          <SectionHeading
+            eyebrow="Complete the Look"
+            title="Outfit upsell — proof"
+            description="Every number below is computed from your store's real attributed orders."
+          />
+          {ctl.holdoutActive && <Badge tone="attention">Proof test running</Badge>}
+        </InlineStack>
+
+        <InlineGrid columns={{ xs: 2, md: 4 }} gap="300">
+          <MiniMetric label="Outfit try-ons" value={ctl.ctlTryons.toLocaleString()} />
+          <MiniMetric label="Shoppers who styled a look" value={ctl.ctlSessions.toLocaleString()} />
+          <MiniMetric
+            label={`Orders with the look (${ctl.ordersWithLook})`}
+            value={money(ctl.revenueWithLook)}
+            accent
+          />
+          <MiniMetric
+            label={`Orders without (${ctl.ordersWithoutLook})`}
+            value={money(ctl.revenueWithoutLook)}
+          />
+        </InlineGrid>
+
+        {ctl.aovWithLook != null && (
+          <Box background="bg-surface-secondary" borderRadius="200" padding="300">
+            <InlineStack gap="400" blockAlign="center" wrap>
+              <Text as="span" variant="bodyMd">
+                Average order with the look: <Text as="span" fontWeight="semibold">{money(ctl.aovWithLook)}</Text>
+                {" · "}without: <Text as="span" fontWeight="semibold">{ctl.aovWithoutLook != null ? money(ctl.aovWithoutLook) : "—"}</Text>
+              </Text>
+              {splitLift != null ? (
+                <Badge tone={splitLift >= 0 ? "success" : "critical"}>{`${splitLift >= 0 ? "+" : ""}${splitLift}% AOV`}</Badge>
+              ) : (
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Small sample — comparison appears at {CTL_MIN_ORDERS_SPLIT}+ orders on each side.
+                </Text>
+              )}
+            </InlineStack>
+          </Box>
+        )}
+
+        {ctl.holdoutActive ? (
+          <Box background="bg-surface-secondary" borderRadius="200" padding="300">
+            <BlockStack gap="150">
+              <Text as="p" variant="bodyMd" fontWeight="semibold">
+                50/50 proof test{ctl.holdoutSince ? ` · running since ${new Date(ctl.holdoutSince).toLocaleDateString()}` : ""}
+              </Text>
+              <Text as="p" variant="bodySm" tone="subdued">
+                Shoppers who see the offer: {ctl.tSessions.toLocaleString()} sessions · {ctl.tOrders} orders
+                {ctl.tAov != null ? ` · ${money(ctl.tAov)} avg order` : ""}
+                {"  —  "}holdout (never shown): {ctl.hSessions.toLocaleString()} sessions · {ctl.hOrders} orders
+                {ctl.hAov != null ? ` · ${money(ctl.hAov)} avg order` : ""}
+              </Text>
+              {holdoutLift != null ? (
+                <InlineStack gap="200" blockAlign="center">
+                  <Badge tone={holdoutLift >= 0 ? "success" : "critical"}>{`${holdoutLift >= 0 ? "+" : ""}${holdoutLift}% causal AOV lift`}</Badge>
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    Measured, not modeled — the only difference between the groups is the offer.
+                  </Text>
+                </InlineStack>
+              ) : (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Collecting data — the lift number appears once each group reaches{" "}
+                  {CTL_MIN_ORDERS_HOLDOUT} attributed orders.
+                </Text>
+              )}
+            </BlockStack>
+          </Box>
+        ) : (
+          <Text as="p" variant="bodySm" tone="subdued">
+            Want the causal number? Turn on the 50/50 proof test in Widget Design → Complete the
+            Look. Half your shoppers won&apos;t see the offer for a while, and the order-value gap
+            between the halves is the lift the feature actually causes.
+          </Text>
+        )}
+      </BlockStack>
+    </Card>
+  );
 }

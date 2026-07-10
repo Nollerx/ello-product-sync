@@ -2,9 +2,10 @@
 // insights, and the free-plan lock. Brand-styled to match components/ui.tsx.
 
 import { useId, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { FunctionComponent, MouseEvent as ReactMouseEvent, ReactNode, SVGProps } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { BlockStack, Box, Button, ButtonGroup, Card, InlineStack, Text } from "@shopify/polaris";
+import { MagicIcon } from "@shopify/polaris-icons";
 import { RANGE_OPTIONS, parseRange, type RangeKey } from "../lib/timerange";
 import { brand } from "./ui";
 import type { Insight } from "../lib/analytics-shared";
@@ -45,7 +46,86 @@ export function Delta({ value, invert }: { value: number | null; invert?: boolea
   );
 }
 
-// ─── KPI tile with optional delta ───────────────────────────────────────────
+// ─── Semantic tone system ───────────────────────────────────────────────────
+// One vocabulary of meaning for the whole analytics surface: color always says
+// the SAME thing. money = revenue (blue), good/watch/bad = health (green/amber/
+// red), neutral = a count that isn't inherently good or bad (ink).
+export type Tone = "money" | "good" | "watch" | "bad" | "neutral";
+
+const TONE_STYLES: Record<Tone, { fg: string; bg: string; icon: string }> = {
+  money: { fg: brand.blue700, bg: brand.blue100, icon: brand.blue },
+  good: { fg: brand.successInk, bg: brand.successBg, icon: brand.success },
+  watch: { fg: brand.warningInk, bg: brand.warningBg, icon: brand.warning },
+  bad: { fg: brand.dangerInk, bg: brand.dangerBg, icon: brand.danger },
+  neutral: { fg: brand.ink600, bg: brand.ink50, icon: brand.ink600 },
+};
+
+type IconSource = FunctionComponent<SVGProps<SVGSVGElement>>;
+
+// Tinted square holding a Polaris icon, colored by tone. `fill` is an inherited
+// SVG property and Polaris icons ship no hardcoded fill, so the brand hex on the
+// icon element colors the paths.
+export function IconChip({ source: Source, tone = "neutral", size = 30 }: { source: IconSource; tone?: Tone; size?: number }) {
+  const s = TONE_STYLES[tone];
+  return (
+    <span
+      aria-hidden
+      style={{
+        width: size,
+        height: size,
+        borderRadius: 8,
+        background: s.bg,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+      }}
+    >
+      <Source width={Math.round(size * 0.58)} height={Math.round(size * 0.58)} style={{ fill: s.icon }} />
+    </span>
+  );
+}
+
+// One-word verdict pill. Pairs with a metric to turn a raw number into a judgment.
+export function StatusPill({ label, tone }: { label: string; tone: Tone }) {
+  const s = TONE_STYLES[tone];
+  return (
+    <span style={{ fontSize: 11, fontWeight: 600, color: s.fg, background: s.bg, padding: "2px 8px", borderRadius: 20, whiteSpace: "nowrap" }}>
+      {label}
+    </span>
+  );
+}
+
+// Verdict derived from a metric's own prior-period trend — honest by construction
+// (no invented industry benchmark). `invert` flips it for "lower is better"
+// metrics like bounce or drop-off. Null delta → no verdict.
+export function verdictFromDelta(delta: number | null | undefined, invert = false): { label: string; tone: Tone } | null {
+  if (delta == null) return null;
+  const dir = invert ? -delta : delta;
+  if (dir >= 10) return { label: "Strong", tone: "good" };
+  if (dir >= -5) return { label: "Steady", tone: "neutral" };
+  if (dir >= -20) return { label: "Slipping", tone: "watch" };
+  return { label: "Needs work", tone: "bad" };
+}
+
+// ─── Plain-English headline strip ───────────────────────────────────────────
+// The TL;DR above the tabs: one sentence a non-technical merchant can read in
+// two seconds. The page composes `children` (bold the numbers that matter).
+export function HeadlineStrip({ eyebrow = "This period at a glance", children }: { eyebrow?: string; children: ReactNode }) {
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: brand.blue100, borderLeft: `3px solid ${brand.blue}`, padding: "12px 14px" }}>
+      <span aria-hidden style={{ marginTop: 2, display: "inline-flex" }}>
+        <MagicIcon width={20} height={20} style={{ fill: brand.blue700 }} />
+      </span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: brand.blue700, marginBottom: 3 }}>{eyebrow}</div>
+        <div style={{ fontSize: 15, lineHeight: 1.5, color: brand.ink }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── KPI tile with icon, verdict, and optional delta ────────────────────────
 export function KpiTile({
   label,
   value,
@@ -53,6 +133,9 @@ export function KpiTile({
   delta,
   invertDelta,
   accent,
+  icon,
+  iconTone,
+  status,
 }: {
   label: string;
   value: string;
@@ -60,10 +143,19 @@ export function KpiTile({
   delta?: number | null;
   invertDelta?: boolean;
   accent?: boolean;
+  icon?: IconSource;
+  iconTone?: Tone;
+  status?: { label: string; tone: Tone } | null;
 }) {
   return (
     <Card padding="500">
       <BlockStack gap="150">
+        {(icon || status) && (
+          <InlineStack align="space-between" blockAlign="center">
+            {icon ? <IconChip source={icon} tone={iconTone ?? (accent ? "money" : "neutral")} /> : <span />}
+            {status && <StatusPill label={status.label} tone={status.tone} />}
+          </InlineStack>
+        )}
         <Text as="span" variant="bodySm" tone="subdued">{label}</Text>
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: 1.1, color: accent ? brand.blue : brand.ink }}>
           {value}
@@ -408,18 +500,22 @@ export function TrendChart({
 }
 
 // ─── Horizontal funnel bar ──────────────────────────────────────────────────
-export function FunnelBar({ label, value, max }: { label: string; value: number; max: number }) {
+// `tone` colors the fill (default money/blue). `note` adds a right-aligned tag
+// such as a drop-off %, colored to match — used to flag the biggest leak in red.
+export function FunnelBar({ label, value, max, tone = "money", note }: { label: string; value: number; max: number; tone?: Tone; note?: string }) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+  const fill = TONE_STYLES[tone].icon;
+  const highlight = tone === "bad" || tone === "watch";
   return (
     <BlockStack gap="100">
-      <InlineStack align="space-between">
-        <Text as="span" variant="bodySm">{label}</Text>
-        <Text as="span" variant="bodySm" tone="subdued">
-          {value.toLocaleString()}{max > 0 ? ` · ${pct}%` : ""}
-        </Text>
+      <InlineStack align="space-between" blockAlign="center">
+        <span style={{ fontSize: 13, fontWeight: highlight ? 600 : 400, color: highlight ? TONE_STYLES[tone].fg : brand.ink }}>{label}</span>
+        <span style={{ fontSize: 13, color: highlight ? TONE_STYLES[tone].fg : brand.ink500, fontWeight: highlight ? 600 : 400 }}>
+          {value.toLocaleString()}{max > 0 ? ` · ${pct}%` : ""}{note ? `  ${note}` : ""}
+        </span>
       </InlineStack>
       <div style={{ height: 8, background: brand.ink100, borderRadius: 6, overflow: "hidden" }}>
-        <div style={{ width: `${pct}%`, height: "100%", background: brand.blue, borderRadius: 6, transition: "width 300ms ease" }} />
+        <div style={{ width: `${pct}%`, height: "100%", background: fill, borderRadius: 6, transition: "width 300ms ease" }} />
       </div>
     </BlockStack>
   );

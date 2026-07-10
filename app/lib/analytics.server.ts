@@ -148,13 +148,21 @@ export async function getShopTimezone(
 // ─── Fetchers ───────────────────────────────────────────────────────────────
 
 const PAGE = 1000;
-const ROW_CAP = 20000;
+// Per-table row cap for a single dashboard load. These selects are narrow (a
+// few columns), so 100k rows is well within memory — it covers a high-volume
+// brand's monthly window where the old 20k cap silently under-counted every
+// number (opens, try-ons, conversion, revenue). NOTE: the correct long-term
+// fix for truly huge stores is server-side aggregation (a Postgres RPC that
+// returns rollups instead of raw rows); until then, hitting this cap is logged
+// loudly rather than passed off as a complete count.
+const ROW_CAP = 100000;
 
 async function fetchPaged<T>(
   build: (lo: number, hi: number) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
   cap = ROW_CAP,
 ): Promise<T[]> {
   const out: T[] = [];
+  let hitCap = true;
   for (let lo = 0; lo < cap; lo += PAGE) {
     try {
       const { data, error } = await build(lo, Math.min(lo + PAGE, cap) - 1);
@@ -164,11 +172,18 @@ async function fetchPaged<T>(
       }
       const rows = (data as T[] | null) ?? [];
       out.push(...rows);
-      if (rows.length < PAGE) break;
+      if (rows.length < PAGE) { hitCap = false; break; }
     } catch (err) {
       console.error("[analytics] fetch threw (non-fatal):", err);
+      hitCap = false;
       break;
     }
+  }
+  if (hitCap && out.length >= cap) {
+    console.warn(
+      `[analytics] row cap (${cap}) reached — numbers for this window are UNDER-counted. ` +
+      `Move this store to server-side aggregation.`,
+    );
   }
   return out;
 }
@@ -236,6 +251,72 @@ export async function getConversionSummary(
     revenue: Number(row.attributed_revenue ?? 0),
     purchaseConversionPct:
       row.purchase_conversion_pct != null ? Number(row.purchase_conversion_pct) : null,
+  };
+}
+
+// Complete-the-Look proof layer: upsell usage, AOV segmented by whether the
+// session used the look, and treatment-vs-holdout aggregates while a 50/50
+// proof test runs. Numbers reconcile with get_vto_conversion_summary — the
+// RPC reuses its exact attribution join.
+export interface CtlPerformance {
+  ctlTryons: number;
+  ctlSessions: number;
+  ordersWithLook: number;
+  revenueWithLook: number;
+  aovWithLook: number | null;
+  ordersWithoutLook: number;
+  revenueWithoutLook: number;
+  aovWithoutLook: number | null;
+  holdoutActive: boolean;
+  holdoutSince: string | null;
+  tSessions: number;
+  tOrders: number;
+  tRevenue: number;
+  tAov: number | null;
+  hSessions: number;
+  hOrders: number;
+  hRevenue: number;
+  hAov: number | null;
+}
+
+export async function getCtlPerformance(
+  slug: string,
+  from: Date,
+  to: Date,
+): Promise<CtlPerformance | null> {
+  const { data, error } = await supabaseAdmin.rpc("get_ctl_performance", {
+    p_store_slug: slug,
+    p_from: from.toISOString(),
+    p_to: to.toISOString(),
+  });
+  if (error) {
+    console.error("[analytics] CTL performance failed (non-fatal):", error.message);
+    return null;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row = (Array.isArray(data) ? data[0] : null) as any;
+  if (!row) return null;
+  const num = (v: unknown) => Number(v ?? 0);
+  const numOrNull = (v: unknown) => (v == null ? null : Number(v));
+  return {
+    ctlTryons: num(row.ctl_tryons),
+    ctlSessions: num(row.ctl_sessions),
+    ordersWithLook: num(row.orders_with_look),
+    revenueWithLook: num(row.revenue_with_look),
+    aovWithLook: numOrNull(row.aov_with_look),
+    ordersWithoutLook: num(row.orders_without_look),
+    revenueWithoutLook: num(row.revenue_without_look),
+    aovWithoutLook: numOrNull(row.aov_without_look),
+    holdoutActive: row.holdout_active === true,
+    holdoutSince: row.holdout_since ?? null,
+    tSessions: num(row.t_sessions),
+    tOrders: num(row.t_orders),
+    tRevenue: num(row.t_revenue),
+    tAov: numOrNull(row.t_aov),
+    hSessions: num(row.h_sessions),
+    hOrders: num(row.h_orders),
+    hRevenue: num(row.h_revenue),
+    hAov: numOrNull(row.h_aov),
   };
 }
 
@@ -929,7 +1010,12 @@ export function buildInsights(input: {
 
 export function toCsv(headers: string[], rows: Array<Array<string | number | null>>): string {
   const escape = (v: string | number | null) => {
-    const s = v == null ? "" : String(v);
+    let s = v == null ? "" : String(v);
+    // Spreadsheet formula-injection guard: a cell starting with = + - @ (or a
+    // tab/CR) executes as a formula in Excel/Sheets, and some exported fields
+    // (product handles, page paths, entry sources) trace back to storefront
+    // input. Prefix a single quote so it stays literal text.
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return [headers.join(","), ...rows.map((r) => r.map(escape).join(","))].join("\n");

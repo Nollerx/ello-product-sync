@@ -1,9 +1,13 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { supabaseAdmin } from "../lib/supabase.server";
-import { unauthenticated } from "../shopify.server";
+import { authenticate, unauthenticated } from "../shopify.server";
 
 // ─── CORS Headers ─────────────────────────────────────────────────────────────
-// This endpoint is called by the Ello dashboard (external origin)
+// This endpoint is called by the Ello dashboard (external origin). Every
+// read/write is scoped to the AUTHENTICATED merchant's own store (derived from
+// the Shopify session, never from a request-supplied store_slug) — otherwise
+// anyone who guessed a store slug could read a rival's usage or rewrite their
+// overage cap / auto-topup and tamper with their Shopify billing cap.
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -25,18 +29,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
-  const url = new URL(request.url);
-  const storeSlug = url.searchParams.get("store_slug") || url.searchParams.get("storeSlug");
+  // Authenticate the Shopify merchant and resolve THEIR store — the request
+  // can no longer name an arbitrary store_slug.
+  const { session } = await authenticate.admin(request);
 
-  if (!storeSlug) {
-    return json(400, { error: "Missing store_slug parameter" });
-  }
-
-  // Get store overage settings
   const { data: store, error: storeError } = await supabaseAdmin
     .from("vto_stores")
-    .select("account_id, overage_auto_topup, overage_cap_credits, overage_trigger_threshold, overage_credits_used")
-    .eq("store_slug", storeSlug)
+    .select("store_slug, account_id, overage_auto_topup, overage_cap_credits, overage_trigger_threshold, overage_credits_used")
+    .eq("shop_domain", session.shop)
     .maybeSingle();
 
   if (storeError || !store) {
@@ -45,7 +45,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   // Get current usage via RPC
   const { data: usage, error: usageError } = await supabaseAdmin.rpc("get_store_usage", {
-    p_store_slug: storeSlug,
+    p_store_slug: store.store_slug,
   });
 
   if (usageError) {
@@ -73,6 +73,10 @@ export async function action({ request }: ActionFunctionArgs) {
     return json(405, { error: "Method not allowed" });
   }
 
+  // Authenticate first — the target store comes from the Shopify session, so a
+  // merchant can only ever edit their own overage settings.
+  const { session } = await authenticate.admin(request);
+
   let body: Record<string, unknown>;
   try {
     body = await request.json();
@@ -80,10 +84,15 @@ export async function action({ request }: ActionFunctionArgs) {
     return json(400, { error: "Invalid JSON" });
   }
 
-  const storeSlug = body.store_slug as string || body.storeSlug as string;
-  if (!storeSlug) {
-    return json(400, { error: "Missing store_slug" });
+  const { data: authStore } = await supabaseAdmin
+    .from("vto_stores")
+    .select("store_slug")
+    .eq("shop_domain", session.shop)
+    .maybeSingle();
+  if (!authStore?.store_slug) {
+    return json(404, { error: "Store not found" });
   }
+  const storeSlug = authStore.store_slug;
 
   // Build update object from provided fields
   const updates: Record<string, unknown> = {};

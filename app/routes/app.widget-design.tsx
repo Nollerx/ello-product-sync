@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, FunctionComponent, ReactNode, SVGProps } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import {
@@ -16,11 +16,29 @@ import {
   Box,
   Banner,
   Divider,
+  Tooltip,
 } from "@shopify/polaris";
+import {
+  ButtonIcon,
+  CameraIcon as CameraGlyphIcon,
+  CartUpIcon,
+  ChartCohortIcon,
+  ChatIcon,
+  ChevronDownIcon,
+  CollectionIcon,
+  ColorIcon,
+  ConnectIcon,
+  DesktopIcon,
+  PlusCircleIcon,
+  ProductIcon,
+  SettingsIcon,
+  StoreOnlineIcon,
+} from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
 import { resolveStorefront, fetchStorefrontProducts } from "../lib/storefront-names.server";
 import { SectionHeading, brand } from "../components/ui";
+import { IconChip, StatusPill } from "../components/analytics";
 
 const MAX_QUICK_PICKS = 6;
 
@@ -66,6 +84,9 @@ const DEFAULTS = {
   floatPdp: false,
   floatNonPdp: true,
   fittingRoomEnabled: true,
+  pdpImageSwapEnabled: false,
+  pdpImageSelector: "",
+  completeTheLookEnabled: false,
   position: "right" as "left" | "right",
   previewEnabled: false,
   previewDelay: 3,
@@ -93,6 +114,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         "floating_widget_pdp_enabled",
         "floating_widget_non_pdp_enabled",
         "fitting_room_enabled",
+        "pdp_image_swap_enabled",
+        "pdp_image_selector",
+        "complete_the_look_enabled",
+        "ctl_holdout_enabled",
         "widget_position",
         "widget_enabled",
         "desktop_preview_enabled",
@@ -148,6 +173,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     floatPdp: row?.floating_widget_pdp_enabled ?? DEFAULTS.floatPdp,
     floatNonPdp: row?.floating_widget_non_pdp_enabled ?? DEFAULTS.floatNonPdp,
     fittingRoomEnabled: row?.fitting_room_enabled ?? DEFAULTS.fittingRoomEnabled,
+    pdpImageSwapEnabled: row?.pdp_image_swap_enabled ?? DEFAULTS.pdpImageSwapEnabled,
+    pdpImageSelector: (row?.pdp_image_selector as string | null) ?? DEFAULTS.pdpImageSelector,
+    completeTheLookEnabled: row?.complete_the_look_enabled ?? DEFAULTS.completeTheLookEnabled,
+    ctlHoldoutEnabled: (row?.ctl_holdout_enabled as boolean | null) ?? false,
+    shopHandle: session.shop.replace(".myshopify.com", ""),
     position: (row?.widget_position as "left" | "right") ?? DEFAULTS.position,
     previewEnabled: row?.desktop_preview_enabled ?? DEFAULTS.previewEnabled,
     previewDelay: row?.preview_delay_seconds ?? DEFAULTS.previewDelay,
@@ -182,10 +212,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     quickPicks = [];
   }
 
+  // Holdout window bookkeeping: stamp ctl_holdout_enabled_at only on the
+  // OFF→ON transition — re-saving while the test runs must not shrink the
+  // measurement window the lift numbers are computed over.
+  const wantHoldout = bool("ctl_holdout_enabled");
+  const { data: priorRow } = await supabaseAdmin
+    .from("vto_stores")
+    .select("ctl_holdout_enabled")
+    .eq("shop_domain", session.shop)
+    .maybeSingle();
+  const holdoutTurningOn = wantHoldout && priorRow?.ctl_holdout_enabled !== true;
+
   const { data, error } = await supabaseAdmin
     .from("vto_stores")
     .update({
       widget_enabled: bool("widget_enabled"),
+      ctl_holdout_enabled: wantHoldout,
+      ...(holdoutTurningOn ? { ctl_holdout_enabled_at: new Date().toISOString() } : {}),
       preview_theme: form.get("preview_theme") === "dark" ? "dark" : "light",
       featured_item_id: featuredRaw || null,
       quick_picks_ids: quickPicks,
@@ -199,6 +242,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       floating_widget_pdp_enabled: bool("float_pdp"),
       floating_widget_non_pdp_enabled: bool("float_non_pdp"),
       fitting_room_enabled: bool("fitting_room_enabled"),
+      pdp_image_swap_enabled: bool("pdp_image_swap_enabled"),
+      // Advanced hero-targeting override. Stored trimmed, empty → NULL (widget
+      // treats NULL as "use the automatic cascade").
+      pdp_image_selector: String(form.get("pdp_image_selector") ?? "").trim().slice(0, 300) || null,
+      complete_the_look_enabled: bool("complete_the_look_enabled"),
       widget_position: form.get("position") === "left" ? "left" : "right",
       desktop_preview_enabled: bool("preview_enabled"),
       preview_delay_seconds: previewDelay,
@@ -262,7 +310,12 @@ function ArrowRightIcon({ color, size = 16 }: { color: string; size?: number }) 
 }
 
 // ─── Spotlight: hover a settings card → highlight what it controls ─────────
-type SpotKey = "status" | "brand" | "inline" | "float" | "popup";
+type SpotKey =
+  | "status" | "brand" | "inline" | "float" | "popup"
+  // Demo keys: these don't just spotlight an element — they play out the
+  // feature in the preview (ctl follows the CURRENT style toggle, the two
+  // style keys force their respective mode so preset tiles can show both).
+  | "ctl" | "styleMirror" | "styleWidget";
 type SpotEl = "frame" | "inline" | "bubble" | "popup";
 
 const SPOT_MAP: Record<SpotKey, SpotEl[]> = {
@@ -271,6 +324,9 @@ const SPOT_MAP: Record<SpotKey, SpotEl[]> = {
   inline: ["inline"],
   float: ["bubble"],
   popup: ["popup"],
+  ctl: [],
+  styleMirror: [],
+  styleWidget: [],
 };
 
 const SPOT_LABELS: Record<SpotEl, string> = {
@@ -326,6 +382,16 @@ function SpotZone({
   );
 }
 
+// Simple person silhouette for the "result on you" demos.
+function PersonIcon({ color, size = 64 }: { color: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={color} aria-hidden>
+      <circle cx="12" cy="6" r="3.2" />
+      <path d="M12 10.2c-3.6 0-6 2.5-6 6.3V21h12v-4.5c0-3.8-2.4-6.3-6-6.3z" />
+    </svg>
+  );
+}
+
 function StorefrontPreview({
   color,
   inlineEnabled,
@@ -336,6 +402,8 @@ function StorefrontPreview({
   previewEnabled,
   previewTheme,
   previewDelay,
+  pdpImageSwapEnabled,
+  completeTheLookEnabled,
   spot,
 }: {
   color: string;
@@ -347,6 +415,8 @@ function StorefrontPreview({
   previewEnabled: boolean;
   previewTheme: "light" | "dark";
   previewDelay: string;
+  pdpImageSwapEnabled: boolean;
+  completeTheLookEnabled: boolean;
   spot: SpotKey | null;
 }) {
   const textColor = readableTextColor(color);
@@ -375,15 +445,15 @@ function StorefrontPreview({
   }, [floatPdp]);
   const bubbleOpen = bubbleHover || bubbleDemo;
 
-  // Hidden elements can't be spotlighted; when the master switch is hovered
-  // the whole frame rings and nothing dims.
+  // Every element can be spotlighted — even ones currently toggled OFF.
+  // Hovering a settings card always demonstrates its feature in the preview
+  // (ghosted + labeled "currently off" when disabled), so merchants never
+  // have to turn something on just to find out what it is.
   const visibleEls: Record<SpotEl, boolean> = {
     frame: true,
-    inline: inlineEnabled,
-    bubble: floatPdp,
-    // The storefront popup shows independent of the floating-widget PDP flag,
-    // so the preview must too (new installs default float-on-PDP off).
-    popup: previewEnabled,
+    inline: true,
+    bubble: true,
+    popup: true,
   };
   const targets = spot ? SPOT_MAP[spot].filter((el) => visibleEls[el]) : [];
   const spotted = (el: SpotEl) => targets.includes(el);
@@ -391,6 +461,24 @@ function StorefrontPreview({
   const ring = (el: SpotEl): CSSProperties =>
     spotted(el) ? { outline: `2px solid ${brand.blue}`, outlineOffset: 3 } : {};
   const fade = (el: SpotEl) => (spotting && !spotted(el) ? 0.35 : 1);
+
+  // Feature demos. ctl narrates whatever the style toggle CURRENTLY does (on →
+  // photo, off → widget); the style keys force one mode each so the preset
+  // tiles can each show their own world regardless of current settings.
+  const mirrorDemo = spot === "styleMirror" || (spot === "ctl" && pdpImageSwapEnabled);
+  const widgetDemo = spot === "styleWidget" || (spot === "ctl" && !pdpImageSwapEnabled);
+  const ctlDemo = spot === "ctl";
+  const caption =
+    spot === "ctl"
+      ? (pdpImageSwapEnabled
+          ? "The offer rides the product photo — right where the shopper is admiring the first piece."
+          : "The offer appears inside the widget, directly under the try-on result.") +
+        (completeTheLookEnabled ? "" : " (Currently off.)")
+      : spot === "styleMirror"
+        ? "Product-page style — no widget: the Try-On button paints the result straight onto your product photo."
+        : spot === "styleWidget"
+          ? "Widget style — the Try-On button opens the Ello widget and the result renders inside it."
+          : null;
 
   return (
     <div
@@ -488,6 +576,101 @@ function StorefrontPreview({
           <div style={{ position: "absolute", inset: "28% 30% 12% 30%", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.5 }}>
             <ShirtIcon color={brand.ink500} size={84} />
           </div>
+
+          {/* Mirror demo: the product photo "becomes" the shopper */}
+          <div
+            aria-hidden={!mirrorDemo}
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              background: `radial-gradient(120% 90% at 50% 15%, ${brand.blue50} 0%, #DDE7F5 55%, ${brand.ink200} 100%)`,
+              opacity: mirrorDemo ? 1 : 0,
+              transition: "opacity 240ms ease",
+              pointerEvents: "none",
+              outline: mirrorDemo ? `2px solid ${brand.blue}` : "none",
+              outlineOffset: -2,
+              borderRadius: 12,
+              zIndex: 2,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                background: brand.blue,
+                color: brand.white,
+                borderRadius: 999,
+                padding: "3px 10px",
+                boxShadow: "0 4px 12px rgba(11,18,32,0.22)",
+              }}
+            >
+              ✨ Your shopper, wearing it
+            </span>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <PersonIcon color={brand.ink500} size={110} />
+              <span style={{ position: "absolute", top: 46 }}>
+                <ShirtIcon color={color} size={44} />
+              </span>
+            </div>
+
+            {/* Complete the Look offer riding the photo's bottom edge */}
+            {ctlDemo && (
+              <div
+                style={{
+                  position: "absolute",
+                  left: 8,
+                  right: 8,
+                  bottom: 8,
+                  borderRadius: 10,
+                  background: "rgba(255,255,255,0.96)",
+                  boxShadow: "0 6px 20px rgba(11,18,32,0.20)",
+                  padding: "7px 9px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 7,
+                  textAlign: "left",
+                }}
+              >
+                <div
+                  style={{
+                    width: 24,
+                    height: 30,
+                    borderRadius: 5,
+                    background: brand.ink100,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <ShirtIcon color={brand.ink500} size={14} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: brand.ink }}>Complete the look</div>
+                  <div style={{ fontSize: 8.5, color: brand.ink500 }}>Pants · $59</div>
+                </div>
+                <span
+                  style={{
+                    fontSize: 8.5,
+                    fontWeight: 700,
+                    background: color,
+                    color: readableTextColor(color),
+                    borderRadius: 999,
+                    padding: "4px 8px",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  + Try it on too
+                </span>
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10, paddingTop: 6 }}>
@@ -538,9 +721,11 @@ function StorefrontPreview({
             Add to cart
           </div>
 
-          {inlineEnabled && (
+          {(inlineEnabled || spotted("inline")) && (
             <div style={{ position: "relative", opacity: fade("inline"), transition: "opacity 200ms ease" }}>
-              {spotted("inline") && <SpotTag label={SPOT_LABELS.inline} />}
+              {spotted("inline") && (
+                <SpotTag label={SPOT_LABELS.inline + (inlineEnabled ? "" : " · currently off")} />
+              )}
               {/* Mirrors the real inline button: text only, square corners,
                   shaped like the theme's Add to cart so it reads native. */}
               <div
@@ -556,7 +741,7 @@ function StorefrontPreview({
                   fontSize: 13,
                   fontWeight: 500,
                   letterSpacing: "0.01em",
-                  opacity: dimmed,
+                  opacity: inlineEnabled ? dimmed : 0.55,
                   transition: "background 240ms ease, opacity 240ms ease",
                   ...ring("inline"),
                 }}
@@ -604,7 +789,7 @@ function StorefrontPreview({
           popup (product photo → your photo → generate). Stays hidden so the
           preview doesn't read as cluttered; slides up only while the merchant
           is hovering the Preview popup settings card. */}
-      {previewEnabled && (
+      {(previewEnabled || spotted("popup")) && (
         <div
           aria-hidden={!spotted("popup")}
           style={{
@@ -613,7 +798,7 @@ function StorefrontPreview({
             [side]: 18,
             width: 238,
             zIndex: 3,
-            opacity: spotted("popup") ? dimmed : 0,
+            opacity: spotted("popup") ? (previewEnabled ? dimmed : 0.75) : 0,
             transform: spotted("popup") ? "translateY(0)" : "translateY(14px)",
             pointerEvents: "none",
             transition: "opacity 240ms ease, transform 240ms ease",
@@ -630,7 +815,9 @@ function StorefrontPreview({
               ...ring("popup"),
             }}
           >
-            {spotted("popup") && <SpotTag label={SPOT_LABELS.popup} align={side} />}
+            {spotted("popup") && (
+              <SpotTag label={SPOT_LABELS.popup + (previewEnabled ? "" : " · currently off")} align={side} />
+            )}
             <span
               aria-hidden
               style={{
@@ -705,15 +892,17 @@ function StorefrontPreview({
               GENERATE MY LOOK
             </div>
             <div style={{ marginTop: 8, textAlign: "center", fontSize: 10, color: popupDark ? "#9CA3AF" : brand.ink500 }}>
-              Appears after {previewDelay || "3"}s on desktop
+              {previewEnabled
+                ? `Appears after ${previewDelay || "3"}s on desktop`
+                : "Currently off — enable it to greet desktop shoppers"}
             </div>
           </div>
         </div>
       )}
 
       {/* Floating launcher — same hanger-to-pill hover reveal as the real
-          storefront widget. */}
-      {floatPdp && (
+          storefront widget. Ghosts in on hover even when toggled off. */}
+      {(floatPdp || spotted("bubble")) && (
         <div
           onMouseEnter={() => setBubbleHover(true)}
           onMouseLeave={() => setBubbleHover(false)}
@@ -722,11 +911,13 @@ function StorefrontPreview({
             bottom: 20,
             [side]: 18,
             zIndex: 4,
-            opacity: dimmed * fade("bubble"),
+            opacity: (floatPdp ? dimmed : 0.55) * fade("bubble"),
             transition: "left 240ms ease, right 240ms ease, opacity 240ms ease",
           }}
         >
-          {spotted("bubble") && <SpotTag label={SPOT_LABELS.bubble} align={side} />}
+          {spotted("bubble") && (
+            <SpotTag label={SPOT_LABELS.bubble + (floatPdp ? "" : " · currently off")} align={side} />
+          )}
           <div
             style={{
               height: 58,
@@ -769,6 +960,137 @@ function StorefrontPreview({
               Virtual Try-On
             </span>
           </div>
+        </div>
+      )}
+
+      {/* Widget-mode demo: where results render when the mirror is OFF */}
+      <div
+        aria-hidden={!widgetDemo}
+        style={{
+          position: "absolute",
+          bottom: 92,
+          [side]: 18,
+          width: 176,
+          zIndex: 5,
+          opacity: widgetDemo ? 1 : 0,
+          transform: widgetDemo ? "translateY(0)" : "translateY(14px)",
+          pointerEvents: "none",
+          transition: "opacity 240ms ease, transform 240ms ease",
+        }}
+      >
+        <div
+          style={{
+            borderRadius: 14,
+            overflow: "hidden",
+            background: brand.white,
+            border: `1px solid ${brand.ink100}`,
+            boxShadow: "0 16px 40px rgba(11,18,32,0.26)",
+            outline: `2px solid ${brand.blue}`,
+            outlineOffset: 3,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "8px 10px",
+              background: color,
+              color: readableTextColor(color),
+            }}
+          >
+            <HangerIcon color={readableTextColor(color)} size={13} />
+            <span style={{ fontSize: 9.5, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase" }}>
+              Fitting room
+            </span>
+            <span style={{ marginLeft: "auto", fontSize: 10, opacity: 0.75 }}>✕</span>
+          </div>
+          <div
+            style={{
+              position: "relative",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 4,
+              padding: "12px 10px 10px",
+              background: `radial-gradient(120% 90% at 50% 0%, ${brand.blue50} 0%, ${brand.white} 75%)`,
+            }}
+          >
+            <span
+              style={{
+                fontSize: 8.5,
+                fontWeight: 700,
+                letterSpacing: "0.05em",
+                background: brand.blue,
+                color: brand.white,
+                borderRadius: 999,
+                padding: "2px 8px",
+              }}
+            >
+              ✨ The result renders here
+            </span>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <PersonIcon color={brand.ink500} size={64} />
+              <span style={{ position: "absolute", top: 27 }}>
+                <ShirtIcon color={color} size={26} />
+              </span>
+            </div>
+            {ctlDemo && (
+              <div
+                style={{
+                  width: "100%",
+                  borderRadius: 8,
+                  border: `1px solid ${brand.ink100}`,
+                  background: brand.white,
+                  padding: "6px 8px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 8.5, fontWeight: 700, color: brand.ink }}>Complete the look</div>
+                  <div style={{ fontSize: 8, color: brand.ink500 }}>Pants · $59</div>
+                </div>
+                <span
+                  style={{
+                    fontSize: 8,
+                    fontWeight: 700,
+                    background: color,
+                    color: readableTextColor(color),
+                    borderRadius: 999,
+                    padding: "3px 7px",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  + Try it on
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Narration strip: plain-English description of what the hovered
+          setting is doing right now, inside the storefront frame. */}
+      {caption && (
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 6,
+            background: "rgba(11,18,32,0.88)",
+            color: brand.white,
+            fontSize: 11.5,
+            lineHeight: 1.45,
+            padding: "9px 14px",
+            textAlign: "center",
+            pointerEvents: "none",
+          }}
+        >
+          {caption}
         </div>
       )}
     </div>
@@ -1045,6 +1367,360 @@ function ColorSwatch({ value, selected, onClick }: { value: string; selected: bo
   );
 }
 
+// Selectable preset tile for the two try-on styles. The sketch is a
+// thumbnail-size product page: the mirror variant highlights the photo (the
+// result lands there), the widget variant shows a small panel over the page.
+function StyleTile({
+  active,
+  title,
+  subtitle,
+  body,
+  variant,
+  onClick,
+}: {
+  active: boolean;
+  title: string;
+  subtitle: string;
+  body: string;
+  variant: "mirror" | "widget";
+  onClick: () => void;
+}) {
+  const sketchLine = (w: number, mt = 6) => (
+    <div style={{ height: 6, width: `${w}%`, background: brand.ink100, borderRadius: 3, marginTop: mt }} />
+  );
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        display: "block",
+        width: "100%",
+        height: "100%",
+        textAlign: "left",
+        cursor: "pointer",
+        borderRadius: 16,
+        padding: 18,
+        background: active ? brand.blue50 : brand.white,
+        border: active ? `2px solid ${brand.blue}` : `1px solid ${brand.ink200}`,
+        transition: "border-color 140ms ease, background 140ms ease",
+      }}
+    >
+      {/* Product-page sketch — hero-sized so the choice reads at a glance */}
+      <div
+        style={{
+          position: "relative",
+          width: "100%",
+          height: 132,
+          borderRadius: 10,
+          border: `1px solid ${active ? brand.blue200 : brand.ink100}`,
+          background: brand.white,
+          padding: 12,
+          display: "flex",
+          gap: 12,
+          overflow: "hidden",
+          marginBottom: 14,
+        }}
+      >
+        {variant === "mirror" ? (
+          <>
+            <div
+              style={{
+                width: 76,
+                borderRadius: 8,
+                background: `radial-gradient(120% 90% at 50% 15%, ${brand.blue100} 0%, ${brand.blue50} 100%)`,
+                border: `2px solid ${brand.blue}`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
+            >
+              <PersonIcon color={brand.blue} size={46} />
+            </div>
+            <div style={{ flex: 1, paddingTop: 6 }}>
+              {sketchLine(85, 0)}
+              {sketchLine(55)}
+              <div style={{ height: 22, width: "70%", background: brand.ink, borderRadius: 6, marginTop: 14 }} />
+              {sketchLine(70, 12)}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ width: 76, borderRadius: 8, background: brand.ink100, flexShrink: 0 }} />
+            <div style={{ flex: 1, paddingTop: 6 }}>
+              {sketchLine(85, 0)}
+              {sketchLine(55)}
+              {sketchLine(70, 12)}
+            </div>
+            <div
+              style={{
+                position: "absolute",
+                right: 10,
+                bottom: 10,
+                width: 64,
+                height: 86,
+                borderRadius: 8,
+                background: brand.white,
+                border: `2px solid ${brand.blue}`,
+                boxShadow: "0 6px 16px rgba(11,18,32,0.18)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <div style={{ height: 12, width: "100%", background: brand.blue, borderRadius: "6px 6px 0 0", position: "absolute", top: 0 }} />
+              <PersonIcon color={brand.blue} size={34} />
+            </div>
+          </>
+        )}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 17, fontWeight: 700, color: brand.ink }}>{title}</span>
+        {active && (
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 800,
+              letterSpacing: "0.07em",
+              textTransform: "uppercase",
+              color: brand.white,
+              background: brand.blue,
+              borderRadius: 999,
+              padding: "3px 9px",
+            }}
+          >
+            Active
+          </span>
+        )}
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: brand.blue700, marginTop: 3 }}>{subtitle}</div>
+      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: brand.ink600, marginTop: 6 }}>{body}</div>
+    </button>
+  );
+}
+
+// Numbered step header — the page reads as three decisions (style → upsell →
+// look & feel), with everything else tucked under Fine-tuning.
+function StepLabel({ n, title, hint }: { n: number; title: string; hint?: string }) {
+  return (
+    <Box paddingBlockStart="300">
+      <InlineStack gap="300" blockAlign="start" wrap={false}>
+        <span
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: "50%",
+            background: brand.blue,
+            color: brand.white,
+            fontSize: 13,
+            fontWeight: 700,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+            marginTop: 1,
+          }}
+        >
+          {n}
+        </span>
+        <BlockStack gap="100">
+          <Text as="h3" variant="headingMd">{title}</Text>
+          {hint ? <Text as="p" variant="bodySm" tone="subdued">{hint}</Text> : null}
+        </BlockStack>
+      </InlineStack>
+    </Box>
+  );
+}
+
+type IconSource = FunctionComponent<SVGProps<SVGSVGElement>>;
+
+// A real on/off switch — features that turn something on for shoppers get
+// this, not a checkbox that reads like a form field.
+function ToggleSwitch({
+  checked,
+  onChange,
+  ariaLabel,
+  disabled = false,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  ariaLabel: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      style={{
+        position: "relative",
+        width: 52,
+        height: 30,
+        borderRadius: 999,
+        border: "none",
+        cursor: disabled ? "not-allowed" : "pointer",
+        background: checked ? brand.success : brand.ink200,
+        transition: "background 160ms ease",
+        flexShrink: 0,
+        padding: 0,
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      <span
+        style={{
+          position: "absolute",
+          top: 3,
+          left: checked ? 25 : 3,
+          width: 24,
+          height: 24,
+          borderRadius: "50%",
+          background: brand.white,
+          boxShadow: "0 1px 4px rgba(11,18,32,0.25)",
+          transition: "left 160ms ease",
+        }}
+      />
+    </button>
+  );
+}
+
+// ─── Branded fine-tuning card ───────────────────────────────────────────────
+// One header language for every setting card: an icon chip that says WHAT this
+// is, the title, an optional On/Off pill + real switch when the card toggles a
+// feature, and a hover "Why this matters" for the reasoning. Replaces the plain
+// SectionHeading + Checkbox pattern so fine-tuning reads as on-brand as the rest.
+function TuneCard({
+  icon,
+  title,
+  description,
+  why,
+  toggle,
+  children,
+}: {
+  icon: IconSource;
+  title: string;
+  description?: string;
+  why?: string;
+  toggle?: { checked: boolean; onChange: (v: boolean) => void };
+  children?: ReactNode;
+}) {
+  const on = toggle?.checked ?? true;
+  return (
+    <Card padding="500">
+      <BlockStack gap="400">
+        <InlineStack align="space-between" blockAlign="center" wrap={false} gap="300">
+          <InlineStack gap="300" blockAlign="center" wrap={false}>
+            <IconChip source={icon} tone={toggle ? (on ? "good" : "neutral") : "money"} size={38} />
+            <BlockStack gap="050">
+              <InlineStack gap="200" blockAlign="center">
+                <Text as="h3" variant="headingMd">{title}</Text>
+                {toggle && <StatusPill label={on ? "On" : "Off"} tone={on ? "good" : "neutral"} />}
+                {why && (
+                  <Tooltip content={why} width="wide">
+                    <button
+                      type="button"
+                      aria-label="Why this matters"
+                      style={{
+                        width: 16,
+                        height: 16,
+                        borderRadius: 8,
+                        border: `1.2px solid ${brand.ink500}`,
+                        background: "transparent",
+                        color: brand.ink500,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 9.5,
+                        fontWeight: 700,
+                        fontStyle: "italic",
+                        cursor: "help",
+                        lineHeight: 1,
+                        padding: 0,
+                      }}
+                    >
+                      i
+                    </button>
+                  </Tooltip>
+                )}
+              </InlineStack>
+              {description && <Text as="p" variant="bodySm" tone="subdued">{description}</Text>}
+            </BlockStack>
+          </InlineStack>
+          {toggle && (
+            <ToggleSwitch checked={on} onChange={toggle.onChange} ariaLabel={title} />
+          )}
+        </InlineStack>
+        {children}
+      </BlockStack>
+    </Card>
+  );
+}
+
+// A labeled on/off row for secondary switches inside a TuneCard (e.g. the two
+// floating-widget surfaces). Bordered so it reads as its own control.
+function SwitchRow({
+  label,
+  sublabel,
+  checked,
+  onChange,
+  disabled = false,
+}: {
+  label: string;
+  sublabel?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${brand.ink100}`,
+        borderRadius: 12,
+        padding: "10px 14px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        opacity: disabled ? 0.6 : 1,
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 500, color: brand.ink }}>{label}</div>
+        {sublabel && <div style={{ fontSize: 11.5, color: brand.ink500, marginTop: 1 }}>{sublabel}</div>}
+      </div>
+      <ToggleSwitch checked={checked} onChange={onChange} ariaLabel={label} disabled={disabled} />
+    </div>
+  );
+}
+
+// Numbered icon step for "how it works" rows — replaces paragraph explainers.
+function MiniStep({ n, icon, title, body }: { n: number; icon: IconSource; title: string; body: string }) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${brand.ink100}`,
+        borderRadius: 12,
+        padding: "12px 14px",
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+      }}
+    >
+      <IconChip source={icon} tone="money" size={30} />
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, color: brand.ink }}>
+          <span style={{ color: brand.blue700, marginRight: 5 }}>{n}.</span>
+          {title}
+        </div>
+        <div style={{ fontSize: 11.5, color: brand.ink500, marginTop: 2, lineHeight: 1.45 }}>{body}</div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────
 export default function WidgetDesign() {
   const initial = useLoaderData<typeof loader>();
@@ -1056,7 +1732,13 @@ export default function WidgetDesign() {
   const [inlineHideOos, setInlineHideOos] = useState<boolean>(initial.inlineHideOos);
   const [floatPdp, setFloatPdp] = useState<boolean>(initial.floatPdp);
   const [floatNonPdp, setFloatNonPdp] = useState<boolean>(initial.floatNonPdp);
+  // Fine-tuning drawer — collapsed by default so the page reads as 3 decisions.
+  const [showFineTuning, setShowFineTuning] = useState(false);
   const [fittingRoomEnabled, setFittingRoomEnabled] = useState<boolean>(initial.fittingRoomEnabled);
+  const [pdpImageSwapEnabled, setPdpImageSwapEnabled] = useState<boolean>(initial.pdpImageSwapEnabled);
+  const [pdpImageSelector, setPdpImageSelector] = useState<string>(initial.pdpImageSelector);
+  const [completeTheLookEnabled, setCompleteTheLookEnabled] = useState<boolean>(initial.completeTheLookEnabled);
+  const [ctlHoldoutEnabled, setCtlHoldoutEnabled] = useState<boolean>(initial.ctlHoldoutEnabled);
   const [position, setPosition] = useState<"left" | "right">(initial.position);
   const [previewEnabled, setPreviewEnabled] = useState<boolean>(initial.previewEnabled);
   const [previewDelay, setPreviewDelay] = useState<string>(String(initial.previewDelay));
@@ -1084,6 +1766,11 @@ export default function WidgetDesign() {
       inlineHideOos !== initial.inlineHideOos ||
       floatPdp !== initial.floatPdp ||
       floatNonPdp !== initial.floatNonPdp ||
+      fittingRoomEnabled !== initial.fittingRoomEnabled ||
+      pdpImageSwapEnabled !== initial.pdpImageSwapEnabled ||
+      pdpImageSelector.trim() !== initial.pdpImageSelector.trim() ||
+      completeTheLookEnabled !== initial.completeTheLookEnabled ||
+      ctlHoldoutEnabled !== initial.ctlHoldoutEnabled ||
       position !== initial.position ||
       previewEnabled !== initial.previewEnabled ||
       String(previewDelay) !== String(initial.previewDelay) ||
@@ -1094,7 +1781,9 @@ export default function WidgetDesign() {
     );
   }, [
     brandColor, inlineEnabled, inlineText, inlineHideOos, floatPdp,
-    floatNonPdp, position, previewEnabled, previewDelay,
+    floatNonPdp, fittingRoomEnabled, pdpImageSwapEnabled, pdpImageSelector, completeTheLookEnabled,
+    ctlHoldoutEnabled, position,
+    previewEnabled, previewDelay,
     widgetEnabled, previewTheme, featured, quickPicks, initial,
   ]);
 
@@ -1107,6 +1796,10 @@ export default function WidgetDesign() {
     fd.set("float_pdp", String(floatPdp));
     fd.set("float_non_pdp", String(floatNonPdp));
     fd.set("fitting_room_enabled", String(fittingRoomEnabled));
+    fd.set("pdp_image_swap_enabled", String(pdpImageSwapEnabled));
+    fd.set("pdp_image_selector", pdpImageSelector);
+    fd.set("complete_the_look_enabled", String(completeTheLookEnabled));
+    fd.set("ctl_holdout_enabled", String(ctlHoldoutEnabled));
     fd.set("position", position);
     fd.set("preview_enabled", String(previewEnabled));
     fd.set("preview_delay", previewDelay);
@@ -1175,213 +1868,636 @@ export default function WidgetDesign() {
           {/* ── Settings ── */}
           <BlockStack gap="500">
             <SpotZone k="status" onSpot={setSpot}>
-            <Card padding="500">
-              <BlockStack gap="400">
-                <SectionHeading
-                  eyebrow="Visibility"
-                  title="Widget status"
-                  description="The master switch for the Try-On experience across your whole storefront."
-                  why="One switch to pause Try-On everywhere — during a theme change or a busy launch — without uninstalling anything or losing your settings."
-                />
-                <Checkbox
-                  label="Show the Try-On widget on my storefront"
+            <Card padding="0">
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 16,
+                  flexWrap: "wrap",
+                  padding: "18px 20px",
+                  background: widgetEnabled ? brand.successBg : brand.warningBg,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+                  {/* White icon holder so the status glyph pops against the tint */}
+                  <span
+                    style={{
+                      width: 46,
+                      height: 46,
+                      borderRadius: 12,
+                      background: brand.white,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                      boxShadow: "0 2px 8px rgba(11,18,32,0.10)",
+                    }}
+                  >
+                    <StoreOnlineIcon
+                      width={25}
+                      height={25}
+                      style={{ fill: widgetEnabled ? brand.success : brand.warning }}
+                    />
+                  </span>
+                  <BlockStack gap="100">
+                    <InlineStack gap="200" blockAlign="center">
+                      <Text as="h2" variant="headingMd">
+                        {widgetEnabled ? "Try-On is live on your storefront" : "Try-On is hidden"}
+                      </Text>
+                      <StatusPill
+                        label={widgetEnabled ? "Live" : "Hidden"}
+                        tone={widgetEnabled ? "good" : "watch"}
+                      />
+                    </InlineStack>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      The master switch. Turning it off pauses Try-On everywhere — during a theme
+                      change or a busy launch — without losing any of your settings.
+                    </Text>
+                  </BlockStack>
+                </div>
+                <ToggleSwitch
                   checked={widgetEnabled}
                   onChange={setWidgetEnabled}
+                  ariaLabel="Try-On master switch"
                 />
-                {!widgetEnabled && (
-                  <Banner tone="warning">
-                    The widget is hidden everywhere — shoppers can&apos;t start try-ons until you turn it back on.
-                  </Banner>
+              </div>
+            </Card>
+            </SpotZone>
+
+            <StepLabel
+              n={1}
+              title="Choose your style"
+              hint="The one decision that matters. Hover each option to watch it play out in the preview — picking one sets the right defaults, and every detail stays adjustable under Fine-tuning."
+            />
+
+            <Card padding="500">
+              <BlockStack gap="300">
+                <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                  <SpotZone k="styleMirror" onSpot={setSpot}>
+                    <StyleTile
+                      active={pdpImageSwapEnabled}
+                      title="On the product page"
+                      subtitle="No widget — the product photo IS the mirror"
+                      body="Shoppers tap Try On and the result paints straight onto your product photo, next to your price and Add to cart. Clean, native, zero popups."
+                      variant="mirror"
+                      onClick={() => {
+                        setPdpImageSwapEnabled(true);
+                        setInlineEnabled(true);
+                        setFloatPdp(false);
+                        setFloatNonPdp(false);
+                      }}
+                    />
+                  </SpotZone>
+                  <SpotZone k="styleWidget" onSpot={setSpot}>
+                    <StyleTile
+                      active={!pdpImageSwapEnabled}
+                      title="Inside the widget"
+                      subtitle="The classic Ello experience"
+                      body="Try On opens the Ello widget: shoppers browse your catalog, keep a wardrobe, and every result renders inside the panel. Your product page stays untouched."
+                      variant="widget"
+                      onClick={() => {
+                        setPdpImageSwapEnabled(false);
+                        setInlineEnabled(true);
+                        setFloatPdp(true);
+                        setFloatNonPdp(true);
+                      }}
+                    />
+                  </SpotZone>
+                </InlineGrid>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Nothing changes on your store until you hit Save.
+                </Text>
+              </BlockStack>
+            </Card>
+
+            <StepLabel
+              n={2}
+              title="The upsell"
+              hint="Complete the Look turns one try-on into a two-item order — Ello's biggest lever on average order value."
+            />
+
+            <SpotZone k="ctl" onSpot={setSpot}>
+            <Card padding="500">
+              <BlockStack gap="400">
+                {/* Identity + the real switch — turning this on is the decision,
+                    so it looks like one, not like a form checkbox. */}
+                <InlineStack align="space-between" blockAlign="center" wrap={false} gap="300">
+                  <InlineStack gap="300" blockAlign="center" wrap={false}>
+                    <IconChip
+                      source={CartUpIcon}
+                      tone={completeTheLookEnabled ? "good" : "neutral"}
+                      size={38}
+                    />
+                    <BlockStack gap="050">
+                      <InlineStack gap="200" blockAlign="center">
+                        <Text as="h2" variant="headingMd">Complete the Look</Text>
+                        <StatusPill
+                          label={completeTheLookEnabled ? "On" : "Off"}
+                          tone={completeTheLookEnabled ? "good" : "neutral"}
+                        />
+                      </InlineStack>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        Offer the matching piece the moment a try-on lands.
+                      </Text>
+                    </BlockStack>
+                  </InlineStack>
+                  <ToggleSwitch
+                    checked={completeTheLookEnabled}
+                    onChange={setCompleteTheLookEnabled}
+                    ariaLabel="Complete the Look"
+                  />
+                </InlineStack>
+
+                {/* Value banner — the differentiator, slimmed to headline + visual */}
+                <div
+                  style={{
+                    borderRadius: 12,
+                    padding: "18px 18px 16px",
+                    background: `linear-gradient(120deg, ${brand.ink} 0%, #16233F 55%, ${brand.blue700} 100%)`,
+                    display: "flex",
+                    gap: 18,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div style={{ flex: "1 1 220px", minWidth: 200 }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.12em", color: "#9DB4F0", textTransform: "uppercase" }}>
+                      Only on Ello · Average order value
+                    </div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: brand.white, marginTop: 6, fontFamily: "Georgia, 'Times New Roman', serif" }}>
+                      Sell the outfit, not the item.
+                    </div>
+                    <div style={{ fontSize: 12, lineHeight: 1.55, color: "#C7D2E8", marginTop: 7 }}>
+                      The offer lands at the exact moment shoppers are most convinced. No other
+                      try-on does this.
+                    </div>
+                  </div>
+                  <div style={{ flex: "0 0 auto", width: 172 }}>
+                    <div
+                      style={{
+                        borderRadius: 11,
+                        background: brand.white,
+                        boxShadow: "0 10px 26px rgba(0,0,0,0.35)",
+                        padding: "9px 10px",
+                      }}
+                    >
+                      <div style={{ fontSize: 9.5, fontWeight: 700, color: brand.ink }}>✨ Complete the look</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 6 }}>
+                        <div style={{ width: 22, height: 28, borderRadius: 5, background: brand.ink100, flexShrink: 0 }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 9, fontWeight: 600, color: brand.ink }}>Pants</div>
+                          <div style={{ fontSize: 8.5, color: brand.ink500 }}>$59</div>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: 8.5,
+                            fontWeight: 700,
+                            background: brand.blue,
+                            color: brand.white,
+                            borderRadius: 999,
+                            padding: "4px 8px",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          + Try it on too
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "center", color: "#9DB4F0", fontSize: 11, lineHeight: 1, margin: "5px 0" }}>↓</div>
+                    <div
+                      style={{
+                        borderRadius: 9,
+                        background: brand.ink,
+                        border: "1px solid rgba(255,255,255,0.18)",
+                        color: brand.white,
+                        textAlign: "center",
+                        fontSize: 9.5,
+                        fontWeight: 700,
+                        padding: "8px 6px",
+                      }}
+                    >
+                      Add both to cart · $108
+                    </div>
+                  </div>
+                </div>
+
+                {/* How it works — three icon steps instead of a paragraph */}
+                <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
+                  <MiniStep
+                    n={1}
+                    icon={CameraGlyphIcon}
+                    title="Shopper tries a piece"
+                    body="And is admiring the result"
+                  />
+                  <MiniStep
+                    n={2}
+                    icon={PlusCircleIcon}
+                    title="Ello offers the pair"
+                    body="One tap styles the full outfit on them"
+                  />
+                  <MiniStep
+                    n={3}
+                    icon={CartUpIcon}
+                    title="Both go in the cart"
+                    body="Two items, one order"
+                  />
+                </InlineGrid>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Hover this card to watch the offer play out in the preview.
+                  {completeTheLookEnabled
+                    ? " Test it live: open a product with a pairing and run a try-on."
+                    : ""}
+                </Text>
+
+                {/* Pairings — you stay in control, one line + one button */}
+                <div
+                  style={{
+                    border: `1px solid ${brand.ink100}`,
+                    borderRadius: 12,
+                    padding: "12px 14px",
+                    display: "flex",
+                    gap: 12,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <IconChip source={ConnectIcon} tone="money" size={34} />
+                  <div style={{ flex: "1 1 240px", minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: brand.ink }}>
+                      You choose what pairs with what
+                    </div>
+                    <div style={{ fontSize: 12, color: brand.ink500, marginTop: 2, lineHeight: 1.45 }}>
+                      Set Complementary products in Shopify&apos;s free Search &amp; Discovery app.
+                      No pairing set → no offer shown. Nothing random.
+                    </div>
+                  </div>
+                  <Button
+                    url={`https://admin.shopify.com/store/${initial.shopHandle}/apps/search-and-discovery`}
+                    external
+                  >
+                    Set up pairings
+                  </Button>
+                </div>
+
+                {/* 50/50 proof test — its own switch, only shown once CTL is on */}
+                {completeTheLookEnabled && (
+                  <div
+                    style={{
+                      border: `1px solid ${brand.ink100}`,
+                      borderRadius: 12,
+                      padding: "12px 14px",
+                      display: "flex",
+                      gap: 12,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <IconChip
+                      source={ChartCohortIcon}
+                      tone={ctlHoldoutEnabled ? "watch" : "neutral"}
+                      size={34}
+                    />
+                    <div style={{ flex: "1 1 240px", minWidth: 0 }}>
+                      <InlineStack gap="200" blockAlign="center">
+                        <span style={{ fontSize: 13, fontWeight: 600, color: brand.ink }}>
+                          50/50 proof test
+                        </span>
+                        {ctlHoldoutEnabled && <StatusPill label="Running" tone="watch" />}
+                      </InlineStack>
+                      <div style={{ fontSize: 12, color: brand.ink500, marginTop: 2, lineHeight: 1.45 }}>
+                        Half your shoppers see the offer, half never do. The order-value gap between
+                        the halves is the true lift — reported on the Analytics page, measured, not
+                        modeled.
+                      </div>
+                      {ctlHoldoutEnabled && (
+                        <div style={{ fontSize: 12, color: brand.ink500, marginTop: 4, lineHeight: 1.45 }}>
+                          Your preview link (?ello_ctl=1) always shows the offer, so you can demo it
+                          while the test runs. Turn it off once you have your number.
+                        </div>
+                      )}
+                    </div>
+                    <ToggleSwitch
+                      checked={ctlHoldoutEnabled}
+                      onChange={setCtlHoldoutEnabled}
+                      ariaLabel="50/50 proof test"
+                    />
+                  </div>
                 )}
               </BlockStack>
             </Card>
             </SpotZone>
 
+            <StepLabel
+              n={3}
+              title="Look & feel"
+              hint="Make Ello read as part of your store, not a third-party plugin."
+            />
+
             <SpotZone k="brand" onSpot={setSpot}>
-            <Card padding="500">
-              <BlockStack gap="400">
-                <SectionHeading
-                  eyebrow="Appearance"
-                  title="Brand color"
-                  description="Used for the Try-On button and floating widget. Text contrast is handled automatically."
-                  why="A widget in your brand color reads as part of your store, not a third-party plugin. Shoppers trust it more — and click it more."
-                />
-                <InlineStack gap="300" blockAlign="center" wrap>
-                  {COLOR_PRESETS.map((preset) => (
-                    <ColorSwatch
-                      key={preset}
-                      value={preset}
-                      selected={brandColor.toLowerCase() === preset.toLowerCase()}
-                      onClick={() => setBrandColor(preset)}
-                    />
-                  ))}
-                  <label
-                    htmlFor="custom-color"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 8,
-                      cursor: "pointer",
-                      padding: "7px 12px",
-                      borderRadius: 10,
-                      border: `1px solid ${brand.ink200}`,
-                      background: brand.white,
-                    }}
-                  >
-                    <span style={{ width: 18, height: 18, borderRadius: 5, background: brandColor, border: `1px solid ${brand.ink200}` }} />
-                    <span style={{ fontSize: 13, color: brand.ink700 }}>Custom</span>
-                    <input
-                      id="custom-color"
-                      type="color"
-                      value={normalizeHex(brandColor)}
-                      onChange={(e) => setBrandColor(e.target.value)}
-                      style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}
-                    />
-                  </label>
-                  <Text as="span" variant="bodySm" tone="subdued">{brandColor.toUpperCase()}</Text>
-                </InlineStack>
-              </BlockStack>
-            </Card>
+            <TuneCard
+              icon={ColorIcon}
+              title="Brand color"
+              description="Used for the Try-On button and floating widget. Text contrast is handled automatically."
+              why="A widget in your brand color reads as part of your store, not a third-party plugin. Shoppers trust it more — and click it more."
+            >
+              {/* Live swatch preview — shoppers see the exact button + bubble in
+                  the chosen color, so the color stops being an abstract hex. */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 14,
+                  flexWrap: "wrap",
+                  borderRadius: 12,
+                  border: `1px solid ${brand.ink100}`,
+                  background: brand.ink50,
+                  padding: "16px 18px",
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    background: brandColor,
+                    color: readableTextColor(brandColor),
+                    fontSize: 14,
+                    fontWeight: 700,
+                    padding: "10px 18px",
+                    borderRadius: 10,
+                    boxShadow: "0 4px 12px rgba(11,18,32,0.14)",
+                  }}
+                >
+                  <CameraIcon color={readableTextColor(brandColor)} size={17} />
+                  {inlineText || "Try On"}
+                </span>
+                <span
+                  style={{
+                    width: 46,
+                    height: 46,
+                    borderRadius: "50%",
+                    background: brandColor,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    boxShadow: "0 6px 16px rgba(11,18,32,0.18)",
+                  }}
+                >
+                  <HangerIcon color={readableTextColor(brandColor)} size={24} />
+                </span>
+                <BlockStack gap="050">
+                  <Text as="span" variant="bodySm" fontWeight="semibold">This is your look</Text>
+                  <Text as="span" variant="bodySm" tone="subdued">Button and floating widget, live.</Text>
+                </BlockStack>
+              </div>
+
+              <InlineStack gap="300" blockAlign="center" wrap>
+                {COLOR_PRESETS.map((preset) => (
+                  <ColorSwatch
+                    key={preset}
+                    value={preset}
+                    selected={brandColor.toLowerCase() === preset.toLowerCase()}
+                    onClick={() => setBrandColor(preset)}
+                  />
+                ))}
+                <label
+                  htmlFor="custom-color"
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    cursor: "pointer",
+                    padding: "7px 12px",
+                    borderRadius: 10,
+                    border: `1px solid ${brand.ink200}`,
+                    background: brand.white,
+                  }}
+                >
+                  <span style={{ width: 18, height: 18, borderRadius: 5, background: brandColor, border: `1px solid ${brand.ink200}` }} />
+                  <span style={{ fontSize: 13, color: brand.ink700 }}>Custom</span>
+                  <input
+                    id="custom-color"
+                    type="color"
+                    value={normalizeHex(brandColor)}
+                    onChange={(e) => setBrandColor(e.target.value)}
+                    style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}
+                  />
+                </label>
+                <Text as="span" variant="bodySm" tone="subdued">{brandColor.toUpperCase()}</Text>
+              </InlineStack>
+            </TuneCard>
             </SpotZone>
 
+            {/* ── Fine-tuning drawer: everything a first-time merchant doesn't
+                need. Collapsed by default so the page reads as 3 decisions. ── */}
+            <Box paddingBlockStart="300">
+              <Card padding="0">
+                <button
+                  type="button"
+                  onClick={() => setShowFineTuning((v) => !v)}
+                  aria-expanded={showFineTuning}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    padding: "16px 20px",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <InlineStack align="space-between" blockAlign="center" wrap={false}>
+                    <InlineStack gap="300" blockAlign="center" wrap={false}>
+                      <IconChip source={SettingsIcon} tone="neutral" size={34} />
+                      <BlockStack gap="050">
+                        <Text as="h3" variant="headingMd">Fine-tuning</Text>
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Button text, floating widget, popups, and what shows inside the widget.
+                          Optional — your style choice already set good defaults.
+                        </Text>
+                      </BlockStack>
+                    </InlineStack>
+                    <span
+                      aria-hidden
+                      style={{
+                        display: "inline-flex",
+                        flexShrink: 0,
+                        transition: "transform 160ms ease",
+                        transform: showFineTuning ? "rotate(180deg)" : "none",
+                      }}
+                    >
+                      <ChevronDownIcon width={20} height={20} style={{ fill: brand.ink500 }} />
+                    </span>
+                  </InlineStack>
+                </button>
+              </Card>
+            </Box>
+
+            {showFineTuning && (<>
+
             <SpotZone k="inline" onSpot={setSpot}>
-            <Card padding="500">
-              <BlockStack gap="400">
-                <SectionHeading
-                  eyebrow="Product pages"
-                  title="Inline Try-On button"
-                  description="Shown directly on product pages, beside Add to cart."
-                  why="It sits exactly where shoppers already take action — right beside Add to cart. Trying on becomes a natural step toward buying, not a detour."
-                />
-                <Checkbox
-                  label="Show the inline Try-On button"
-                  checked={inlineEnabled}
-                  onChange={setInlineEnabled}
-                />
-                <TextField
-                  label="Button text"
-                  value={inlineText}
-                  onChange={setInlineText}
-                  autoComplete="off"
-                  maxLength={MAX_INLINE_TEXT}
-                  disabled={!inlineEnabled}
-                  helpText={`Up to ${MAX_INLINE_TEXT} characters.`}
-                />
-                <Checkbox
-                  label="Hide on out-of-stock products"
-                  checked={inlineHideOos}
-                  onChange={setInlineHideOos}
-                  disabled={!inlineEnabled}
-                />
-              </BlockStack>
-            </Card>
+            <TuneCard
+              icon={ButtonIcon}
+              title="Inline Try-On button"
+              description="Shown directly on product pages, beside Add to cart."
+              why="It sits exactly where shoppers already take action — right beside Add to cart. Trying on becomes a natural step toward buying, not a detour."
+              toggle={{ checked: inlineEnabled, onChange: setInlineEnabled }}
+            >
+              {inlineEnabled && (
+                <>
+                  <TextField
+                    label="Button text"
+                    value={inlineText}
+                    onChange={setInlineText}
+                    autoComplete="off"
+                    maxLength={MAX_INLINE_TEXT}
+                    helpText={`Up to ${MAX_INLINE_TEXT} characters.`}
+                  />
+                  <Checkbox
+                    label="Hide on out-of-stock products"
+                    checked={inlineHideOos}
+                    onChange={setInlineHideOos}
+                  />
+                </>
+              )}
+            </TuneCard>
             </SpotZone>
 
             <SpotZone k="float" onSpot={setSpot}>
-            <Card padding="500">
-              <BlockStack gap="400">
-                <SectionHeading
-                  eyebrow="Everywhere"
-                  title="Floating widget"
-                  description="The round Try-On bubble that floats in a bottom corner."
-                  why="This is the shopper's Try-On hub — their wardrobe, their past try-ons, and new looks, one tap away from any page of your store."
-                />
-                <Checkbox label="Show on product pages" checked={floatPdp} onChange={setFloatPdp} />
-                <Checkbox label="Show on other pages (home, collections…)" checked={floatNonPdp} onChange={setFloatNonPdp} />
-                <BlockStack gap="150">
-                  <Text as="span" variant="bodyMd">Position</Text>
-                  <ButtonGroup variant="segmented">
-                    <Button pressed={position === "left"} onClick={() => setPosition("left")}>Bottom left</Button>
-                    <Button pressed={position === "right"} onClick={() => setPosition("right")}>Bottom right</Button>
-                  </ButtonGroup>
-                </BlockStack>
+            <TuneCard
+              icon={ChatIcon}
+              title="Floating widget"
+              description="The round Try-On bubble that floats in a bottom corner."
+              why="This is the shopper's Try-On hub — their wardrobe, their past try-ons, and new looks, one tap away from any page of your store."
+            >
+              <SwitchRow
+                label="Show on product pages"
+                checked={floatPdp}
+                onChange={setFloatPdp}
+              />
+              <SwitchRow
+                label="Show on other pages"
+                sublabel="Home, collections, and the rest of your store"
+                checked={floatNonPdp}
+                onChange={setFloatNonPdp}
+              />
+              <BlockStack gap="150">
+                <Text as="span" variant="bodyMd">Position</Text>
+                <ButtonGroup variant="segmented">
+                  <Button pressed={position === "left"} onClick={() => setPosition("left")}>Bottom left</Button>
+                  <Button pressed={position === "right"} onClick={() => setPosition("right")}>Bottom right</Button>
+                </ButtonGroup>
               </BlockStack>
-            </Card>
+            </TuneCard>
             </SpotZone>
 
-            <Card padding="500">
-              <BlockStack gap="400">
-                <SectionHeading
-                  eyebrow="Header / menu"
-                  title="Fitting Room hub"
-                  description="A launcher-less entry — like a “Fitting room” link in your header — that opens the shopper's saved wardrobe and full collection."
-                  why="Lets shoppers reopen their try-ons to decide what to buy, with no floating bubble. Add the “Ello Fitting Room” block to your header (or a menu link pointing to #ello-fitting-room), then turn it on or off here."
+            <TuneCard
+              icon={CollectionIcon}
+              title="Fitting Room hub"
+              description="A launcher-less entry — like a “Fitting room” link in your header — that opens the shopper's saved wardrobe and full collection."
+              why="Lets shoppers reopen their try-ons to decide what to buy, with no floating bubble."
+              toggle={{ checked: fittingRoomEnabled, onChange: setFittingRoomEnabled }}
+            >
+              <Box background="bg-surface-secondary" borderRadius="200" padding="300">
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Add the “Ello Fitting Room” block to your header (or a menu link pointing to
+                  #ello-fitting-room), then turn it on here.
+                </Text>
+              </Box>
+            </TuneCard>
+
+            {/* Advanced escape hatch for the on-the-product-page style: only
+                relevant when the mirror is the chosen style, and only needed
+                on the rare theme whose gallery defeats automatic detection —
+                so it hides unless the mirror is on. */}
+            {pdpImageSwapEnabled && (
+              <TuneCard
+                icon={ProductIcon}
+                title="Product photo targeting"
+                description="Ello finds your product photo automatically. If a heavily customized theme trips it up, point Ello at the right image with a CSS selector."
+                why="A support-level override: paste a selector once instead of waiting on a widget update. Leave blank on almost every store."
+              >
+                <TextField
+                  label="Product image CSS selector"
+                  value={pdpImageSelector}
+                  onChange={setPdpImageSelector}
+                  autoComplete="off"
+                  maxLength={300}
+                  placeholder=".product__media img"
+                  helpText="Optional. Ello verifies the match — if the selector is invalid or points at a hidden image, automatic detection takes over, so this can't break your page."
+                  monospaced
                 />
-                <Checkbox label="Enable the Fitting Room hub" checked={fittingRoomEnabled} onChange={setFittingRoomEnabled} />
-              </BlockStack>
-            </Card>
+              </TuneCard>
+            )}
 
             <SpotZone k="popup" onSpot={setSpot}>
-            <Card padding="500">
-              <BlockStack gap="400">
-                <SectionHeading
-                  eyebrow="Desktop"
-                  title="Preview popup"
-                  description="An optional nudge inviting desktop shoppers to try the item on. Hover this card to see it in the preview."
-                  why="A desktop-only invitation to generate a look — and it's polite about it. If a shopper closes it once, it never pops up for them again."
-                />
-                <Checkbox label="Show the preview popup on desktop" checked={previewEnabled} onChange={setPreviewEnabled} />
-                <Box maxWidth="240px">
-                  <TextField
-                    label="Delay before showing (seconds)"
-                    type="number"
-                    value={previewDelay}
-                    onChange={setPreviewDelay}
-                    autoComplete="off"
-                    min={0}
-                    max={60}
-                    disabled={!previewEnabled}
-                  />
-                </Box>
-                <BlockStack gap="150">
-                  <Text as="span" variant="bodyMd">Theme</Text>
-                  <ButtonGroup variant="segmented">
-                    <Button
-                      pressed={previewTheme === "light"}
-                      onClick={() => setPreviewTheme("light")}
-                      disabled={!previewEnabled}
-                    >
-                      Light
-                    </Button>
-                    <Button
-                      pressed={previewTheme === "dark"}
-                      onClick={() => setPreviewTheme("dark")}
-                      disabled={!previewEnabled}
-                    >
-                      Dark
-                    </Button>
-                  </ButtonGroup>
-                </BlockStack>
-              </BlockStack>
-            </Card>
+            <TuneCard
+              icon={DesktopIcon}
+              title="Preview popup"
+              description="An optional nudge inviting desktop shoppers to try the item on. Hover this card to see it in the preview."
+              why="A desktop-only invitation to generate a look — and it's polite about it. If a shopper closes it once, it never pops up for them again."
+              toggle={{ checked: previewEnabled, onChange: setPreviewEnabled }}
+            >
+              {previewEnabled && (
+                <>
+                  <Box maxWidth="240px">
+                    <TextField
+                      label="Delay before showing (seconds)"
+                      type="number"
+                      value={previewDelay}
+                      onChange={setPreviewDelay}
+                      autoComplete="off"
+                      min={0}
+                      max={60}
+                    />
+                  </Box>
+                  <BlockStack gap="150">
+                    <Text as="span" variant="bodyMd">Theme</Text>
+                    <ButtonGroup variant="segmented">
+                      <Button pressed={previewTheme === "light"} onClick={() => setPreviewTheme("light")}>
+                        Light
+                      </Button>
+                      <Button pressed={previewTheme === "dark"} onClick={() => setPreviewTheme("dark")}>
+                        Dark
+                      </Button>
+                    </ButtonGroup>
+                  </BlockStack>
+                </>
+              )}
+            </TuneCard>
             </SpotZone>
 
-            <Card padding="500">
-              <BlockStack gap="400">
-                <SectionHeading
-                  eyebrow="Curation"
-                  title="Inside the widget"
-                  description="This is exactly what shoppers see when the widget opens. Pick a featured item and quick picks from your catalog, or leave them empty and Ello curates automatically."
-                  why="First impressions: the featured item and quick picks are the first thing shoppers see when the widget opens. A strong feature and fresh picks set the tone for what to try on."
-                />
-                <InlineStack gap="200" wrap>
-                  <Button onClick={pickFeatured}>{featured ? "⭐ Change featured" : "⭐ Pick featured"}</Button>
-                  <Button onClick={pickQuickPicks}>
-                    {quickPicks.length > 0 ? "🔥 Edit quick picks" : "🔥 Pick quick picks"}
-                  </Button>
-                </InlineStack>
-                <WidgetOpenPreview
-                  featured={featured}
-                  quickPicks={quickPicks}
-                  money={money}
-                  onRemoveFeatured={() => setFeatured(null)}
-                  onRemoveQuickPick={(id) => setQuickPicks((prev) => prev.filter((x) => x.id !== id))}
-                />
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Up to {MAX_QUICK_PICKS} quick picks. Remove an item with the × on its card.
-                </Text>
-              </BlockStack>
-            </Card>
+
+            <TuneCard
+              icon={ProductIcon}
+              title="Inside the widget"
+              description="Exactly what shoppers see when the widget opens. Pick a featured item and quick picks, or leave them empty and Ello curates automatically."
+              why="First impressions: the featured item and quick picks are the first thing shoppers see when the widget opens. A strong feature and fresh picks set the tone for what to try on."
+            >
+              <InlineStack gap="200" wrap>
+                <Button onClick={pickFeatured}>{featured ? "⭐ Change featured" : "⭐ Pick featured"}</Button>
+                <Button onClick={pickQuickPicks}>
+                  {quickPicks.length > 0 ? "🔥 Edit quick picks" : "🔥 Pick quick picks"}
+                </Button>
+              </InlineStack>
+              <WidgetOpenPreview
+                featured={featured}
+                quickPicks={quickPicks}
+                money={money}
+                onRemoveFeatured={() => setFeatured(null)}
+                onRemoveQuickPick={(id) => setQuickPicks((prev) => prev.filter((x) => x.id !== id))}
+              />
+              <Text as="p" variant="bodySm" tone="subdued">
+                Up to {MAX_QUICK_PICKS} quick picks. Remove an item with the × on its card.
+              </Text>
+            </TuneCard>
+            </>)}
+
+            {/* Breathing room so the last card never hugs the bottom edge. */}
+            <Box paddingBlockEnd="800" />
           </BlockStack>
 
           {/* ── Sticky live preview ── */}
@@ -1403,6 +2519,8 @@ export default function WidgetDesign() {
                   previewEnabled={previewEnabled}
                   previewTheme={previewTheme}
                   previewDelay={previewDelay}
+                  pdpImageSwapEnabled={pdpImageSwapEnabled}
+                  completeTheLookEnabled={completeTheLookEnabled}
                   spot={spot}
                 />
                 <Divider />

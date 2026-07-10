@@ -63,12 +63,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         includedTryons = entry[1].includedTryons;
       }
       const now = new Date().toISOString();
+      // Take the MOST RECENT period that contains `now`. A plain maybeSingle()
+      // throws (and silently zeros the usage card) whenever two periods overlap
+      // — which happens on reinstalls / plan changes that mint a fresh period
+      // before the old one's end passes. order+limit(1) is overlap-proof.
       const { data: period } = await supabaseAdmin
         .from("vto_usage_periods")
         .select("tryons_used, period_start, period_end")
         .eq("subscription_id", sub.id)
         .lte("period_start", now)
         .gte("period_end", now)
+        .order("period_start", { ascending: false })
+        .limit(1)
         .maybeSingle();
       if (period) {
         tryonsUsed = Number(period.tryons_used ?? 0);

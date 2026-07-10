@@ -56,6 +56,14 @@ export async function loader({ request }: LoaderFunctionArgs) {
     return jsonError(400, "Missing 'shop' or 'store_slug' query parameter");
   }
 
+  // `shop` is interpolated into a PostgREST .or() filter below, so reject
+  // anything outside the legit shop-domain/slug charset — a comma or paren
+  // could otherwise inject extra filter terms (e.g. match a different store).
+  // (storeSlug is only ever used via .eq(), which PostgREST parameterizes.)
+  if (shop && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(shop)) {
+    return jsonError(400, "Invalid 'shop' parameter");
+  }
+
   try {
     // 1. Resolve store config.
     const storeQuery = supabaseAdmin

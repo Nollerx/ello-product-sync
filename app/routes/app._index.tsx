@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { FunctionComponent, ReactNode, SVGProps } from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "react-router";
 import {
@@ -23,8 +24,40 @@ import { getAppEmbedEditorUrl, getInlineTryOnBlockEditorUrl } from "../lib/onboa
 import { InlineButtonPlacementHelp } from "../components/inline-placement-help";
 import { getPlanConfig } from "../lib/shopify-billing.server";
 import { resolveStorefront } from "../lib/storefront-names.server";
+import {
+  ButtonIcon,
+  CameraIcon,
+  CartSaleIcon,
+  CartUpIcon,
+  CashDollarIcon,
+  ChartFunnelIcon,
+  CheckIcon,
+  ClipboardChecklistIcon,
+  ClockIcon,
+  ConnectIcon,
+  CreditCardIcon,
+  DatabaseConnectIcon,
+  PaintBrushFlatIcon,
+  PersonIcon,
+  ProductIcon,
+  SettingsIcon,
+  StoreOnlineIcon,
+  TargetIcon,
+  ThemeIcon,
+  ToggleOnIcon,
+  ViewIcon,
+} from "@shopify/polaris-icons";
 import { brand } from "../components/ui";
-import { FunnelBar, KpiTile, TimeRangeSelector } from "../components/analytics";
+import {
+  FunnelBar,
+  HeadlineStrip,
+  IconChip,
+  KpiTile,
+  StatusPill,
+  TimeRangeSelector,
+  verdictFromDelta,
+  type Tone,
+} from "../components/analytics";
 import { parseRange, pctDelta, rangeWindow, RANGE_DAYS } from "../lib/timerange";
 import {
   buildSessions,
@@ -81,12 +114,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let usagePeriod: { tryons_used: number; period_end: string } | null = null;
   if (sub) {
     const now = new Date().toISOString();
+    // Most recent period containing `now`. maybeSingle() alone throws (and
+    // zeros the Home usage card) when two periods overlap — a reinstall /
+    // plan-change edge case. order+limit(1) is overlap-proof.
     const { data } = await supabaseAdmin
       .from("vto_usage_periods")
       .select("tryons_used, period_end")
       .eq("subscription_id", sub.id)
       .lte("period_start", now)
       .gte("period_end", now)
+      .order("period_start", { ascending: false })
+      .limit(1)
       .maybeSingle();
     usagePeriod = data;
   }
@@ -308,6 +346,9 @@ export default function Index() {
   const effectiveHasPlan = hasPlan || skipBilling;
   const showBillingActivationPending = billingActivationPending && !hasPlan && !skipBilling;
   const allOnboarded = effectiveHasPlan && storeConnected && storefrontLive;
+  const checklistTotal = skipBilling ? 2 : 3;
+  const checklistDone =
+    (skipBilling ? 0 : hasPlan ? 1 : 0) + (storeConnected ? 1 : 0) + (storefrontLive ? 1 : 0);
   const activationRefreshLimitReached =
     showBillingActivationPending && activationRefreshCount >= MAX_ACTIVATION_REFRESH_ATTEMPTS;
   const pendingPlanLabel = pendingPlanDisplayName ? `${pendingPlanDisplayName} plan` : "your plan";
@@ -454,58 +495,67 @@ export default function Index() {
           </Banner>
         )}
 
-        {/* ── Onboarding checklist (hidden once all 3 done) ── */}
+        {/* ── Onboarding checklist (hidden once all steps done) ── */}
         {!allOnboarded && (
           <Card>
             <BlockStack gap="400">
-              <Text as="h2" variant="headingMd">Getting Started</Text>
-              <Text as="p" variant="bodyMd" tone="subdued">
-                Complete these steps to go live with virtual try-on.
-              </Text>
+              <InlineStack align="space-between" blockAlign="center">
+                <InlineStack gap="300" blockAlign="center">
+                  <IconChip source={ClipboardChecklistIcon} tone="money" size={34} />
+                  <BlockStack gap="050">
+                    <Text as="h2" variant="headingMd">Getting started</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Complete these steps to go live with virtual try-on.
+                    </Text>
+                  </BlockStack>
+                </InlineStack>
+                <StatusPill
+                  label={`${checklistDone} of ${checklistTotal} done`}
+                  tone={checklistDone === checklistTotal ? "good" : "neutral"}
+                />
+              </InlineStack>
+              <ProgressBar
+                progress={Math.round((checklistDone / checklistTotal) * 100)}
+                tone="highlight"
+                size="small"
+              />
               <BlockStack gap="300">
                 {!skipBilling && (
-                  <InlineStack align="space-between" blockAlign="center">
-                    <InlineStack gap="300" blockAlign="center">
-                      <Badge tone={hasPlan ? "success" : showBillingActivationPending ? "info" : "attention"}>
-                        {hasPlan ? "✓" : showBillingActivationPending ? "…" : "1"}
-                      </Badge>
-                      <Text as="span" variant="bodyMd"
-                        tone={hasPlan ? "subdued" : showBillingActivationPending ? "subdued" : undefined}
-                      >
-                        {showBillingActivationPending ? "Plan activation in progress" : "Choose a plan"}
-                      </Text>
-                    </InlineStack>
-                    {!hasPlan && !showBillingActivationPending && (
-                      <Button onClick={() => navigate("/app/billing")} size="slim" variant="primary">Choose Plan</Button>
-                    )}
-                  </InlineStack>
+                  <ChecklistStep
+                    state={hasPlan ? "done" : showBillingActivationPending ? "waiting" : "pending"}
+                    icon={CreditCardIcon}
+                    label={showBillingActivationPending ? "Plan activation in progress" : "Choose a plan"}
+                    action={
+                      !hasPlan && !showBillingActivationPending ? (
+                        <Button onClick={() => navigate("/app/billing")} size="slim" variant="primary">Choose plan</Button>
+                      ) : undefined
+                    }
+                  />
                 )}
 
-                <InlineStack align="space-between" blockAlign="center">
-                  <InlineStack gap="300" blockAlign="center">
-                    <Badge tone={storeConnected ? "success" : "attention"}>{storeConnected ? "✓" : "2"}</Badge>
-                    <Text as="span" variant="bodyMd" tone={storeConnected ? "subdued" : undefined}>
-                      Connect your store
-                    </Text>
-                  </InlineStack>
-                  {!storeConnected && (
-                    <Button onClick={handleRetrySync} size="slim" loading={isLoading}>Reconnect</Button>
-                  )}
-                </InlineStack>
+                <ChecklistStep
+                  state={storeConnected ? "done" : "pending"}
+                  icon={ConnectIcon}
+                  label="Connect your store"
+                  action={
+                    !storeConnected ? (
+                      <Button onClick={handleRetrySync} size="slim" loading={isLoading}>Reconnect</Button>
+                    ) : undefined
+                  }
+                />
 
-                <InlineStack align="space-between" blockAlign="center">
-                  <InlineStack gap="300" blockAlign="center">
-                    <Badge tone={storefrontLive ? "success" : "attention"}>{storefrontLive ? "✓" : "3"}</Badge>
-                    <Text as="span" variant="bodyMd" tone={storefrontLive ? "subdued" : undefined}>
-                      Turn on the Ello widget
-                    </Text>
-                  </InlineStack>
-                  {!storefrontLive && (
-                    <Button onClick={openAppEmbed} size="slim">
-                      {themeUnreadable ? "Set up" : "Turn on Ello"}
-                    </Button>
-                  )}
-                </InlineStack>
+                <ChecklistStep
+                  state={storefrontLive ? "done" : "pending"}
+                  icon={ToggleOnIcon}
+                  label="Turn on the Ello widget"
+                  action={
+                    !storefrontLive ? (
+                      <Button onClick={openAppEmbed} size="slim">
+                        {themeUnreadable ? "Set up" : "Turn on Ello"}
+                      </Button>
+                    ) : undefined
+                  }
+                />
               </BlockStack>
             </BlockStack>
           </Card>
@@ -545,20 +595,39 @@ export default function Index() {
           </Banner>
         )}
 
+        {/* ── Plain-English TL;DR (only once there's signal) ── */}
+        {widgetOpens > 0 && (
+          <HeadlineStrip>
+            Shoppers opened Ello <strong>{widgetOpens.toLocaleString()}</strong> times and ran{" "}
+            <strong>{totalTryons.toLocaleString()}</strong> try-on{totalTryons === 1 ? "" : "s"}
+            {totalCartAdds > 0 && (
+              <>
+                , adding <strong>{totalCartAdds.toLocaleString()}</strong> item{totalCartAdds === 1 ? "" : "s"} to cart
+              </>
+            )}
+            {attributedRevenue > 0 && (
+              <>
+                {" "}— <strong>{money(attributedRevenue)}</strong> in attributed sales
+              </>
+            )}{" "}
+            over the last {RANGE_DAYS[range]} days.
+          </HeadlineStrip>
+        )}
+
         {/* ── Controls row ── */}
         <InlineStack align="space-between" blockAlign="center">
           <TimeRangeSelector />
-          <InlineStack gap="200">
-            <Button onClick={() => navigate("/app/widget-design")} variant="tertiary">Customize widget</Button>
-            <Button onClick={() => navigate("/app/analytics")}>Full analytics</Button>
-          </InlineStack>
+          <Button onClick={() => navigate("/app/analytics")}>Full analytics</Button>
         </InlineStack>
 
         {/* ── Revenue hero + widget-to-cart journey ── */}
         <Card padding="500">
           <InlineGrid columns={{ xs: "1fr", md: "1fr 1fr" }} gap="500">
-            <BlockStack gap="150">
-              <Text as="span" variant="bodySm" tone="subdued">Attributed revenue</Text>
+            <BlockStack gap="200">
+              <InlineStack gap="200" blockAlign="center">
+                <IconChip source={CashDollarIcon} tone="money" />
+                <Text as="span" variant="bodySm" tone="subdued">Attributed revenue</Text>
+              </InlineStack>
               <span style={{ fontSize: 42, fontWeight: 650, lineHeight: 1.05, color: "#3B63D4", letterSpacing: "-0.01em" }}>
                 {money(attributedRevenue)}
               </span>
@@ -579,7 +648,10 @@ export default function Index() {
               )}
             </BlockStack>
             <BlockStack gap="300">
-              <Text as="span" variant="bodySm" tone="subdued">Widget-to-cart journey</Text>
+              <InlineStack gap="200" blockAlign="center">
+                <IconChip source={ChartFunnelIcon} tone="neutral" />
+                <Text as="span" variant="bodySm" tone="subdued">Widget-to-cart journey</Text>
+              </InlineStack>
               <FunnelBar label="Widget opens" value={widgetOpens} max={widgetOpens} />
               <FunnelBar label="Try-ons" value={totalTryons} max={widgetOpens} />
               <FunnelBar label="Cart adds" value={totalCartAdds} max={widgetOpens} />
@@ -587,15 +659,33 @@ export default function Index() {
           </InlineGrid>
         </Card>
 
-        {/* ── KPI row ── */}
+        {/* ── KPI row (same icon vocabulary as the analytics page) ── */}
         <InlineGrid columns={{ xs: 1, sm: 3 }} gap="400">
-          <KpiTile label="Total try-ons" value={totalTryons.toLocaleString()} delta={tryonsDelta} hint={`Last ${RANGE_DAYS[range]} days`} />
+          <KpiTile
+            label="Total try-ons"
+            value={totalTryons.toLocaleString()}
+            delta={tryonsDelta}
+            hint={`Last ${RANGE_DAYS[range]} days`}
+            icon={CameraIcon}
+            iconTone="neutral"
+            status={verdictFromDelta(tryonsDelta)}
+          />
           <KpiTile
             label="Cart conversion"
             value={cartConversionPct != null ? `${cartConversionPct}%` : "—"}
             hint="Try-on sessions that added to cart"
+            icon={TargetIcon}
+            iconTone="money"
           />
-          <KpiTile label="Cart adds" value={totalCartAdds.toLocaleString()} delta={cartsDelta} hint="After a try-on" />
+          <KpiTile
+            label="Cart adds"
+            value={totalCartAdds.toLocaleString()}
+            delta={cartsDelta}
+            hint="After a try-on"
+            icon={CartUpIcon}
+            iconTone="neutral"
+            status={verdictFromDelta(cartsDelta)}
+          />
         </InlineGrid>
 
         <Layout>
@@ -606,7 +696,8 @@ export default function Index() {
                 <BlockStack gap="300">
                   <InlineStack align="space-between" blockAlign="center" wrap={false}>
                     <InlineStack gap="300" blockAlign="center">
-                      <Text as="h2" variant="headingMd">Current Plan</Text>
+                      <IconChip source={CreditCardIcon} tone="money" size={34} />
+                      <Text as="h2" variant="headingMd">Current plan</Text>
                       <Badge tone={showExternalBillingPlaceholder || isDeveloperPlan ? "info" : "success"}>
                         {currentPlanBadgeLabel}
                       </Badge>
@@ -663,7 +754,10 @@ export default function Index() {
             <Card>
               <BlockStack gap="400">
                 <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingMd">Storefront</Text>
+                  <InlineStack gap="300" blockAlign="center">
+                    <IconChip source={StoreOnlineIcon} tone="neutral" size={34} />
+                    <Text as="h2" variant="headingMd">Storefront</Text>
+                  </InlineStack>
                   {!isLoading && themeStatusOk && storeConnected && storefrontLive && (
                     <Badge tone="success">All systems operational</Badge>
                   )}
@@ -688,18 +782,20 @@ export default function Index() {
                 )}
 
                 <BlockStack gap="300">
-                  <PlacementRow {...embedRow} />
-                  <PlacementRow {...inlineRow} />
+                  <PlacementRow {...embedRow} icon={ThemeIcon} />
+                  <PlacementRow {...inlineRow} icon={ButtonIcon} />
 
                   {/* Plain-language guide for placing the inline button under
                       Add-to-cart on nested themes (Horizon). Shared component. */}
                   <InlineButtonPlacementHelp />
 
                   <InlineStack align="space-between" blockAlign="center">
-                    <InlineStack gap="200" blockAlign="center">
-                      <Badge tone={storeConnected ? "success" : "attention"}>
-                        {storeConnected ? "✓" : "!"}
-                      </Badge>
+                    <InlineStack gap="300" blockAlign="center">
+                      <IconChip
+                        source={DatabaseConnectIcon}
+                        tone={storeConnected ? "good" : "watch"}
+                        size={34}
+                      />
                       <Text as="span" variant="bodyMd">
                         {storeConnected ? "Connected to Ello VTO Cloud" : "Connection issue — retrying"}
                       </Text>
@@ -726,65 +822,111 @@ export default function Index() {
           </Layout.Section>
         </Layout>
 
+        {/* ── Quick actions ── */}
+        <Card padding="500">
+          <BlockStack gap="400">
+            <Text as="h2" variant="headingMd">Quick actions</Text>
+            <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
+              <QuickAction
+                icon={PaintBrushFlatIcon}
+                label="Customize widget"
+                sublabel="Colors, text & button style"
+                onClick={() => navigate("/app/widget-design")}
+              />
+              <QuickAction
+                icon={ProductIcon}
+                label="Products"
+                sublabel="Choose what's try-on enabled"
+                onClick={() => navigate("/app/products")}
+              />
+              <QuickAction
+                icon={PersonIcon}
+                label="Leads"
+                sublabel="Shoppers who shared an email"
+                onClick={() => navigate("/app/leads")}
+              />
+              {skipBilling ? (
+                <QuickAction
+                  icon={SettingsIcon}
+                  label="Settings"
+                  sublabel="Widget & app preferences"
+                  onClick={() => navigate("/app/settings")}
+                />
+              ) : (
+                <QuickAction
+                  icon={CreditCardIcon}
+                  label="Plan & billing"
+                  sublabel="Usage, upgrades & limits"
+                  onClick={() => navigate("/app/billing")}
+                />
+              )}
+            </InlineGrid>
+          </BlockStack>
+        </Card>
+
         {/* ── Recent shopper sessions ── */}
         <Card padding="500">
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="center">
-              <BlockStack gap="100">
-                <Text as="h2" variant="headingMd">Recent sessions</Text>
-                <Text as="p" variant="bodySm" tone="subdued">The latest shoppers to use the widget · last 7 days</Text>
-              </BlockStack>
+              <InlineStack gap="300" blockAlign="center">
+                <IconChip source={PersonIcon} tone="neutral" size={34} />
+                <BlockStack gap="050">
+                  <Text as="h2" variant="headingMd">Recent sessions</Text>
+                  <Text as="p" variant="bodySm" tone="subdued">The latest shoppers to use the widget · last 7 days</Text>
+                </BlockStack>
+              </InlineStack>
               <Button variant="plain" onClick={() => navigate("/app/analytics")}>View all analytics</Button>
             </InlineStack>
             {recent.length === 0 ? (
-              <Box paddingBlock="300">
-                <Text as="p" tone="subdued">No shopper sessions yet. They&apos;ll appear here as soon as someone opens the widget.</Text>
+              <Box paddingBlock="400">
+                <BlockStack gap="200" inlineAlign="center">
+                  <IconChip source={ViewIcon} tone="neutral" size={38} />
+                  <Text as="p" tone="subdued" alignment="center">
+                    No shopper sessions yet. They&apos;ll appear here as soon as someone opens the widget.
+                  </Text>
+                </BlockStack>
               </Box>
             ) : (
               <BlockStack gap="200">
-                {recent.map((s) => (
-                  <div
-                    key={s.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      border: `1px solid ${brand.ink100}`,
-                      borderRadius: 12,
-                      padding: "10px 14px",
-                    }}
-                  >
-                    <BlockStack gap="050">
-                      <Text as="span" variant="bodySm" fontWeight="medium">
-                        {s.products.length > 0
-                          ? s.products.map((p) => recentProductNames[p] ?? p).join(", ")
-                          : "Browsed the widget"}
-                      </Text>
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        {timeAgo(s.lastAt)}
-                        {s.device ? ` · ${s.device}` : ""}
-                        {s.tryonCount > 0 ? ` · ${s.tryonCount} try-on${s.tryonCount === 1 ? "" : "s"}` : ""}
-                      </Text>
-                    </BlockStack>
-                    <InlineStack gap="200" blockAlign="center">
-                      {s.revenue > 0 && (
-                        <Text as="span" variant="bodySm" fontWeight="semibold">{money(s.revenue)}</Text>
-                      )}
-                      <Badge
-                        tone={s.outcome === "purchased" ? "success" : s.outcome === "carted" ? "info" : undefined}
-                      >
-                        {s.outcome === "purchased"
-                          ? "Purchased"
-                          : s.outcome === "carted"
-                            ? "Added to cart"
-                            : s.outcome === "tried"
-                              ? "Tried on"
-                              : "Browsed"}
-                      </Badge>
-                    </InlineStack>
-                  </div>
-                ))}
+                {recent.map((s) => {
+                  const meta = OUTCOME_META[s.outcome] ?? OUTCOME_META.browsed;
+                  return (
+                    <div
+                      key={s.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        border: `1px solid ${brand.ink100}`,
+                        borderRadius: 12,
+                        padding: "10px 14px",
+                      }}
+                    >
+                      <InlineStack gap="300" blockAlign="center" wrap={false}>
+                        <IconChip source={meta.icon} tone={meta.tone} size={34} />
+                        <BlockStack gap="050">
+                          <Text as="span" variant="bodySm" fontWeight="medium">
+                            {s.products.length > 0
+                              ? s.products.map((p) => recentProductNames[p] ?? p).join(", ")
+                              : "Browsed the widget"}
+                          </Text>
+                          <Text as="span" variant="bodySm" tone="subdued">
+                            {timeAgo(s.lastAt)}
+                            {s.device ? ` · ${s.device}` : ""}
+                            {s.tryonCount > 0 ? ` · ${s.tryonCount} try-on${s.tryonCount === 1 ? "" : "s"}` : ""}
+                          </Text>
+                        </BlockStack>
+                      </InlineStack>
+                      <InlineStack gap="200" blockAlign="center" wrap={false}>
+                        {s.revenue > 0 && (
+                          <Text as="span" variant="bodySm" fontWeight="semibold">{money(s.revenue)}</Text>
+                        )}
+                        <StatusPill label={meta.label} tone={meta.tone} />
+                      </InlineStack>
+                    </div>
+                  );
+                })}
               </BlockStack>
             )}
           </BlockStack>
@@ -809,7 +951,12 @@ export default function Index() {
   );
 }
 
+// ─── Shared icon-component type (matches @shopify/polaris-icons exports) ────
+type IconSource = FunctionComponent<SVGProps<SVGSVGElement>>;
+
 // ─── Storefront placement status row ───────────────────────────────────────
+// The identity icon says WHAT the row is (theme embed, inline button); the
+// chip tone + pill say its state — same semantic color system as analytics.
 type PlacementRowProps = {
   tone: "on" | "off" | "unknown";
   label: string;
@@ -818,15 +965,23 @@ type PlacementRowProps = {
   onAction?: () => void;
 };
 
-function PlacementRow({ tone, label, helper, actionLabel, onAction }: PlacementRowProps) {
-  const badgeTone = tone === "on" ? "success" : tone === "off" ? "attention" : "warning";
-  const symbol = tone === "on" ? "✓" : tone === "off" ? "!" : "?";
+const PLACEMENT_PILL: Record<PlacementRowProps["tone"], { label: string; tone: Tone }> = {
+  on: { label: "On", tone: "good" },
+  off: { label: "Off", tone: "watch" },
+  unknown: { label: "Check", tone: "neutral" },
+};
+
+function PlacementRow({ tone, icon, label, helper, actionLabel, onAction }: PlacementRowProps & { icon: IconSource }) {
+  const pill = PLACEMENT_PILL[tone];
   return (
     <InlineStack align="space-between" blockAlign="center" wrap={false} gap="300">
-      <InlineStack gap="200" blockAlign="center">
-        <Badge tone={badgeTone}>{symbol}</Badge>
+      <InlineStack gap="300" blockAlign="center" wrap={false}>
+        <IconChip source={icon} tone={pill.tone} size={34} />
         <BlockStack gap="050">
-          <Text as="span" variant="bodyMd">{label}</Text>
+          <InlineStack gap="200" blockAlign="center">
+            <Text as="span" variant="bodyMd">{label}</Text>
+            <StatusPill label={pill.label} tone={pill.tone} />
+          </InlineStack>
           {helper && (
             <Text as="span" variant="bodySm" tone="subdued">{helper}</Text>
           )}
@@ -840,6 +995,86 @@ function PlacementRow({ tone, label, helper, actionLabel, onAction }: PlacementR
     </InlineStack>
   );
 }
+
+// ─── Onboarding checklist step ──────────────────────────────────────────────
+function ChecklistStep({
+  state,
+  icon,
+  label,
+  action,
+}: {
+  state: "done" | "pending" | "waiting";
+  icon: IconSource;
+  label: string;
+  action?: ReactNode;
+}) {
+  const done = state === "done";
+  return (
+    <InlineStack align="space-between" blockAlign="center">
+      <InlineStack gap="300" blockAlign="center">
+        <IconChip
+          source={done ? CheckIcon : state === "waiting" ? ClockIcon : icon}
+          tone={done ? "good" : state === "waiting" ? "watch" : "neutral"}
+        />
+        <Text as="span" variant="bodyMd" tone={done || state === "waiting" ? "subdued" : undefined}>
+          {label}
+        </Text>
+      </InlineStack>
+      {action}
+    </InlineStack>
+  );
+}
+
+// ─── Quick action tile ──────────────────────────────────────────────────────
+function QuickAction({
+  icon,
+  label,
+  sublabel,
+  onClick,
+}: {
+  icon: IconSource;
+  label: string;
+  sublabel: string;
+  onClick: () => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 14px",
+        border: `1px solid ${hover ? brand.blue200 : brand.ink100}`,
+        borderRadius: 12,
+        background: hover ? brand.blue50 : brand.white,
+        cursor: "pointer",
+        textAlign: "left",
+        width: "100%",
+        fontFamily: "inherit",
+        transition: "background 120ms ease, border-color 120ms ease",
+      }}
+    >
+      <IconChip source={icon} tone={hover ? "money" : "neutral"} size={34} />
+      <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: brand.ink }}>{label}</span>
+        <span style={{ fontSize: 12, color: brand.ink500 }}>{sublabel}</span>
+      </span>
+    </button>
+  );
+}
+
+// ─── Recent-session outcome → icon + tone + pill label ─────────────────────
+const OUTCOME_META: Record<string, { icon: IconSource; tone: Tone; label: string }> = {
+  purchased: { icon: CartSaleIcon, tone: "good", label: "Purchased" },
+  carted: { icon: CartUpIcon, tone: "money", label: "Added to cart" },
+  tried: { icon: CameraIcon, tone: "neutral", label: "Tried on" },
+  browsed: { icon: ViewIcon, tone: "neutral", label: "Browsed" },
+};
 
 // ─── Relative time for the recent-sessions list ────────────────────────────
 function timeAgo(iso: string): string {

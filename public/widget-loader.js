@@ -205,11 +205,37 @@
 
     elloLog("✅ Ello Widget Loader v2.7 - Three-surface placement (inline + floating + preview)");
 
+    // ── Dev mode: run LOCAL widget code on a REAL store ──────────────────────
+    // On any storefront, append to the URL once:
+    //     ?ello_dev=1     → widget served from http://localhost:3000 (persisted
+    //                       in this browser via localStorage)
+    //     ?ello_dev=http://localhost:5173 → custom local origin
+    //     ?ello_dev=0     → back to the deployed widget
+    // With `npm run vite` running, EVERYTHING (widget-main.js, widget.html,
+    // config, try-on API) comes from the local working tree — edit, refresh the
+    // store page, see it. Origins are restricted to localhost so a crafted link
+    // can never point another shopper's widget anywhere real; for everyone who
+    // hasn't opted in, this whole block is a no-op.
+    let ELLO_DEV_ORIGIN = null;
+    try {
+        const q = new URLSearchParams(window.location.search).get('ello_dev');
+        if (q === '0' || q === 'off') localStorage.removeItem('ello_dev_origin');
+        else if (q === '1') localStorage.setItem('ello_dev_origin', 'http://localhost:3000');
+        else if (q && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(q)) localStorage.setItem('ello_dev_origin', q);
+        ELLO_DEV_ORIGIN = localStorage.getItem('ello_dev_origin');
+    } catch (e) { /* storage unavailable → dev mode simply stays off */ }
+
     // Derive WIDGET_BASE_URL from this script's own src — automatically matches
     // whichever Cloud Run (staging or production) served the file.
     let WIDGET_BASE_URL;
     const _loaderScript = document.currentScript;
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    if (ELLO_DEV_ORIGIN
+        && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        WIDGET_BASE_URL = ELLO_DEV_ORIGIN;
+        // Always-on warn (not elloLog) so a forgotten dev mode can't hide.
+        console.warn('[Ello] DEV MODE — widget + API served from ' + ELLO_DEV_ORIGIN
+            + '. Append ?ello_dev=0 to any page URL to turn off.');
+    } else if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         // Local dev: serve widget assets from THIS dev server's own origin
         // (whatever port it's on — 3000, 5173, …) so the dev harness works
         // without depending on a fixed port. Only ever runs locally; on a real
@@ -229,7 +255,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.7.4';
+    const WIDGET_VERSION = '2.7.16';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -341,6 +367,22 @@
             // Mirrors inlineButtonEnabled: a merchant can disable the whole hub
             // from the dashboard without removing the theme block / nav link.
             fittingRoomEnabled: storeConfig.fitting_room_enabled !== false,
+            // PDP image-swap hub mode (no-widget stores: inline button is the
+            // sole entry, returning shoppers land on a home, try-on swaps the
+            // PDP gallery image). Explicit opt-in, OFF by default so no existing
+            // merchant changes. Enabled per-store from the dashboard.
+            pdpImageSwapEnabled: storeConfig.pdp_image_swap_enabled === true,
+            // Merchant/support CSS selector override for the swap's hero
+            // targeting — a HINT the widget verifies (invalid/hidden/tiny →
+            // automatic cascade). NULL for every store until support sets it.
+            pdpImageSelector: (typeof storeConfig.pdp_image_selector === 'string' && storeConfig.pdp_image_selector.trim())
+                ? storeConfig.pdp_image_selector.trim() : null,
+            // Complete the Look (outfit-upsell styling rail) — gated ON TOP of
+            // pdpImageSwapEnabled. Explicit opt-in, OFF by default.
+            completeTheLookEnabled: storeConfig.complete_the_look_enabled === true,
+            // 50/50 proof test: suppress the upsell for the holdout half so
+            // the dashboard can report causal AOV lift. OFF by default.
+            ctlHoldoutEnabled: storeConfig.ctl_holdout_enabled === true,
             // Lead capture (email after Nth try-on) — off by default.
             leadCaptureEnabled: storeConfig.lead_capture_enabled === true,
             leadCaptureAfterN: storeConfig.lead_capture_after_n || 1
@@ -373,7 +415,11 @@
             inlineButtonHideWhenOos: false,
             floatingWidgetPdpEnabled: false,
             floatingWidgetNonPdpEnabled: true,
-            fittingRoomEnabled: true
+            fittingRoomEnabled: true,
+            pdpImageSwapEnabled: false,
+            pdpImageSelector: null,
+            completeTheLookEnabled: false,
+            ctlHoldoutEnabled: false
         };
     }
 
@@ -784,8 +830,14 @@
             // Now load the script - also using version instead of timestamp
             await loadScript(`${WIDGET_BASE_URL}/widget-main.js?v=${WIDGET_VERSION}`);
 
-            // Manually trigger initialization
-            if (typeof window.initializeWidget === 'function') {
+            // Manually trigger initialization. Prefer the Ello-prefixed name —
+            // the bare `initializeWidget` may belong to the theme or another
+            // app, and calling (or having widget-main.js overwrite) it broke
+            // merchant pages. Bare-name fallback covers a cached older
+            // widget-main.js that only defines the legacy global.
+            if (typeof window.__elloInitializeWidget === 'function') {
+                window.__elloInitializeWidget();
+            } else if (typeof window.initializeWidget === 'function') {
                 window.initializeWidget();
             }
 
