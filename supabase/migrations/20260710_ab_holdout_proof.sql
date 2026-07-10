@@ -231,9 +231,14 @@ $$;
 GRANT EXECUTE ON FUNCTION public.get_vto_receipts(text, timestamptz, timestamptz, integer) TO service_role;
 
 -- 7 ▸ config plumbing -------------------------------------------------------
+-- ORDER-PROOF vs 20260710_style_overrides.sql: both migrations recreate
+-- get_widget_config + the version-bump trigger with the FULL superset of each
+-- other's fields (style_overrides pre-created here with an identical def).
+-- Whichever runs last, the final state is identical.
 ALTER TABLE public.vto_stores ADD COLUMN IF NOT EXISTS ab_experiment_enabled boolean DEFAULT false;
 ALTER TABLE public.vto_stores ADD COLUMN IF NOT EXISTS ab_experiment_id uuid;
 ALTER TABLE public.vto_stores ADD COLUMN IF NOT EXISTS ab_holdout_percent integer DEFAULT 10;
+ALTER TABLE public.vto_stores ADD COLUMN IF NOT EXISTS style_overrides jsonb;
 
 DROP FUNCTION IF EXISTS public.get_widget_config(text, text);
 CREATE FUNCTION public.get_widget_config(p_store_slug text DEFAULT NULL::text, p_shop_domain text DEFAULT NULL::text)
@@ -249,6 +254,7 @@ RETURNS TABLE(
   pdp_image_swap_enabled boolean, pdp_image_selector text,
   ctl_holdout_enabled boolean, lead_capture_enabled boolean, lead_capture_after_n integer,
   ab_experiment_enabled boolean, ab_experiment_id uuid, ab_holdout_percent integer,
+  style_overrides jsonb,
   config_version bigint
 )
 LANGUAGE sql STABLE
@@ -268,6 +274,7 @@ AS $$
          s.ctl_holdout_enabled,
          s.lead_capture_enabled, s.lead_capture_after_n,
          s.ab_experiment_enabled, s.ab_experiment_id, s.ab_holdout_percent,
+         s.style_overrides,
          s.config_version
     FROM vto_stores s
    WHERE (p_store_slug  IS NOT NULL AND s.store_slug  = p_store_slug)
@@ -294,7 +301,8 @@ BEGIN
       NEW.tryon_targeting_mode, NEW.tryon_included_product_ids,
       NEW.tryon_included_collection_ids,
       NEW.ctl_holdout_enabled, NEW.lead_capture_enabled, NEW.lead_capture_after_n,
-      NEW.ab_experiment_enabled, NEW.ab_experiment_id, NEW.ab_holdout_percent)
+      NEW.ab_experiment_enabled, NEW.ab_experiment_id, NEW.ab_holdout_percent,
+      NEW.style_overrides)
      IS DISTINCT FROM
      (OLD.widget_primary_color, OLD.widget_accent_color, OLD.minimized_color,
       OLD.featured_item_id, OLD.quick_picks_ids, OLD.desktop_preview_enabled,
@@ -309,7 +317,8 @@ BEGIN
       OLD.tryon_targeting_mode, OLD.tryon_included_product_ids,
       OLD.tryon_included_collection_ids,
       OLD.ctl_holdout_enabled, OLD.lead_capture_enabled, OLD.lead_capture_after_n,
-      OLD.ab_experiment_enabled, OLD.ab_experiment_id, OLD.ab_holdout_percent)
+      OLD.ab_experiment_enabled, OLD.ab_experiment_id, OLD.ab_holdout_percent,
+      OLD.style_overrides)
   THEN
     NEW.config_version := COALESCE(OLD.config_version, 0) + 1;
   END IF;

@@ -70,6 +70,8 @@ window.__elloInitializeWidget = function () {
                         widgetPrimaryColor: storeConfig.widget_primary_color || null,
                         widgetAccentColor: storeConfig.widget_accent_color || null,
                         minimizedColor: storeConfig.minimized_color || null,
+                        styleOverrides: (storeConfig.style_overrides && typeof storeConfig.style_overrides === 'object')
+                            ? storeConfig.style_overrides : null,
                         featuredItemId: storeConfig.featured_item_id || null,
                         quickPicksIds: storeConfig.quick_picks_ids || null,
                         leadCaptureEnabled: storeConfig.lead_capture_enabled === true,
@@ -11222,6 +11224,11 @@ function applyWidgetThemeColors() {
  * Falls back to default gradient if color is not set
  */
 function applyMinimizedWidgetColor() {
+    // Per-store style overrides ride the same "config arrived" hook — every
+    // call site that (re)applies the minimized color re-applies overrides too,
+    // including the retry ladder in init and the re-minimize path.
+    applyStyleOverrides();
+
     const widget = document.getElementById('virtualTryonWidget');
     if (!widget) {
         console.warn('⚠️ Widget element not found for color application');
@@ -11312,6 +11319,187 @@ function applyMinimizedWidgetColor() {
             widget.style.background = '';
         }
     }
+}
+
+/**
+ * Apply per-store style overrides from window.ELLO_STORE_CONFIG.styleOverrides.
+ *
+ * Ops-level knob (vto_stores.style_overrides JSONB — set by support/Claude via
+ * SQL, no dashboard UI). Rides the same config pipeline as brand color, so a
+ * DB update propagates to shoppers within ~30s with no deploy. Supported keys:
+ *
+ *   hide_section_icons      boolean — hide the star/flame SVGs in the
+ *                           "Featured Today" / "Trending" section titles
+ *   launcher_stroke_width   number  — hanger icon stroke weight (default 2.2;
+ *                           e.g. 1.5 for a thinner look)
+ *   launcher_label_weight   number  — hover "Virtual Try-On" label
+ *                           font-weight (default 800)
+ *   launcher_label_transform string — text-transform (default uppercase;
+ *                           'none' for sentence case)
+ *   launcher_label_spacing  string  — letter-spacing (default 0.6px)
+ *   launcher_label_text     string  — replace the hover label text
+ *   font_family + font_url  string  — @font-face a merchant brand font
+ *                           (https woff2/woff/otf/ttf) and apply widget-wide
+ *   font_inherit            boolean — inherit the merchant theme's body font
+ *                           instead of Poppins (ignored if font_family set)
+ *   hide_emojis             boolean — strip decorative emoji (📷 ✨ 👕 📸 …)
+ *                           from ALL widget text via a scoped
+ *                           MutationObserver. Functional marks survive
+ *                           (✓ added-to-cart, ✕ close, ➜ step arrows).
+ *   custom_css              string  — escape hatch, appended verbatim.
+ *                           OPS-AUTHORED ONLY — never merchant input.
+ *
+ * All generated rules carry !important so they win against the template
+ * stylesheet regardless of injection order. Idempotent: re-running replaces
+ * the same <style id="ello-style-overrides"> tag.
+ */
+function applyStyleOverrides() {
+    var so = window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.styleOverrides;
+    var existing = document.getElementById('ello-style-overrides');
+    if (!so || typeof so !== 'object') {
+        if (existing) existing.remove();
+        return;
+    }
+
+    var C = '#virtual-tryon-widget-container';
+    var css = '';
+
+    // ── Section icons (star/flame) ──
+    if (so.hide_section_icons === true) {
+        css += C + ' .section-title svg{display:none !important;}\n';
+    }
+
+    // ── Minimized launcher: hanger stroke weight ──
+    // The hanger is a CSS mask data-URI with a hardcoded stroke-width, so a
+    // thinner icon means regenerating the URI with the requested stroke.
+    var stroke = Number(so.launcher_stroke_width);
+    if (stroke > 0 && stroke <= 6) {
+        var hangerMask = "url(\"data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23000'%20stroke-width='" + stroke + "'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M12%209%20V6%20a1.8%201.8%200%201%200%20-1.8%201.8'/%3E%3Cpath%20d='M12%209%20L4.2%2014.8%20a1.2%201.2%200%200%200%20.7%202.1%20H19.1%20a1.2%201.2%200%200%200%20.7%20-2.1%20L12%209%20Z'/%3E%3C/svg%3E\") center / contain no-repeat";
+        css += C + ' .widget-minimized::before{-webkit-mask:' + hangerMask + ' !important;mask:' + hangerMask + ' !important;}\n';
+    }
+
+    // ── Minimized launcher: hover label typography ──
+    var labelRules = '';
+    var weight = Number(so.launcher_label_weight);
+    if (weight >= 100 && weight <= 900) {
+        labelRules += 'font-weight:' + weight + ' !important;';
+    }
+    if (typeof so.launcher_label_transform === 'string' &&
+        /^(none|uppercase|lowercase|capitalize)$/.test(so.launcher_label_transform)) {
+        labelRules += 'text-transform:' + so.launcher_label_transform + ' !important;';
+    }
+    if (typeof so.launcher_label_spacing === 'string' &&
+        /^-?\d+(\.\d+)?(px|em)$/.test(so.launcher_label_spacing)) {
+        labelRules += 'letter-spacing:' + so.launcher_label_spacing + ' !important;';
+    }
+    if (typeof so.launcher_label_text === 'string' && so.launcher_label_text.trim() &&
+        so.launcher_label_text.length <= 40) {
+        // content: strings can't safely carry quotes/backslashes — strip them.
+        labelRules += "content:'" + so.launcher_label_text.replace(/['"\\]/g, '') + "' !important;";
+    }
+    if (labelRules) {
+        css += C + ' .widget-minimized::after{' + labelRules + '}\n';
+    }
+
+    // ── Widget font (replaces the hardcoded Poppins) ──
+    var fontStack = null;
+    if (typeof so.font_family === 'string' && so.font_family.trim()) {
+        // Strip anything that could break out of the font-family string.
+        var famName = so.font_family.trim().replace(/['"\\;{}<>]/g, '');
+        if (typeof so.font_url === 'string' && /^https:\/\/[^'"\s)]+$/.test(so.font_url)) {
+            var fmt = /\.woff2(\?|$)/i.test(so.font_url) ? 'woff2'
+                : /\.woff(\?|$)/i.test(so.font_url) ? 'woff'
+                : /\.otf(\?|$)/i.test(so.font_url) ? 'opentype' : 'truetype';
+            css += "@font-face{font-family:'" + famName + "';src:url('" + so.font_url +
+                "') format('" + fmt + "');font-display:swap;font-weight:100 900;}\n";
+        }
+        fontStack = "'" + famName + "'";
+    } else if (so.font_inherit === true) {
+        // Match the merchant theme: read the storefront body's computed stack.
+        try {
+            var bodyFont = window.getComputedStyle(document.body).fontFamily;
+            if (bodyFont) fontStack = bodyFont;
+        } catch (e) { /* stick with Poppins */ }
+    }
+    if (fontStack) {
+        css += C + ',' + C + ' *{font-family:' + fontStack + ",'Poppins',sans-serif !important;}\n";
+    }
+
+    // ── Escape hatch: raw scoped CSS (ops-authored only) ──
+    if (typeof so.custom_css === 'string' && so.custom_css.trim()) {
+        css += so.custom_css.replace(/<\/style/gi, '').slice(0, 20000) + '\n';
+    }
+
+    // ── Emoji stripping (📷 ✨ 👕 📸 🖼️ …) ──
+    // Emoji live in TEXT nodes (button labels, chat lines), which CSS can't
+    // reach — so a MutationObserver scoped to the widget container rewrites
+    // them out as the UI renders. Pictograph blocks + ✨/⭐/VS16 only:
+    // ✓ (U+2713), ✕ (U+2715) and ➜ (U+279C) are functional and survive.
+    if (so.hide_emojis === true) {
+        ensureEmojiStripper();
+    } else if (applyStyleOverrides._emojiObs) {
+        applyStyleOverrides._emojiObs.disconnect();
+        applyStyleOverrides._emojiObs = null;
+    }
+
+    if (!css.trim()) {
+        if (existing) existing.remove();
+        return;
+    }
+    if (!existing) {
+        existing = document.createElement('style');
+        existing.id = 'ello-style-overrides';
+        document.head.appendChild(existing);
+    }
+    if (existing.textContent !== css) existing.textContent = css;
+    elloLog('🎨 Style overrides applied:', Object.keys(so).join(', '));
+}
+
+/**
+ * hide_emojis worker: strip decorative emoji from every text node inside the
+ * widget container, now and on every future render. Attaches once (idempotent
+ * across the applyStyleOverrides retry ladder); disconnected when the flag is
+ * cleared. Rewrites only when a node actually contains emoji, so the observer
+ * never re-triggers itself.
+ */
+function ensureEmojiStripper() {
+    if (applyStyleOverrides._emojiObs) return;
+    var container = document.getElementById('virtual-tryon-widget-container');
+    // Container may not exist yet on early calls — the retry ladder and every
+    // re-minimize re-run applyStyleOverrides, so a later call attaches.
+    if (!container) return;
+
+    var EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{26FF}\u{2728}\u{2B50}\u{FE0F}]/gu;
+
+    function stripIn(root) {
+        var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        var node;
+        while ((node = walker.nextNode())) {
+            if (EMOJI_RE.test(node.nodeValue)) {
+                EMOJI_RE.lastIndex = 0;
+                node.nodeValue = node.nodeValue.replace(EMOJI_RE, '').replace(/ {2,}/g, ' ');
+            }
+            EMOJI_RE.lastIndex = 0;
+        }
+    }
+
+    stripIn(container);
+    var obs = new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+            var m = mutations[i];
+            if (m.type === 'characterData') {
+                stripIn(m.target.parentNode || container);
+            } else {
+                for (var j = 0; j < m.addedNodes.length; j++) {
+                    var n = m.addedNodes[j];
+                    if (n.nodeType === 3 && n.parentNode) stripIn(n.parentNode);
+                    else if (n.nodeType === 1) stripIn(n);
+                }
+            }
+        }
+    });
+    obs.observe(container, { childList: true, subtree: true, characterData: true });
+    applyStyleOverrides._emojiObs = obs;
 }
 
 /**

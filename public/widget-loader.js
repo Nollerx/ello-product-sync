@@ -342,6 +342,12 @@
             widgetPrimaryColor: storeConfig.widget_primary_color || null,
             widgetAccentColor: storeConfig.widget_accent_color || null,
             minimizedColor: storeConfig.minimized_color || null,
+            // Ops-level per-store style overrides (vto_stores.style_overrides
+            // JSONB, no dashboard UI — set by support/Claude directly). Applied
+            // by applyStyleOverrides() in widget-main. Null for every store
+            // until support sets it.
+            styleOverrides: (storeConfig.style_overrides && typeof storeConfig.style_overrides === 'object')
+                ? storeConfig.style_overrides : null,
             featuredItemId: storeConfig.featured_item_id || null,
             quickPicksIds: storeConfig.quick_picks_ids || null,
             desktopPreviewEnabled: storeConfig.desktop_preview_enabled !== false,
@@ -407,6 +413,7 @@
             widgetPrimaryColor: null,
             widgetAccentColor: null,
             minimizedColor: null,
+            styleOverrides: null,
             featuredItemId: null,
             quickPicksIds: null,
             desktopPreviewEnabled: true,

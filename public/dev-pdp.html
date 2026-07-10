@@ -232,6 +232,23 @@
       window.ELLO_STORE_CONFIG.pdpImageSwapEnabled = true;
       // Increment 0 — opt this dev store into the Complete the Look rail too.
       window.ELLO_STORE_CONFIG.completeTheLookEnabled = true;
+
+      // ?ello_style_test=1 — exercise the per-store style-overrides engine
+      // (vto_stores.style_overrides) without touching the DB: thin hanger +
+      // thin label, no section icons, inherit the page font. Re-enables the
+      // floating bubble so the launcher is visible for inspection.
+      if (new URLSearchParams(location.search).get('ello_style_test') === '1') {
+        window.ELLO_STORE_CONFIG.floatingWidgetPdpEnabled = true;
+        window.ELLO_STORE_CONFIG.desktopPreviewEnabled = false;
+        window.ELLO_STORE_CONFIG.styleOverrides = {
+          hide_section_icons: true,
+          hide_emojis: true,
+          launcher_stroke_width: 1.5,
+          launcher_label_weight: 400,
+          launcher_label_transform: 'none',
+          font_inherit: true
+        };
+      }
     }
   });
 
