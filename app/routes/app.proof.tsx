@@ -140,6 +140,63 @@ function median(values: number[]): number | null {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
+// Side-by-side group panel: the conversion rate huge, the sample right under
+// it. "Saw the widget" wears brand blue; the holdout stays neutral ink — the
+// comparison should read in under three seconds.
+function ArmPanel({
+  label,
+  hint,
+  stats,
+  accent,
+  currency,
+}: {
+  label: string;
+  hint: string;
+  stats: { sessions: number; purchaseSessions: number; revenue: number; conversionPct: number | null };
+  accent?: boolean;
+  currency: string | null;
+}) {
+  const cr = stats.conversionPct != null ? `${Number(stats.conversionPct).toFixed(1)}%` : "—";
+  return (
+    <div
+      style={{
+        border: `1px solid ${accent ? brand.blue200 : brand.ink200}`,
+        background: accent ? brand.blue50 : brand.white,
+        borderRadius: 12,
+        padding: "18px 20px",
+      }}
+    >
+      <BlockStack gap="100">
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 650,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: accent ? brand.blue700 : brand.ink500,
+          }}
+        >
+          {label}
+        </span>
+        <span style={{ fontSize: 38, fontWeight: 600, lineHeight: 1.05, color: accent ? brand.blue : brand.ink }}>
+          {cr}
+        </span>
+        <Text as="span" variant="bodySm" tone="subdued">
+          conversion to purchase
+        </Text>
+        <div style={{ borderTop: `1px solid ${accent ? brand.blue200 : brand.ink100}`, marginTop: 8, paddingTop: 10, fontSize: 13, color: brand.ink600 }}>
+          <strong style={{ color: brand.ink }}>{stats.sessions.toLocaleString()}</strong> shoppers ·{" "}
+          <strong style={{ color: brand.ink }}>{stats.purchaseSessions.toLocaleString()}</strong> bought ·{" "}
+          <strong style={{ color: brand.ink }}>{money(stats.revenue, currency)}</strong> revenue
+        </div>
+        <Text as="span" variant="bodySm" tone="subdued">
+          {hint}
+        </Text>
+      </BlockStack>
+    </div>
+  );
+}
+
 function liftVerdict(results: AbResults): { label: string; tone: Tone } {
   if (!results.hasMinimumSample) return { label: "Collecting data", tone: "neutral" };
   if (results.relativeLift == null || results.confidence == null)
@@ -326,26 +383,21 @@ export default function ProofPage() {
 
                 {results && (
                   <>
-                    <DataTable
-                      columnContentTypes={["text", "numeric", "numeric", "numeric", "numeric"]}
-                      headings={["Group", "Sessions", "Buyers", "Conversion", "Revenue"]}
-                      rows={[
-                        [
-                          "Saw the widget",
-                          results.exposed.sessions.toLocaleString(),
-                          results.exposed.purchaseSessions.toLocaleString(),
-                          results.exposed.conversionPct != null ? `${results.exposed.conversionPct}%` : "—",
-                          money(results.exposed.revenue, currency),
-                        ],
-                        [
-                          "Holdout (no widget)",
-                          results.holdout.sessions.toLocaleString(),
-                          results.holdout.purchaseSessions.toLocaleString(),
-                          results.holdout.conversionPct != null ? `${results.holdout.conversionPct}%` : "—",
-                          money(results.holdout.revenue, currency),
-                        ],
-                      ]}
-                    />
+                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                      <ArmPanel
+                        label="Saw the widget"
+                        hint="shoppers with try-on available"
+                        stats={results.exposed}
+                        currency={currency}
+                        accent
+                      />
+                      <ArmPanel
+                        label="Holdout (no widget)"
+                        hint="same store, try-on hidden"
+                        stats={results.holdout}
+                        currency={currency}
+                      />
+                    </InlineGrid>
                     {results.hasMinimumSample ? (
                       <InlineStack gap="300" blockAlign="center" wrap>
                         {verdict && <StatusPill label={verdict.label} tone={verdict.tone} />}
