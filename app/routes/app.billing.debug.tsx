@@ -93,13 +93,14 @@ function JsonCard({
       <BlockStack gap="300">
         <Text as="h2" variant="headingMd">{title}</Text>
         <Box
-          as="pre"
           padding="400"
           background="bg-surface-secondary"
           borderRadius="200"
           overflowX="scroll"
         >
-          <code>{JSON.stringify(data, null, 2)}</code>
+          <pre style={{ margin: 0 }}>
+            <code>{JSON.stringify(data, null, 2)}</code>
+          </pre>
         </Box>
       </BlockStack>
     </Card>

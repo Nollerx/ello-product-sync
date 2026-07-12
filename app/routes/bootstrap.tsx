@@ -2,6 +2,19 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { supabaseAdmin } from "../lib/supabase.server";
 import { markWidgetEnabled } from "../lib/onboarding.server";
 
+// Per-instance short TTL cache for the bootstrap payload. Every product page view
+// hits this endpoint; without the cache each one ran ~3 Supabase ops (a store SELECT,
+// the get_store_usage RPC, and — before this — an UPDATE). A 30s cache collapses
+// steady traffic to ~1 refresh / 30s / store / instance. Usage figures here only drive
+// free-plan branding, so 30s of staleness is fine; the hard limit is enforced in /tryon.
+const BOOTSTRAP_TTL_MS = Number(process.env.BOOTSTRAP_CACHE_TTL_MS || 30_000);
+const bootstrapCache = new Map<string, { body: string; at: number }>();
+
+// widget_enabled_at only ever needs stamping ONCE per store. It was firing an UPDATE
+// on every page view; remember which shops this instance has already stamped so the
+// write runs at most once per instance lifetime instead of ~100K times/day at scale.
+const widgetEnabledStamped = new Set<string>();
+
 export async function loader({ request }: LoaderFunctionArgs) {
     if (request.method === "OPTIONS") {
         return new Response(null, {
@@ -46,14 +59,31 @@ export async function action({ request }: ActionFunctionArgs) {
             });
         }
 
+        // Serve a recent cached payload if we have one (per-instance, short TTL).
+        const cached = bootstrapCache.get(shop);
+        if (cached && Date.now() - cached.at < BOOTSTRAP_TTL_MS) {
+            return new Response(cached.body, {
+                status: 200,
+                headers: {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*",
+                    "X-Ello-Cache": "hit",
+                },
+            });
+        }
+
         console.log(`[Bootstrap] Fetching config for shop: ${shop}`);
 
-        // First widget call from this store means the merchant enabled the
-        // theme block. Stamp widget_enabled_at if not yet set — onboarding
-        // step 2 uses this to detect activation. Fire and forget.
-        markWidgetEnabled(shop).catch((err) =>
-            console.error("[Bootstrap] markWidgetEnabled failed (non-fatal):", err),
-        );
+        // First widget call from this store means the merchant enabled the theme
+        // block. Stamp widget_enabled_at once — memoized per instance so it's not an
+        // UPDATE on every page view. If the stamp fails, allow a retry next request.
+        if (!widgetEnabledStamped.has(shop)) {
+            widgetEnabledStamped.add(shop);
+            markWidgetEnabled(shop).catch((err) => {
+                widgetEnabledStamped.delete(shop);
+                console.error("[Bootstrap] markWidgetEnabled failed (non-fatal):", err);
+            });
+        }
 
         // 2. Fetch Store Config from Supabase
         const { data: storeData, error: storeError } = await supabaseAdmin
@@ -136,17 +166,26 @@ export async function action({ request }: ActionFunctionArgs) {
             : null;
 
         // 6. Return JSON Response with CORS Headers
-        return new Response(JSON.stringify({
+        const responseBody = JSON.stringify({
             store: storePayload,
             blacklist: {
                 hiddenProductIds: hiddenProductIds
             },
             timestamp: Date.now()
-        }), {
+        });
+
+        // Cache only successful store lookups — never cache a "not found" so a
+        // just-installed widget starts working on its next call, not after the TTL.
+        if (storePayload) {
+            bootstrapCache.set(shop, { body: responseBody, at: Date.now() });
+        }
+
+        return new Response(responseBody, {
             status: 200,
             headers: {
                 "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*" // CRITICAL
+                "Access-Control-Allow-Origin": "*", // CRITICAL
+                "X-Ello-Cache": "miss",
             }
         });
 

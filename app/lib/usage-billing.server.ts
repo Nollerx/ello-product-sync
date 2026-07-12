@@ -1,5 +1,56 @@
 import { supabaseAdmin } from "./supabase.server";
 import { unauthenticated } from "../shopify.server";
+import { sendTelegramMessage } from "./telegram.server";
+
+// ─── Bounded fail-open ────────────────────────────────────────────────────────
+// If the metering RPC is unavailable we must NOT wave through unlimited renders:
+// each try-on costs real Gemini COGS and, while the RPC is down, every plan limit,
+// overage cap, and per-shopper cap is unenforceable. Instead of pure fail-open,
+// allow a small per-store burst per instance during the outage, then deny with a
+// retryable error. State is per Cloud Run instance, so the fleet-wide bound is
+// (FAILOPEN_MAX_PER_MIN × instance count) — bounded, not infinite.
+const FAILOPEN_MAX_PER_MIN = Number(process.env.FAILOPEN_MAX_PER_MIN || 30);
+const _failOpenWindow = new Map<string, { windowStart: number; count: number }>();
+let _lastDegradedAlert = 0;
+
+function boundedFailOpen(storeSlug: string, reason: string): UsageCheckResult {
+  const now = Date.now();
+  const slot = _failOpenWindow.get(storeSlug);
+  if (!slot || now - slot.windowStart >= 60_000) {
+    _failOpenWindow.set(storeSlug, { windowStart: now, count: 1 });
+  } else {
+    slot.count += 1;
+  }
+  const count = _failOpenWindow.get(storeSlug)!.count;
+
+  // Loud, throttled alert (≤ once/min per instance) so a metering outage can't run
+  // silently the way pure fail-open did.
+  if (now - _lastDegradedAlert > 60_000) {
+    _lastDegradedAlert = now;
+    void sendTelegramMessage(
+      `⚠️ Ello metering RPC degraded — bounded fail-open active (store ${storeSlug}). Reason: ${reason}`,
+    ).catch(() => {});
+  }
+
+  if (count > FAILOPEN_MAX_PER_MIN) {
+    // Past the degraded-mode burst: stop spending on unmetered renders. tryon.tsx
+    // maps SERVICE_DEGRADED to a retryable 503.
+    return {
+      allowed: false,
+      is_overage: false,
+      tryons_used: 0,
+      included_tryons: 0,
+      error: "SERVICE_DEGRADED",
+    };
+  }
+  return {
+    allowed: true,
+    is_overage: false,
+    tryons_used: 0,
+    included_tryons: 9999,
+    error: reason,
+  };
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,14 +115,9 @@ export async function checkAndRecordUsage(
 
     if (error) {
       console.error("[UsageBilling] RPC error:", error.message);
-      // On RPC failure, allow the try-on (fail open) but log the error
-      return {
-        allowed: true,
-        is_overage: false,
-        tryons_used: 0,
-        included_tryons: 9999,
-        error: error.message,
-      };
+      // Bounded fail-open: allow a limited per-store burst, then deny so a metering
+      // outage can't turn into unlimited unmetered Gemini spend.
+      return boundedFailOpen(storeSlug, error.message);
     }
 
     const result = data as Record<string, unknown>;
@@ -92,14 +138,8 @@ export async function checkAndRecordUsage(
     };
   } catch (err) {
     console.error("[UsageBilling] Exception during usage check:", err);
-    // Fail open — don't block try-ons if our billing system is down
-    return {
-      allowed: true,
-      is_overage: false,
-      tryons_used: 0,
-      included_tryons: 9999,
-      error: String(err),
-    };
+    // Bounded fail-open (see above) rather than unconditionally allowing.
+    return boundedFailOpen(storeSlug, String(err));
   }
 }
 

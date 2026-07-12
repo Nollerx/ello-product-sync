@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { checkAndRecordUsage, createShopifyUsageCharge, releaseTryonCredit } from "../lib/usage-billing.server";
+import { clientIpForRateLimit } from "../lib/client-ip.server";
 
 // ML render service. Default = shared FASHN service; the custom app overrides
 // via ML_API_URL (cloud_run_env_custom.yaml) to the Gemini engine (ello-vto-custom)
@@ -7,6 +8,11 @@ import { checkAndRecordUsage, createShopifyUsageCharge, releaseTryonCredit } fro
 const ML_API_URL =
     process.env.ML_API_URL ||
     "https://ello-vto-13593516897-13593516897.us-central1.run.app";
+
+// Bound how long a single render may pin a front-door concurrency slot. Normal
+// Gemini NB2 renders finish in 10–30s; 90s is generous headroom while preventing a
+// degraded render engine from holding slots for the full 300s request timeout.
+const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS || 90_000);
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -25,6 +31,22 @@ export async function action({ request }: ActionFunctionArgs) {
     // 1. Handle CORS Preflight (OPTIONS)
     if (request.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
+
+    // Reject oversized bodies BEFORE buffering them into memory. The widget now
+    // compresses uploads to well under 2MB, but a stale cached widget (old version)
+    // could still send a multi-MB raw photo that would OOM this 512Mi instance under
+    // concurrency. 8MB gives generous headroom over a compressed photo.
+    const contentLength = Number(request.headers.get("content-length") || 0);
+    const MAX_BODY_BYTES = Number(process.env.MAX_TRYON_BODY_BYTES || 8_000_000);
+    if (contentLength > MAX_BODY_BYTES) {
+        return new Response(
+            JSON.stringify({
+                error: "PAYLOAD_TOO_LARGE",
+                message: "That photo is too large. Please try a smaller image.",
+            }),
+            { status: 413, headers: { "Content-Type": "application/json", ...CORS_HEADERS } },
+        );
     }
 
     try {
@@ -54,10 +76,13 @@ export async function action({ request }: ActionFunctionArgs) {
         ]);
         const entrySource = allowedSources.has(rawEntrySource) ? rawEntrySource : null;
 
-        // Client IP for the per-shopper limit. Cloud Run's LB appends its own
-        // hop to X-Forwarded-For, so the first entry is the real client.
-        const clientIp =
-            request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || null;
+        // Client IP for the per-shopper limit. GFE appends the verified peer as
+        // the LAST X-Forwarded-For entry (earlier entries are spoofable). When
+        // the widget rides the Cloudflare CDN hostname that peer is a CF edge
+        // IP, so the helper unwraps CF-Connecting-IP — but only when the
+        // verified peer really is Cloudflare, so direct run.app hits can't
+        // spoof their way past the cap either.
+        const clientIp = clientIpForRateLimit(request);
 
         const usageResult = await checkAndRecordUsage(
             storeSlug,
@@ -112,6 +137,21 @@ export async function action({ request }: ActionFunctionArgs) {
                 );
             }
 
+            // Metering RPC degraded past the bounded fail-open burst — tell the
+            // shopper to retry rather than silently dropping or over-spending.
+            if (usageResult.error === "SERVICE_DEGRADED") {
+                return new Response(
+                    JSON.stringify({
+                        error: "SERVICE_DEGRADED",
+                        message: "Try-on is briefly busy. Please try again in a moment.",
+                    }),
+                    {
+                        status: 503,
+                        headers: { "Content-Type": "application/json", "Retry-After": "30", ...CORS_HEADERS },
+                    },
+                );
+            }
+
             const errorMessage = usageResult.error === "OVERAGE_CAP_REACHED"
                 ? "OVERAGE_BLOCKED: Your overage credit limit has been reached. Please increase your auto top-up cap or upgrade your plan."
                 : "OVERAGE_BLOCKED: Your try-on limit has been reached. Enable auto top-up or upgrade your plan to continue.";
@@ -136,6 +176,7 @@ export async function action({ request }: ActionFunctionArgs) {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(body),
+                    signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
                 }
             );
 
@@ -171,12 +212,30 @@ export async function action({ request }: ActionFunctionArgs) {
                 headers: { "Content-Type": "application/json", ...CORS_HEADERS },
             });
         } catch (mlErr) {
-            // ML service unreachable (transport error) — release the reserved credit,
-            // then bubble up to the outer handler so the shopper still gets a 500.
+            // Render timed out (AbortSignal) or the ML service was unreachable —
+            // release the reserved credit so the shopper isn't charged for a try-on
+            // they never received, then return a clean, retryable status instead of a
+            // generic 500 (and instead of hanging for the full 300s request timeout).
             if (!usageResult.error) {
                 await releaseTryonCredit(storeSlug, sessionId, usageResult.is_overage);
             }
-            throw mlErr;
+            const isTimeout =
+                mlErr instanceof Error &&
+                (mlErr.name === "TimeoutError" || mlErr.name === "AbortError");
+            console.error(
+                `[TryOn Proxy] Render ${isTimeout ? "timed out" : "transport error"}:`,
+                mlErr,
+            );
+            return new Response(
+                JSON.stringify({
+                    error: isTimeout ? "RENDER_TIMEOUT" : "RENDER_UNAVAILABLE",
+                    message: "The try-on took too long. Please try again.",
+                }),
+                {
+                    status: isTimeout ? 504 : 502,
+                    headers: { "Content-Type": "application/json", ...CORS_HEADERS },
+                },
+            );
         }
 
     } catch (error) {

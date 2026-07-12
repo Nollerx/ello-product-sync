@@ -129,6 +129,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const form = await request.formData();
 
+  // "Refresh widget now" — bump config_version so every Cloud Run instance's catalog
+  // and config cache invalidates on its next request. Same invalidation path the
+  // products webhook uses; this is the merchant's manual override for when they've
+  // changed something and want it live immediately instead of waiting on a webhook.
+  if (form.get("intent") === "refresh_cache") {
+    const { data: s } = await supabaseAdmin
+      .from("vto_stores")
+      .select("config_version")
+      .eq("shop_domain", session.shop)
+      .maybeSingle();
+    if (!s) return { ok: false as const, error: "Store record not found." };
+    const { error } = await supabaseAdmin
+      .from("vto_stores")
+      .update({ config_version: (Number(s.config_version) || 0) + 1 })
+      .eq("shop_domain", session.shop);
+    if (error) return { ok: false as const, error: error.message };
+    return { ok: true as const, refreshed: true as const };
+  }
+
   const mode = String(form.get("mode") ?? "all") as Mode;
   if (!["all", "products", "collections"].includes(mode)) {
     return { ok: false as const, error: "Invalid targeting mode." };
@@ -353,6 +372,18 @@ const toUrl = (img: { url?: string; originalSrc?: string; src?: string }) => img
 export default function Products() {
   const initial = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  // Independent fetcher for the "Refresh widget" button so its state doesn't tangle
+  // with the Save button's loading/result state.
+  const refreshFetcher = useFetcher<typeof action>();
+  const refreshing = refreshFetcher.state !== "idle";
+  const refreshed = Boolean(
+    refreshFetcher.data && "refreshed" in refreshFetcher.data && refreshFetcher.data.refreshed,
+  );
+  const refreshWidget = () => {
+    const fd = new FormData();
+    fd.set("intent", "refresh_cache");
+    refreshFetcher.submit(fd, { method: "POST" });
+  };
 
   const [mode, setMode] = useState<Mode>(initial.mode);
   const [products, setProducts] = useState<ProductItem[]>(initial.products);
@@ -483,9 +514,19 @@ export default function Products() {
       title="Products"
       subtitle="Choose where Try-On appears and which photo each product renders from."
       primaryAction={{ content: "Save changes", onAction: handleSave, loading: saving, disabled: !dirty }}
+      secondaryActions={[
+        {
+          content: "Refresh widget",
+          onAction: refreshWidget,
+          loading: refreshing,
+          disabled: !initial.hasStore,
+          helpText: "Push catalog & settings changes to your storefront right now",
+        },
+      ]}
     >
       <div style={{ maxWidth: 760, margin: "0 auto", width: "100%" }}>
         <BlockStack gap="500">
+          {refreshed && <Banner tone="success">Widget refreshed. Your storefront picks up the latest catalog and settings within a few seconds.</Banner>}
           {saved && !dirty && <Banner tone="success">Saved. Your storefront updates within about 30 seconds.</Banner>}
           {saveError && <Banner tone="critical">{saveError}</Banner>}
           {!initial.hasStore && (

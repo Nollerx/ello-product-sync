@@ -1,5 +1,12 @@
 import { type LoaderFunctionArgs } from "react-router";
 import { supabaseAdmin } from "../lib/supabase.server";
+import { createVersionedCache } from "../lib/widget-cache.server";
+
+// Per-instance cache of the resolved handles list, keyed by store + version.
+// Eliminates the multi-page Shopify crawl for every cache-missing shopper during a
+// spike. Safety net (default 5 min) forces a rebuild even if a webhook is dropped.
+const CATALOG_STALE_MS = Number(process.env.CATALOG_CACHE_STALE_MS || 300_000);
+const catalogCache = createVersionedCache<string[]>(CATALOG_STALE_MS);
 
 // CORS for cross-origin widget loads (storefronts on merchant domains).
 // If-None-Match included so browsers/CDNs can do conditional revalidation.
@@ -149,35 +156,34 @@ export async function loader({ request }: LoaderFunctionArgs) {
       });
     }
 
-    // 4. Resolve handles by population mode.
-    let handles: string[] = [];
+    // 4. Resolve handles by population mode — cached per (store, version) with
+    //    single-flight, so a spike of cache-missing shoppers doesn't fan out into N
+    //    identical multi-page Shopify crawls. The version already moves when the
+    //    catalog or settings change (products webhook / settings save / the
+    //    Refresh-widget button), so real changes invalidate immediately; the cache's
+    //    safety-net TTL covers a dropped webhook.
+    const handles: string[] = await catalogCache(slug, version, async () => {
+      if (populationType === "supabase") {
+        // Match legacy semantics: active=null is treated as enabled. Only
+        // products explicitly set to active=false are excluded.
+        // See widget-main.js processClothingRows line 1441:
+        //   active: item.active !== false, // Default to true if missing
+        const { data, error } = await supabaseAdmin
+          .from("clothing_items")
+          .select("item_id")
+          .eq("store_id", slug)
+          .not("active", "is", false);
 
-    if (populationType === "supabase") {
-      // Match legacy semantics: active=null is treated as enabled. Only
-      // products explicitly set to active=false are excluded.
-      // See widget-main.js processClothingRows line 1441:
-      //   active: item.active !== false, // Default to true if missing
-      const { data, error } = await supabaseAdmin
-        .from("clothing_items")
-        .select("item_id")
-        .eq("store_id", slug)
-        .not("active", "is", false);
+        if (error) throw new Error(`supabase mode query: ${error.message}`);
 
-      if (error) {
-        console.error(
-          "[catalog-handles] Supabase mode query error:",
-          error.message,
-        );
-        return jsonError(500, error.message);
+        // In supabase mode item_id is the handle (per loadClothingFromSupabase in
+        // widget-main.js — sampleClothing[i].id is set to the same string used
+        // by detectCurrentProduct's URL handle match).
+        return (data || [])
+          .map((r) => (r as { item_id: string | null }).item_id)
+          .filter((h): h is string => Boolean(h));
       }
 
-      // In supabase mode item_id is the handle (per loadClothingFromSupabase in
-      // widget-main.js — sampleClothing[i].id is set to the same string used
-      // by detectCurrentProduct's URL handle match).
-      handles = (data || [])
-        .map((r) => (r as { item_id: string | null }).item_id)
-        .filter((h): h is string => Boolean(h));
-    } else {
       // Shopify mode. Targeting mode decides which products are eligible:
       //   'all'         → every product, minus merchant exclusions (default)
       //   'products'    → only the explicitly-selected products
@@ -206,7 +212,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
       const hiddenIds = await fetchHiddenShopifyIds(slug);
 
-      handles = pairs
+      return pairs
         .filter((p) => {
           // item_id in clothing_items can be stored as either the full GID
           // ("gid://shopify/Product/123") or the numeric portion ("123").
@@ -218,7 +224,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         })
         .map((p) => p.handle)
         .filter(Boolean);
-    }
+    });
 
     return new Response(JSON.stringify({ handles, version }), {
       status: 200,
