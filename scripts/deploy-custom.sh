@@ -12,7 +12,7 @@
 # break the deploy.
 set -euo pipefail
 
-PUBLIC_URL="https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app"
+PUBLIC_URL="https://widget.ellotryon.com"
 CUSTOM_URL="https://custom-ello-app-13593516897-13593516897.us-central1.run.app"
 
 FILES=(
