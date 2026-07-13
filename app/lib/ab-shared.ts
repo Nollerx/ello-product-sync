@@ -48,3 +48,7 @@ export interface ReceiptRow {
 // shows a "collecting data" state instead of a premature number.
 export const AB_MIN_SESSIONS_PER_ARM = 200;
 export const AB_MIN_TOTAL_CONVERTERS = 10;
+
+// Complete-the-Look 50/50 test: the causal AOV lift renders once each arm has
+// this many attributed orders (AOV needs orders, not sessions, to stabilize).
+export const CTL_MIN_ORDERS_PER_ARM = 10;

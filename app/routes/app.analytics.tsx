@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useSearchParams } from "react-router";
+import { useLoaderData, useNavigate, useSearchParams } from "react-router";
 import {
   Page,
   Layout,
@@ -25,7 +25,7 @@ import { SectionHeading, brand } from "../components/ui";
 import {
   LineSeries,
   TrendChart,
-  FunnelBar,
+  Funnel,
   Heatmap,
   HeadlineStrip,
   InsightsList,
@@ -39,6 +39,9 @@ import {
   TargetIcon,
   ViewIcon,
   CameraIcon,
+  CursorIcon,
+  XCircleIcon,
+  OrderRepeatIcon,
 } from "@shopify/polaris-icons";
 import { parseRange, pctDelta, rangeWindow } from "../lib/timerange";
 import {
@@ -489,12 +492,14 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
             <BlockStack gap="400">
               <SectionHeading eyebrow="Journey" title="Conversion funnel" />
               {t ? (
-                <BlockStack gap="300">
-                  <FunnelBar label="Tried on" value={t.tryonSessions} max={t.tryonSessions} />
-                  <FunnelBar label="Viewed product" value={t.viewed} max={t.tryonSessions} />
-                  <FunnelBar label="Added to cart" value={t.addedToCart} max={t.tryonSessions} />
-                  <FunnelBar label="Purchased" value={t.purchased} max={t.tryonSessions} />
-                </BlockStack>
+                <Funnel
+                  stages={[
+                    { key: "tried", label: "Tried on", value: t.tryonSessions },
+                    { key: "viewed", label: "Viewed product", value: t.viewed },
+                    { key: "cart", label: "Added to cart", value: t.addedToCart },
+                    { key: "purchased", label: "Purchased", value: t.purchased },
+                  ]}
+                />
               ) : (
                 <Text as="p" tone="subdued">No funnel data yet.</Text>
               )}
@@ -543,21 +548,11 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
                       title="Session funnel"
                       description="Every stage a shopper passes through, from opening the widget to buying."
                     />
-                    <BlockStack gap="300">
-                      {adv.funnel.stages.map((s) => {
-                        const isLeak = adv.funnel.biggestLeak?.toLabel === s.label;
-                        return (
-                          <FunnelBar
-                            key={s.key}
-                            label={s.label}
-                            value={s.count}
-                            max={adv.funnel.stages[0]?.count ?? 1}
-                            tone={isLeak ? "bad" : "money"}
-                            note={isLeak ? `▼ ${adv.funnel.biggestLeak!.lostPct}% drop` : undefined}
-                          />
-                        );
-                      })}
-                    </BlockStack>
+                    <Funnel
+                      stages={adv.funnel.stages.map((s) => ({ key: s.key, label: s.label, value: s.count }))}
+                      leakLabel={adv.funnel.biggestLeak?.toLabel}
+                      showLeakSummary={false}
+                    />
                     {adv.funnel.biggestLeak && (
                       <div
                         style={{
@@ -651,11 +646,13 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
                     {adv.cohort.firstTimeSessions === 0 ? (
                       <Text as="p" tone="subdued">No first-time sessions yet.</Text>
                     ) : (
-                      <BlockStack gap="300">
-                        <FunnelBar label="Saw the intro" value={adv.cohort.firstTimeSessions} max={adv.cohort.firstTimeSessions} />
-                        <FunnelBar label="Chose to continue" value={adv.cohort.decided} max={adv.cohort.firstTimeSessions} />
-                        <FunnelBar label="Finished setup" value={adv.cohort.setupComplete} max={adv.cohort.firstTimeSessions} />
-                      </BlockStack>
+                      <Funnel
+                        stages={[
+                          { key: "intro", label: "Saw the intro", value: adv.cohort.firstTimeSessions },
+                          { key: "decided", label: "Chose to continue", value: adv.cohort.decided },
+                          { key: "setup", label: "Finished setup", value: adv.cohort.setupComplete },
+                        ]}
+                      />
                     )}
                   </BlockStack>
                 </Card>
@@ -894,15 +891,21 @@ function EngagementTab({ data }: { data: PageData }) {
           label="Open → try-on rate"
           value={adv.engagement.openToTryonPct != null ? `${adv.engagement.openToTryonPct}%` : "—"}
           hint="Sessions that tried something on"
+          icon={TargetIcon}
+          iconTone="neutral"
         />
         <KpiTile
           label="Avg try-ons per session"
           value={adv.engagement.avgTryonsPerSession != null ? String(adv.engagement.avgTryonsPerSession) : "—"}
+          icon={CameraIcon}
+          iconTone="neutral"
         />
         <KpiTile
           label="Multi-try sessions"
           value={adv.engagement.multiTryPct != null ? `${adv.engagement.multiTryPct}%` : "—"}
           hint="Tried 2+ items"
+          icon={OrderRepeatIcon}
+          iconTone="neutral"
         />
       </InlineGrid>
 
@@ -955,10 +958,10 @@ function PreviewTab({ data }: { data: PageData }) {
   return (
     <BlockStack gap="500">
       <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
-        <KpiTile label="Impressions" value={p.impressions.toLocaleString()} hint="Preview popups shown" />
-        <KpiTile label="Engagement" value={`${pct(p.engagements)}%`} hint={`${p.engagements.toLocaleString()} clicks`} />
-        <KpiTile label="Try-ons completed" value={p.tryonCompleted.toLocaleString()} hint={p.tryonFailed > 0 ? `${p.tryonFailed} failed` : undefined} />
-        <KpiTile label="Dismissed forever" value={`${pct(p.dismissedForever)}%`} hint={`${p.dismissedForever.toLocaleString()} shoppers`} />
+        <KpiTile label="Impressions" value={p.impressions.toLocaleString()} hint="Preview popups shown" icon={ViewIcon} iconTone="neutral" />
+        <KpiTile label="Engagement" value={`${pct(p.engagements)}%`} hint={`${p.engagements.toLocaleString()} clicks`} icon={CursorIcon} iconTone="money" />
+        <KpiTile label="Try-ons completed" value={p.tryonCompleted.toLocaleString()} hint={p.tryonFailed > 0 ? `${p.tryonFailed} failed` : undefined} icon={CameraIcon} iconTone="good" />
+        <KpiTile label="Dismissed forever" value={`${pct(p.dismissedForever)}%`} hint={`${p.dismissedForever.toLocaleString()} shoppers`} icon={XCircleIcon} iconTone="neutral" />
       </InlineGrid>
 
       <Layout>
@@ -975,10 +978,14 @@ function PreviewTab({ data }: { data: PageData }) {
           <Card padding="500">
             <BlockStack gap="300">
               <SectionHeading eyebrow="Journey" title="Preview funnel" />
-              <FunnelBar label="Shown" value={p.impressions} max={p.impressions} />
-              <FunnelBar label="Engaged" value={p.engagements} max={p.impressions} />
-              <FunnelBar label="Photo uploaded" value={p.photoUploaded} max={p.impressions} />
-              <FunnelBar label="Try-on completed" value={p.tryonCompleted} max={p.impressions} />
+              <Funnel
+                stages={[
+                  { key: "shown", label: "Shown", value: p.impressions },
+                  { key: "engaged", label: "Engaged", value: p.engagements },
+                  { key: "uploaded", label: "Photo uploaded", value: p.photoUploaded },
+                  { key: "completed", label: "Try-on completed", value: p.tryonCompleted },
+                ]}
+              />
             </BlockStack>
           </Card>
         </Layout.Section>
@@ -1013,15 +1020,14 @@ function capitalize(s: string) {
   return s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
-// ─── Complete the Look — proof card ─────────────────────────────────────────
-// Two proofs, weakest to strongest: (1) AOV of attributed orders whose session
-// used the look vs those that didn't (correlational, always available), and
-// (2) treatment-vs-holdout AOV while the 50/50 test runs (causal). Lift
-// percentages only render once both sides clear a minimum sample — below
-// that we show the raw counts and say we're still collecting, never a number
-// that could be noise.
+// ─── Complete the Look — performance card ────────────────────────────────────
+// Correlational performance only: AOV of attributed orders whose session used
+// the look vs those that didn't (always available). The causal 50/50 test —
+// controls and treatment-vs-holdout results — lives on the Proof page with the
+// rest of the testing. Lift percentages only render once both sides clear a
+// minimum sample — below that we show the raw counts and say we're still
+// collecting, never a number that could be noise.
 const CTL_MIN_ORDERS_SPLIT = 5;   // per side, for the with/without AOV compare
-const CTL_MIN_ORDERS_HOLDOUT = 10; // per arm, for the causal lift number
 
 function CtlProofCard({
   ctl,
@@ -1030,20 +1036,13 @@ function CtlProofCard({
   ctl: CtlPerformance;
   money: (n: number) => string;
 }) {
+  const navigate = useNavigate();
   const splitReady =
     ctl.aovWithLook != null && ctl.aovWithoutLook != null &&
     ctl.ordersWithLook >= CTL_MIN_ORDERS_SPLIT && ctl.ordersWithoutLook >= CTL_MIN_ORDERS_SPLIT;
   const splitLift =
     splitReady && ctl.aovWithoutLook! > 0
       ? Math.round(((ctl.aovWithLook! - ctl.aovWithoutLook!) / ctl.aovWithoutLook!) * 100)
-      : null;
-
-  const holdoutReady =
-    ctl.tAov != null && ctl.hAov != null &&
-    ctl.tOrders >= CTL_MIN_ORDERS_HOLDOUT && ctl.hOrders >= CTL_MIN_ORDERS_HOLDOUT;
-  const holdoutLift =
-    holdoutReady && ctl.hAov! > 0
-      ? Math.round(((ctl.tAov! - ctl.hAov!) / ctl.hAov!) * 100)
       : null;
 
   return (
@@ -1090,40 +1089,16 @@ function CtlProofCard({
           </Box>
         )}
 
-        {ctl.holdoutActive ? (
-          <Box background="bg-surface-secondary" borderRadius="200" padding="300">
-            <BlockStack gap="150">
-              <Text as="p" variant="bodyMd" fontWeight="semibold">
-                50/50 proof test{ctl.holdoutSince ? ` · running since ${new Date(ctl.holdoutSince).toLocaleDateString()}` : ""}
-              </Text>
-              <Text as="p" variant="bodySm" tone="subdued">
-                Shoppers who see the offer: {ctl.tSessions.toLocaleString()} sessions · {ctl.tOrders} orders
-                {ctl.tAov != null ? ` · ${money(ctl.tAov)} avg order` : ""}
-                {"  —  "}holdout (never shown): {ctl.hSessions.toLocaleString()} sessions · {ctl.hOrders} orders
-                {ctl.hAov != null ? ` · ${money(ctl.hAov)} avg order` : ""}
-              </Text>
-              {holdoutLift != null ? (
-                <InlineStack gap="200" blockAlign="center">
-                  <Badge tone={holdoutLift >= 0 ? "success" : "critical"}>{`${holdoutLift >= 0 ? "+" : ""}${holdoutLift}% causal AOV lift`}</Badge>
-                  <Text as="span" variant="bodySm" tone="subdued">
-                    Measured, not modeled — the only difference between the groups is the offer.
-                  </Text>
-                </InlineStack>
-              ) : (
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Collecting data — the lift number appears once each group reaches{" "}
-                  {CTL_MIN_ORDERS_HOLDOUT} attributed orders.
-                </Text>
-              )}
-            </BlockStack>
-          </Box>
-        ) : (
-          <Text as="p" variant="bodySm" tone="subdued">
-            Want the causal number? Turn on the 50/50 proof test in Widget Design → Complete the
-            Look. Half your shoppers won&apos;t see the offer for a while, and the order-value gap
-            between the halves is the lift the feature actually causes.
+        <InlineStack gap="300" blockAlign="center" wrap>
+          <Text as="span" variant="bodySm" tone="subdued">
+            {ctl.holdoutActive
+              ? "The 50/50 proof test is running — treatment-vs-holdout results are on the Proof page."
+              : "Want the causal number? Run the 50/50 proof test from the Proof page."}
           </Text>
-        )}
+          <Button variant="plain" onClick={() => navigate("/app/proof")}>
+            Open Proof
+          </Button>
+        </InlineStack>
       </BlockStack>
     </Card>
   );

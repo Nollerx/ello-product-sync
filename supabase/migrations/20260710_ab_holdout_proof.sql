@@ -107,7 +107,7 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'reason', 'rejected');
   END IF;
   INSERT INTO public.vto_ab_exposures (store_slug, experiment_id, session_id, variant, bucket, page_type)
-  VALUES (p_store_slug, p_session_id, p_experiment_id, p_variant, p_bucket, p_page_type)
+  VALUES (p_store_slug, p_experiment_id, p_session_id, p_variant, p_bucket, p_page_type)
   ON CONFLICT (experiment_id, session_id) DO NOTHING;
   RETURN jsonb_build_object('success', true);
 END;

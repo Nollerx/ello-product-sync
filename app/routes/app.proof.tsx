@@ -1,16 +1,23 @@
-// Proof — the merchant-facing evidence page.
+// Proof — the merchant-facing evidence page, and the single home for testing.
 //
-// One page, three jobs:
+// One page, four jobs:
 //   1. The scorecard: attributed sales, try-on→purchase rate, median time to
 //      purchase (tracked since day one, displayed here for the first time).
 //   2. The proof test: start/stop a widget-wide A/B holdout and read the lift
 //      with a significance verdict. Measured, not modeled.
-//   3. The receipts: every attributed order with its Shopify order id and the
+//   3. The outfit-upsell test: the Complete-the-Look 50/50 split (treatment vs
+//      holdout AOV). The toggle used to live on Widget Design; every
+//      experiment now starts and reports here.
+//   4. The receipts: every attributed order with its Shopify order id and the
 //      try-on→purchase gap, exportable, auditable line by line.
+//
+// The two tests are independent by construction: the widget-wide holdout
+// buckets on FNV(session:experiment_id), the CTL split on session-id last-char
+// parity — running both at once cannot cross-contaminate.
 
 import { useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useNavigate } from "react-router";
 import {
   Page,
   Card,
@@ -28,8 +35,17 @@ import { CashDollarIcon, TargetIcon, ClockIcon, ChartVerticalFilledIcon } from "
 import { authenticate } from "../shopify.server";
 import { SectionHeading, brand } from "../components/ui";
 import { HeadlineStrip, KpiTile, StatusPill, type Tone } from "../components/analytics";
-import { getConversionSummary, getStoreContext } from "../lib/analytics.server";
-import { AB_MIN_SESSIONS_PER_ARM, type AbResults } from "../lib/ab-shared";
+import {
+  getConversionSummary,
+  getCtlPerformance,
+  getReturnRates,
+  getStoreContext,
+} from "../lib/analytics.server";
+import {
+  AB_MIN_SESSIONS_PER_ARM,
+  CTL_MIN_ORDERS_PER_ARM,
+  type AbResults,
+} from "../lib/ab-shared";
 import {
   getExperimentResults,
   getLatestExperiment,
@@ -52,10 +68,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const to = new Date();
   const from = new Date(to.getTime() - RANGE_DAYS * 24 * 60 * 60 * 1000);
 
-  const [summary, experiment, receipts] = await Promise.all([
+  const [summary, experiment, receipts, ctl, returns, storeRow] = await Promise.all([
     getConversionSummary(slug, from, to),
     getLatestExperiment(slug),
     getReceipts(slug, from, to, 100),
+    getCtlPerformance(slug, from, to),
+    getReturnRates(slug, from, to),
+    supabaseAdmin
+      .from("vto_stores")
+      .select("complete_the_look_enabled, ctl_holdout_enabled, ctl_holdout_enabled_at")
+      .eq("shop_domain", shop)
+      .maybeSingle()
+      .then((r) => r.data),
   ]);
   const results: AbResults | null = experiment
     ? await getExperimentResults(slug, experiment.id)
@@ -86,6 +110,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     results,
     receipts,
     titles,
+    ctl,
+    ctlFeatureOn: storeRow?.complete_the_look_enabled === true,
+    ctlTestRunning: storeRow?.ctl_holdout_enabled === true,
+    ctlTestSince: (storeRow?.ctl_holdout_enabled_at as string | null) ?? null,
+    returns,
     rangeDays: RANGE_DAYS,
   };
 };
@@ -104,6 +133,33 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const experimentId = String(form.get("experimentId") ?? "");
     if (!experimentId) return { ok: false, error: "Missing experiment id." };
     return stopExperiment(store.slug, experimentId);
+  }
+  // CTL 50/50 test lifecycle (moved here from Widget Design). Same
+  // bookkeeping as before: ctl_holdout_enabled_at is stamped only on the
+  // OFF→ON transition so re-toggling can never shrink the measurement window.
+  if (intent === "ctl_start" || intent === "ctl_stop") {
+    const wantOn = intent === "ctl_start";
+    const { data: prior } = await supabaseAdmin
+      .from("vto_stores")
+      .select("ctl_holdout_enabled, complete_the_look_enabled")
+      .eq("shop_domain", session.shop)
+      .maybeSingle();
+    if (wantOn && prior?.complete_the_look_enabled !== true) {
+      return { ok: false, error: "Turn on Complete the Look in Widget Design first." };
+    }
+    const turningOn = wantOn && prior?.ctl_holdout_enabled !== true;
+    const { error } = await supabaseAdmin
+      .from("vto_stores")
+      .update({
+        ctl_holdout_enabled: wantOn,
+        ...(turningOn ? { ctl_holdout_enabled_at: new Date().toISOString() } : {}),
+      })
+      .eq("shop_domain", session.shop);
+    if (error) {
+      console.error("[proof] CTL test toggle failed:", error.message);
+      return { ok: false, error: "Could not update the outfit test. Try again." };
+    }
+    return { ok: true };
   }
   return { ok: false, error: "Unknown action." };
 };
@@ -197,6 +253,114 @@ function ArmPanel({
   );
 }
 
+// CTL arm panel: same silhouette as ArmPanel but the headline number is AOV —
+// the outfit test moves order VALUE, not conversion, so that's what reads big.
+function CtlArmPanel({
+  label,
+  hint,
+  aov,
+  sessions,
+  orders,
+  revenue,
+  accent,
+  currency,
+}: {
+  label: string;
+  hint: string;
+  aov: number | null;
+  sessions: number;
+  orders: number;
+  revenue: number;
+  accent?: boolean;
+  currency: string | null;
+}) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${accent ? brand.blue200 : brand.ink200}`,
+        background: accent ? brand.blue50 : brand.white,
+        borderRadius: 12,
+        padding: "18px 20px",
+      }}
+    >
+      <BlockStack gap="100">
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 650,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: accent ? brand.blue700 : brand.ink500,
+          }}
+        >
+          {label}
+        </span>
+        <span style={{ fontSize: 38, fontWeight: 600, lineHeight: 1.05, color: accent ? brand.blue : brand.ink }}>
+          {aov != null ? money(aov, currency) : "—"}
+        </span>
+        <Text as="span" variant="bodySm" tone="subdued">
+          average order value
+        </Text>
+        <div style={{ borderTop: `1px solid ${accent ? brand.blue200 : brand.ink100}`, marginTop: 8, paddingTop: 10, fontSize: 13, color: brand.ink600 }}>
+          <strong style={{ color: brand.ink }}>{sessions.toLocaleString()}</strong> shoppers ·{" "}
+          <strong style={{ color: brand.ink }}>{orders.toLocaleString()}</strong> orders ·{" "}
+          <strong style={{ color: brand.ink }}>{money(revenue, currency)}</strong> revenue
+        </div>
+        <Text as="span" variant="bodySm" tone="subdued">
+          {hint}
+        </Text>
+      </BlockStack>
+    </div>
+  );
+}
+
+// Rate panel: the returns comparison — a big percentage with its units line.
+function RatePanel({
+  label,
+  ratePct,
+  detail,
+  accent,
+}: {
+  label: string;
+  ratePct: number | null;
+  detail: string;
+  accent?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${accent ? brand.blue200 : brand.ink200}`,
+        background: accent ? brand.blue50 : brand.white,
+        borderRadius: 12,
+        padding: "18px 20px",
+      }}
+    >
+      <BlockStack gap="100">
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 650,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: accent ? brand.blue700 : brand.ink500,
+          }}
+        >
+          {label}
+        </span>
+        <span style={{ fontSize: 38, fontWeight: 600, lineHeight: 1.05, color: accent ? brand.blue : brand.ink }}>
+          {ratePct != null ? `${ratePct.toFixed(1)}%` : "—"}
+        </span>
+        <Text as="span" variant="bodySm" tone="subdued">
+          of units returned
+        </Text>
+        <div style={{ borderTop: `1px solid ${accent ? brand.blue200 : brand.ink100}`, marginTop: 8, paddingTop: 10, fontSize: 13, color: brand.ink600 }}>
+          {detail}
+        </div>
+      </BlockStack>
+    </div>
+  );
+}
+
 function liftVerdict(results: AbResults): { label: string; tone: Tone } {
   if (!results.hasMinimumSample) return { label: "Collecting data", tone: "neutral" };
   if (results.relativeLift == null || results.confidence == null)
@@ -212,6 +376,7 @@ function liftVerdict(results: AbResults): { label: string; tone: Tone } {
 export default function ProofPage() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ ok: boolean; error?: string }>();
+  const navigate = useNavigate();
   const [holdoutPct, setHoldoutPct] = useState("10");
 
   if (!data.ready) {
@@ -224,8 +389,17 @@ export default function ProofPage() {
     );
   }
 
-  const { summary, experiment, results, receipts, titles, rangeDays } = data;
+  const { summary, experiment, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, returns, rangeDays } = data;
   const busy = fetcher.state !== "idle";
+
+  // Returns comparison renders only once real refunds exist — a "0% return
+  // rate" computed from zero recorded refunds would be a hollow stat.
+  const returnsReady =
+    returns != null && returns.allUnitsRefunded > 0 && returns.allUnitsSold > 0;
+  const returnsGap =
+    returnsReady && returns.triedReturnRatePct != null && returns.allReturnRatePct != null
+      ? returns.allReturnRatePct - returns.triedReturnRatePct
+      : null;
   const actionError = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null;
 
   const attributedRevenue = summary?.revenue ?? 0;
@@ -238,6 +412,19 @@ export default function ProofPage() {
   const liftPct =
     results?.relativeLift != null ? `${results.relativeLift >= 0 ? "+" : ""}${(results.relativeLift * 100).toFixed(1)}%` : "—";
   const confidencePct = results?.confidence != null ? `${Math.min(99.9, results.confidence * 100).toFixed(1)}%` : "—";
+
+  // CTL 50/50 verdict: causal AOV lift, gated on orders per arm (AOV needs
+  // orders to stabilize, unlike the conversion test's session gate).
+  const ctlReady =
+    ctl != null &&
+    ctl.tAov != null &&
+    ctl.hAov != null &&
+    ctl.tOrders >= CTL_MIN_ORDERS_PER_ARM &&
+    ctl.hOrders >= CTL_MIN_ORDERS_PER_ARM;
+  const ctlLift =
+    ctlReady && ctl.hAov! > 0
+      ? Math.round(((ctl.tAov! - ctl.hAov!) / ctl.hAov!) * 100)
+      : null;
 
   const receiptRows = receipts.slice(0, 50).map((r) => [
     r.orderId ? `#${r.orderId.replace(/^.*\//, "")}` : "—",
@@ -427,6 +614,142 @@ export default function ProofPage() {
             )}
           </BlockStack>
         </Card>
+
+        <Card padding="500">
+          <BlockStack gap="400">
+            <InlineStack align="space-between" blockAlign="center">
+              <SectionHeading
+                title="The outfit upsell test"
+                description="Complete the Look, 50/50: half your shoppers see the outfit offer, half never do. The order-value gap between the halves is the lift the feature actually causes."
+              />
+              {ctlTestRunning && <StatusPill label="Running" tone="watch" />}
+            </InlineStack>
+
+            {!ctlFeatureOn && (
+              <InlineStack gap="300" blockAlign="center" wrap>
+                <Text as="span" variant="bodyMd" tone="subdued">
+                  Complete the Look is off — turn it on first, then come back to prove its lift.
+                </Text>
+                <Button onClick={() => navigate("/app/widget-design")}>Open Widget Design</Button>
+              </InlineStack>
+            )}
+
+            {ctlFeatureOn && !ctlTestRunning && (
+              <InlineStack gap="300" blockAlign="center" wrap>
+                <fetcher.Form method="post">
+                  <input type="hidden" name="intent" value="ctl_start" />
+                  <Button submit variant="primary" loading={busy}>
+                    Start 50/50 test
+                  </Button>
+                </fetcher.Form>
+                <Text as="span" variant="bodySm" tone="subdued">
+                  Assignment is sticky per shopper. Stop any time; everyone sees the offer again instantly.
+                </Text>
+              </InlineStack>
+            )}
+
+            {ctlFeatureOn && ctlTestRunning && (
+              <BlockStack gap="300">
+                <InlineStack gap="300" blockAlign="center" wrap>
+                  <Badge tone="success">Running</Badge>
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    50% holdout
+                    {ctlTestSince
+                      ? ` · started ${new Date(ctlTestSince).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+                      : ""}
+                    {" · your preview link (?ello_ctl=1) always shows the offer, so you can demo while it runs"}
+                  </Text>
+                  <fetcher.Form method="post">
+                    <input type="hidden" name="intent" value="ctl_stop" />
+                    <Button submit tone="critical" variant="plain" loading={busy}>
+                      Stop test
+                    </Button>
+                  </fetcher.Form>
+                </InlineStack>
+
+                {ctl && (
+                  <>
+                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                      <CtlArmPanel
+                        label="Saw the offer"
+                        hint="shoppers with the outfit rail available"
+                        aov={ctl.tAov}
+                        sessions={ctl.tSessions}
+                        orders={ctl.tOrders}
+                        revenue={ctl.tRevenue}
+                        currency={currency}
+                        accent
+                      />
+                      <CtlArmPanel
+                        label="Holdout (no offer)"
+                        hint="same store, outfit rail hidden"
+                        aov={ctl.hAov}
+                        sessions={ctl.hSessions}
+                        orders={ctl.hOrders}
+                        revenue={ctl.hRevenue}
+                        currency={currency}
+                      />
+                    </InlineGrid>
+                    {ctlLift != null ? (
+                      <InlineStack gap="300" blockAlign="center" wrap>
+                        <StatusPill
+                          label={ctlLift >= 0 ? "Causal AOV lift" : "No lift yet"}
+                          tone={ctlLift >= 0 ? "good" : "watch"}
+                        />
+                        <Text as="span" variant="bodyMd">
+                          Average order value{" "}
+                          <strong>{`${ctlLift >= 0 ? "+" : ""}${ctlLift}%`}</strong> vs holdout —
+                          measured, not modeled; the only difference between the groups is the offer.
+                        </Text>
+                      </InlineStack>
+                    ) : (
+                      <Banner tone="info">
+                        <p>
+                          Collecting data — the lift number unlocks at {CTL_MIN_ORDERS_PER_ARM} attributed
+                          orders per group ({ctl.tOrders} with the offer / {ctl.hOrders} holdout so far).
+                        </p>
+                      </Banner>
+                    )}
+                  </>
+                )}
+              </BlockStack>
+            )}
+          </BlockStack>
+        </Card>
+
+        {returnsReady && (
+          <Card padding="500">
+            <BlockStack gap="400">
+              <SectionHeading
+                title="Returns"
+                description="Do tried-on items come back less often? Refunded units as a share of units sold, from your store's own refunds — tried-on items next to your store-wide baseline."
+              />
+              <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                <RatePanel
+                  label="Tried on before buying"
+                  ratePct={returns.triedReturnRatePct}
+                  detail={`${returns.triedUnitsRefunded.toLocaleString()} of ${returns.triedUnitsSold.toLocaleString()} units returned`}
+                  accent
+                />
+                <RatePanel
+                  label="Store-wide baseline"
+                  ratePct={returns.allReturnRatePct}
+                  detail={`${returns.allUnitsRefunded.toLocaleString()} of ${returns.allUnitsSold.toLocaleString()} units returned`}
+                />
+              </InlineGrid>
+              {returnsGap != null && returnsGap > 0 && (
+                <InlineStack gap="300" blockAlign="center" wrap>
+                  <StatusPill label="Fewer returns" tone="good" />
+                  <Text as="span" variant="bodyMd">
+                    Tried-on items come back{" "}
+                    <strong>{returnsGap.toFixed(1)} points less often</strong> than your store
+                    average — from your own orders, not an industry stat.
+                  </Text>
+                </InlineStack>
+              )}
+            </BlockStack>
+          </Card>
+        )}
 
         <Card padding="500">
           <BlockStack gap="400">

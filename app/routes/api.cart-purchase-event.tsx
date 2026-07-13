@@ -65,6 +65,9 @@ export async function action({ request }: ActionFunctionArgs) {
       p_total_price: body.total_price
         ? parseFloat(body.total_price as string)
         : null,
+      p_subtotal_price: body.subtotal_price
+        ? parseFloat(body.subtotal_price as string)
+        : null,
       p_currency: (body.currency as string) ?? null,
       p_line_items: JSON.stringify(body.line_items ?? []),
     });
@@ -89,14 +92,25 @@ export async function action({ request }: ActionFunctionArgs) {
       session_id.length <= 64 &&
       store_slug.length <= 100
     ) {
-      await supabase.rpc("record_ab_exposure", {
-        p_store_slug: store_slug,
-        p_session_id: session_id,
-        p_experiment_id: experimentId,
-        p_variant: variant,
-        p_bucket: bucket,
-        p_page_type: (body.page_type as string) ?? null,
-      });
+      // Beacons always get 200 (the client can't act on failure), but a
+      // dropped exposure must at least be loud in the logs — a silent RPC
+      // error here cost us every exposure row until 2026-07-13.
+      const { data: abResult, error: abError } = await supabase.rpc(
+        "record_ab_exposure",
+        {
+          p_store_slug: store_slug,
+          p_session_id: session_id,
+          p_experiment_id: experimentId,
+          p_variant: variant,
+          p_bucket: bucket,
+          p_page_type: (body.page_type as string) ?? null,
+        },
+      );
+      if (abError) {
+        console.error("[ab] exposure RPC failed:", abError.message);
+      } else if (abResult && (abResult as { success?: boolean }).success === false) {
+        console.warn("[ab] exposure rejected:", JSON.stringify(abResult));
+      }
     }
   }
 

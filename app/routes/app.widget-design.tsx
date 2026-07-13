@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, FunctionComponent, ReactNode, SVGProps } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useNavigate } from "react-router";
 import {
   Page,
   Card,
@@ -117,7 +117,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         "pdp_image_swap_enabled",
         "pdp_image_selector",
         "complete_the_look_enabled",
-        "ctl_holdout_enabled",
         "widget_position",
         "widget_enabled",
         "desktop_preview_enabled",
@@ -176,7 +175,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     pdpImageSwapEnabled: row?.pdp_image_swap_enabled ?? DEFAULTS.pdpImageSwapEnabled,
     pdpImageSelector: (row?.pdp_image_selector as string | null) ?? DEFAULTS.pdpImageSelector,
     completeTheLookEnabled: row?.complete_the_look_enabled ?? DEFAULTS.completeTheLookEnabled,
-    ctlHoldoutEnabled: (row?.ctl_holdout_enabled as boolean | null) ?? false,
     shopHandle: session.shop.replace(".myshopify.com", ""),
     position: (row?.widget_position as "left" | "right") ?? DEFAULTS.position,
     previewEnabled: row?.desktop_preview_enabled ?? DEFAULTS.previewEnabled,
@@ -212,23 +210,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     quickPicks = [];
   }
 
-  // Holdout window bookkeeping: stamp ctl_holdout_enabled_at only on the
-  // OFF→ON transition — re-saving while the test runs must not shrink the
-  // measurement window the lift numbers are computed over.
-  const wantHoldout = bool("ctl_holdout_enabled");
-  const { data: priorRow } = await supabaseAdmin
-    .from("vto_stores")
-    .select("ctl_holdout_enabled")
-    .eq("shop_domain", session.shop)
-    .maybeSingle();
-  const holdoutTurningOn = wantHoldout && priorRow?.ctl_holdout_enabled !== true;
-
+  // The CTL 50/50 test toggle lives on the Proof page now (with the rest of
+  // the testing) — this action must never write ctl_holdout_enabled, or a
+  // routine design save would silently stop a running test.
   const { data, error } = await supabaseAdmin
     .from("vto_stores")
     .update({
       widget_enabled: bool("widget_enabled"),
-      ctl_holdout_enabled: wantHoldout,
-      ...(holdoutTurningOn ? { ctl_holdout_enabled_at: new Date().toISOString() } : {}),
       preview_theme: form.get("preview_theme") === "dark" ? "dark" : "light",
       featured_item_id: featuredRaw || null,
       quick_picks_ids: quickPicks,
@@ -1738,7 +1726,6 @@ export default function WidgetDesign() {
   const [pdpImageSwapEnabled, setPdpImageSwapEnabled] = useState<boolean>(initial.pdpImageSwapEnabled);
   const [pdpImageSelector, setPdpImageSelector] = useState<string>(initial.pdpImageSelector);
   const [completeTheLookEnabled, setCompleteTheLookEnabled] = useState<boolean>(initial.completeTheLookEnabled);
-  const [ctlHoldoutEnabled, setCtlHoldoutEnabled] = useState<boolean>(initial.ctlHoldoutEnabled);
   const [position, setPosition] = useState<"left" | "right">(initial.position);
   const [previewEnabled, setPreviewEnabled] = useState<boolean>(initial.previewEnabled);
   const [previewDelay, setPreviewDelay] = useState<string>(String(initial.previewDelay));
@@ -1748,6 +1735,7 @@ export default function WidgetDesign() {
   const [quickPicks, setQuickPicks] = useState<CuratedItem[]>(initial.quickPicks);
   const [spot, setSpot] = useState<SpotKey | null>(null);
 
+  const navigate = useNavigate();
   const saving = fetcher.state !== "idle";
   const saved = fetcher.data?.ok === true;
   const saveError = fetcher.data && fetcher.data.ok === false ? fetcher.data.error : null;
@@ -1770,7 +1758,6 @@ export default function WidgetDesign() {
       pdpImageSwapEnabled !== initial.pdpImageSwapEnabled ||
       pdpImageSelector.trim() !== initial.pdpImageSelector.trim() ||
       completeTheLookEnabled !== initial.completeTheLookEnabled ||
-      ctlHoldoutEnabled !== initial.ctlHoldoutEnabled ||
       position !== initial.position ||
       previewEnabled !== initial.previewEnabled ||
       String(previewDelay) !== String(initial.previewDelay) ||
@@ -1782,7 +1769,7 @@ export default function WidgetDesign() {
   }, [
     brandColor, inlineEnabled, inlineText, inlineHideOos, floatPdp,
     floatNonPdp, fittingRoomEnabled, pdpImageSwapEnabled, pdpImageSelector, completeTheLookEnabled,
-    ctlHoldoutEnabled, position,
+    position,
     previewEnabled, previewDelay,
     widgetEnabled, previewTheme, featured, quickPicks, initial,
   ]);
@@ -1799,7 +1786,6 @@ export default function WidgetDesign() {
     fd.set("pdp_image_swap_enabled", String(pdpImageSwapEnabled));
     fd.set("pdp_image_selector", pdpImageSelector);
     fd.set("complete_the_look_enabled", String(completeTheLookEnabled));
-    fd.set("ctl_holdout_enabled", String(ctlHoldoutEnabled));
     fd.set("position", position);
     fd.set("preview_enabled", String(previewEnabled));
     fd.set("preview_delay", previewDelay);
@@ -2141,7 +2127,8 @@ export default function WidgetDesign() {
                   </Button>
                 </div>
 
-                {/* 50/50 proof test — its own switch, only shown once CTL is on */}
+                {/* Testing lives on the Proof page — one home for every
+                    experiment, so this page stays purely about design. */}
                 {completeTheLookEnabled && (
                   <div
                     style={{
@@ -2154,35 +2141,17 @@ export default function WidgetDesign() {
                       flexWrap: "wrap",
                     }}
                   >
-                    <IconChip
-                      source={ChartCohortIcon}
-                      tone={ctlHoldoutEnabled ? "watch" : "neutral"}
-                      size={34}
-                    />
+                    <IconChip source={ChartCohortIcon} tone="neutral" size={34} />
                     <div style={{ flex: "1 1 240px", minWidth: 0 }}>
-                      <InlineStack gap="200" blockAlign="center">
-                        <span style={{ fontSize: 13, fontWeight: 600, color: brand.ink }}>
-                          50/50 proof test
-                        </span>
-                        {ctlHoldoutEnabled && <StatusPill label="Running" tone="watch" />}
-                      </InlineStack>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: brand.ink }}>
+                        Want proof it lifts order value?
+                      </span>
                       <div style={{ fontSize: 12, color: brand.ink500, marginTop: 2, lineHeight: 1.45 }}>
-                        Half your shoppers see the offer, half never do. The order-value gap between
-                        the halves is the true lift — reported on the Analytics page, measured, not
-                        modeled.
+                        Run the 50/50 test from the Proof page — half your shoppers see the offer,
+                        half never do, and the order-value gap is the true lift.
                       </div>
-                      {ctlHoldoutEnabled && (
-                        <div style={{ fontSize: 12, color: brand.ink500, marginTop: 4, lineHeight: 1.45 }}>
-                          Your preview link (?ello_ctl=1) always shows the offer, so you can demo it
-                          while the test runs. Turn it off once you have your number.
-                        </div>
-                      )}
                     </div>
-                    <ToggleSwitch
-                      checked={ctlHoldoutEnabled}
-                      onChange={setCtlHoldoutEnabled}
-                      ariaLabel="50/50 proof test"
-                    />
+                    <Button onClick={() => navigate("/app/proof")}>Open Proof</Button>
                   </div>
                 )}
               </BlockStack>

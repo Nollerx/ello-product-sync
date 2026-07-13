@@ -142,6 +142,13 @@
 
         var __elloHubBind = function (el) {
             if (!el || el.getAttribute('data-ello-hub-bound') === '1') return;
+            // A/B holdout shoppers must not see the merchant's hub nav link —
+            // the panel is suppressed for them, so the link would be a dead
+            // click (and a visible Ello surface contaminating the control arm).
+            if (window.__elloAbState && window.__elloAbState.variant === 'holdout') {
+                el.style.display = 'none';
+                return;
+            }
             el.setAttribute('data-ello-hub-bound', '1');
             el.addEventListener('click', function (e) {
                 var which = (el.getAttribute('data-ello-hub') || '').toLowerCase();
@@ -255,7 +262,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.8.1';
+    const WIDGET_VERSION = '2.8.4';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -295,8 +302,19 @@
     // Fetch Supabase config from the server (env-aware — staging vs production auto-resolved)
     elloLog("[Ello Loader] Fetching supabase config from:", WIDGET_BASE_URL + "/api/widget-config");
     let supabaseConfigPromise = fetch(`${WIDGET_BASE_URL}/api/widget-config`, { credentials: 'omit' })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+            if (!r.ok) throw new Error('widget-config HTTP ' + r.status);
+            return r.json();
+        })
         .then(function (cfg) {
+            // Shape-check before trusting the response: an origin that answers
+            // JSON but isn't the real app (dev-mode vite server, proxy, captive
+            // portal) must not poison the config — undefined fields become
+            // apikey: "undefined" on the legacy RPC and a guaranteed 401.
+            // Throwing here routes to the hardcoded production fallback below.
+            if (!cfg || !cfg.supabaseUrl || !cfg.supabaseAnonKey) {
+                throw new Error('widget-config response missing supabase fields');
+            }
             elloLog("[Ello Loader] Supabase config loaded:", cfg.supabaseUrl);
             window.ELLO_SUPABASE_CONFIG = cfg;
             return cfg;
@@ -592,6 +610,13 @@
         if (!ELLO_AB.override) elloAbLogExposure(ELLO_AB, cfg);
 
         if (variant === 'holdout') {
+            // Hub triggers bound before the config resolved are already
+            // wired and visible — hide them now (new ones are hidden at
+            // bind time in __elloHubBind).
+            try {
+                var hubEls = document.querySelectorAll('a[href*="ello-fitting-room"], [data-ello-hub]');
+                for (var hubI = 0; hubI < hubEls.length; hubI++) hubEls[hubI].style.display = 'none';
+            } catch (e) { /* hub hide must never break config apply */ }
             cfg.__elloAbHoldout = true;
             cfg.inlineButtonEnabled = false;
             cfg.floatingWidgetPdpEnabled = false;
