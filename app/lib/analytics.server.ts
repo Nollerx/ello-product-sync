@@ -222,7 +222,15 @@ export interface ConversionSummary {
   viewed: number;
   addedToCart: number;
   purchased: number;
+  /** Gross Qualified Revenue: tried-on line items only (discounted line price,
+   *  no shipping/taxes, no untried items). Legacy rows without line prices are
+   *  prorated by tried-on units. */
   revenue: number;
+  /** Refunded tried-on lines inside attributed orders, counted only when the
+   *  refund lands within 45 days of the purchase (the returns netting window). */
+  refundedRevenue: number;
+  /** revenue − refundedRevenue, floored at 0 per order — the billing basis. */
+  netRevenue: number;
   purchaseConversionPct: number | null;
 }
 
@@ -249,8 +257,52 @@ export async function getConversionSummary(
     addedToCart: Number(row.sessions_added_to_cart ?? 0),
     purchased: Number(row.sessions_purchased ?? 0),
     revenue: Number(row.attributed_revenue ?? 0),
+    refundedRevenue: Number(row.refunded_revenue ?? 0),
+    netRevenue: Number(row.attributed_revenue_net ?? row.attributed_revenue ?? 0),
     purchaseConversionPct:
       row.purchase_conversion_pct != null ? Number(row.purchase_conversion_pct) : null,
+  };
+}
+
+// Tried-on vs store-wide return rates, plus the refunded qualified revenue that
+// nets out of billing. Backed by refund_events (refunds/create webhook).
+export interface ReturnRates {
+  triedUnitsSold: number;
+  triedUnitsRefunded: number;
+  triedReturnRatePct: number | null;
+  allUnitsSold: number;
+  allUnitsRefunded: number;
+  allReturnRatePct: number | null;
+  refundedQualifiedRevenue: number;
+}
+
+export async function getReturnRates(
+  slug: string,
+  from: Date,
+  to: Date,
+): Promise<ReturnRates | null> {
+  const { data, error } = await supabaseAdmin.rpc("get_vto_return_rates", {
+    p_store_slug: slug,
+    p_from: from.toISOString(),
+    p_to: to.toISOString(),
+  });
+  if (error) {
+    console.error("[analytics] return rates failed (non-fatal):", error.message);
+    return null;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row = (Array.isArray(data) ? data[0] : null) as any;
+  if (!row) return null;
+  return {
+    triedUnitsSold: Number(row.tried_units_sold ?? 0),
+    triedUnitsRefunded: Number(row.tried_units_refunded ?? 0),
+    triedReturnRatePct:
+      row.tried_return_rate_pct != null ? Number(row.tried_return_rate_pct) : null,
+    allUnitsSold: Number(row.all_units_sold ?? 0),
+    allUnitsRefunded: Number(row.all_units_refunded ?? 0),
+    allReturnRatePct:
+      row.all_return_rate_pct != null ? Number(row.all_return_rate_pct) : null,
+    refundedQualifiedRevenue: Number(row.refunded_qualified_revenue ?? 0),
   };
 }
 

@@ -73,11 +73,17 @@ register(({ analytics, browser, settings }) => {
     }
     if (!sessionId) return;
 
+    // line_price = finalLinePrice: the discounted total for the whole line
+    // (unit price × quantity, after discounts, before shipping/taxes). This is
+    // the billing basis for Qualified Revenue — attribution sums ONLY the
+    // tried-on lines, never the order total.
     const lineItems =
       checkout.lineItems?.map((li) => ({
         product_id: li.variant?.product?.id ?? null,
         variant_id: li.variant?.id ?? null,
         quantity: li.quantity ?? 1,
+        line_price: li.finalLinePrice?.amount ?? null,
+        title: li.title ?? null,
       })) ?? [];
 
     send({
@@ -86,6 +92,9 @@ register(({ analytics, browser, settings }) => {
       store_slug: storeSlug,
       order_id: checkout.order?.id ?? null,
       total_price: checkout.totalPrice?.amount ?? null,
+      // Merchandise total after discounts, before shipping/taxes — the
+      // order-level cross-check for the line_price sum.
+      subtotal_price: checkout.subtotalPrice?.amount ?? null,
       currency: checkout.totalPrice?.currencyCode ?? null,
       line_items: lineItems,
     });
