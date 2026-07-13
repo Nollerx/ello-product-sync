@@ -1,0 +1,25 @@
+# Per-client CDN worker — wrangler template
+#
+# The live worker for the PUBLIC app was configured via the Cloudflare
+# dashboard (see CLOUDFLARE_CDN_DECISION.md). For a new client, either repeat
+# the dashboard flow (playbook Phase 2, step 7) or use this template with
+# wrangler:
+#
+#   1. cp cloudflare/widget-proxy-worker.js cloudflare/widget-proxy-worker.<client>.js
+#   2. In the copy, change ONLY the ORIGIN constant to the client's Cloud Run URL.
+#   3. cp this file to cloudflare/wrangler.<client>.toml, fill REPLACE_ME below.
+#   4. npx wrangler deploy -c cloudflare/wrangler.<client>.toml
+#      (the custom_domain route auto-creates DNS + cert on the ellotryon.com zone)
+#   5. Dashboard: disable the workers.dev subdomain for the new worker;
+#      confirm Bot Fight Mode stays OFF for the zone.
+#
+# Requires Cloudflare Workers Paid before enterprise traffic (Free = 100K
+# req/day, one LA-class day is ~700K–1M requests).
+
+name = "ello-widget-proxy-REPLACE_ME_CLIENT"
+main = "widget-proxy-worker.REPLACE_ME_CLIENT.js"
+compatibility_date = "2026-07-01"
+
+routes = [
+  { pattern = "widget-REPLACE_ME_CLIENT.ellotryon.com", custom_domain = true }
+]

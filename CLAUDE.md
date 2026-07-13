@@ -16,9 +16,9 @@ This single repo (`Nollerx/ello-product-sync`, branch `main`) builds **one Docke
 | Cloud Run env file | `cloud_run_env.yaml` | `cloud_run_env_custom.yaml` |
 | Cloud Run service | `ello-vto-public-13593516897` | `custom-ello-app-13593516897` |
 | Billing | Shopify Billing API (`BILLING_TEST_MODE=false` — real charges live as of 2026-05-16) | None — Stripe-billed externally (`SKIP_BILLING=true`, `APP_DISTRIBUTION=SingleMerchant`) |
-| Live merchants | App Store installs (no paying merchants yet) | **Marcos Rivera / Kaizen Marketing** (Squarespace shop) — real paying merchant |
+| Live merchants | App Store installs (no paying merchants yet) | Formerly **Marcos Rivera / Kaizen Marketing** — no longer a customer; no active paying merchant on the custom app |
 
-A parallel Cloud Run service `custom-ello-app-13593516897-13593516897` (doubled suffix) also exists and has received deploys recently. It responds at `https://custom-ello-app-13593516897-13593516897-13593516897.us-central1.run.app` (triple-suffix URL). Shopify routes the Custom Ello App to the **single-suffix** service via `shopify.app.custom.toml`'s `application_url`, so the doubled one is **not** what Marcos hits. Don't deploy to it without investigating where its existing deploys came from.
+A parallel Cloud Run service `custom-ello-app-13593516897-13593516897` (doubled suffix) also exists and has received deploys recently. It responds at `https://custom-ello-app-13593516897-13593516897-13593516897.us-central1.run.app` (triple-suffix URL). Shopify routes the Custom Ello App to the **single-suffix** service via `shopify.app.custom.toml`'s `application_url`, so the doubled one is **not** what the Custom Ello App serves. Don't deploy to it without investigating where its existing deploys came from.
 
 ## ML / try-on inference service (separate)
 
@@ -111,7 +111,7 @@ There is no `test` script in this repo.
 1. **Always** run the pre-deploy gate (lint + typecheck + build) before any `gcloud run deploy`. If any fails, stop and fix.
 2. **Always** show the diff first and ask: "Deploy to public, custom, or both?" Never assume both.
 3. Each deploy target requires an explicit **"go"** from Andrew before you run the command:
-   - **Custom app** — Marcos is a real paying merchant. Re-state this before asking for "go".
+   - **Custom app** — single-merchant production service (Marcos / Kaizen churned; no active paying merchant). Still get an explicit "go" before deploying.
    - **Public app** — live on the App Store.
    - **ML service** — hits every merchant.
 4. **Public-app billing flag:** `cloud_run_env.yaml` has `BILLING_TEST_MODE: "false"` — real Shopify charges are live (as of 2026-05-16). Do not flip this without an explicit instruction. Surface its current value before each public deploy and ask whether to keep or flip.

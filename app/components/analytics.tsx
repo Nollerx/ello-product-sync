@@ -1,14 +1,18 @@
 // Shared analytics UI: time-range selector, deltas, charts, heatmap, funnel,
 // insights, and the free-plan lock. Brand-styled to match components/ui.tsx.
 
-import { useId, useRef, useState } from "react";
-import type { FunctionComponent, MouseEvent as ReactMouseEvent, ReactNode, SVGProps } from "react";
+import { Fragment, useId, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { BlockStack, Box, Button, ButtonGroup, Card, InlineStack, Text } from "@shopify/polaris";
 import { MagicIcon } from "@shopify/polaris-icons";
 import { RANGE_OPTIONS, parseRange, type RangeKey } from "../lib/timerange";
-import { brand } from "./ui";
+import { brand, IconChip, StatusPill, TONE_STYLES, type IconSource, type Tone } from "./ui";
 import type { Insight } from "../lib/analytics-shared";
+
+// Re-exported so existing `../components/analytics` imports keep working; the
+// definitions now live in ./ui as the single source of truth for the tone system.
+export { IconChip, StatusPill, type Tone };
 
 // ─── Time range selector (?range=7d|30d|90d, preserves other params) ───────
 export function TimeRangeSelector() {
@@ -42,56 +46,6 @@ export function Delta({ value, invert }: { value: number | null; invert?: boolea
     <span style={{ fontSize: 12, fontWeight: 600, color }}>
       {arrow} {Math.abs(value)}%
       <span style={{ color: brand.ink500, fontWeight: 400 }}> vs prev.</span>
-    </span>
-  );
-}
-
-// ─── Semantic tone system ───────────────────────────────────────────────────
-// One vocabulary of meaning for the whole analytics surface: color always says
-// the SAME thing. money = revenue (blue), good/watch/bad = health (green/amber/
-// red), neutral = a count that isn't inherently good or bad (ink).
-export type Tone = "money" | "good" | "watch" | "bad" | "neutral";
-
-const TONE_STYLES: Record<Tone, { fg: string; bg: string; icon: string }> = {
-  money: { fg: brand.blue700, bg: brand.blue100, icon: brand.blue },
-  good: { fg: brand.successInk, bg: brand.successBg, icon: brand.success },
-  watch: { fg: brand.warningInk, bg: brand.warningBg, icon: brand.warning },
-  bad: { fg: brand.dangerInk, bg: brand.dangerBg, icon: brand.danger },
-  neutral: { fg: brand.ink600, bg: brand.ink50, icon: brand.ink600 },
-};
-
-type IconSource = FunctionComponent<SVGProps<SVGSVGElement>>;
-
-// Tinted square holding a Polaris icon, colored by tone. `fill` is an inherited
-// SVG property and Polaris icons ship no hardcoded fill, so the brand hex on the
-// icon element colors the paths.
-export function IconChip({ source: Source, tone = "neutral", size = 30 }: { source: IconSource; tone?: Tone; size?: number }) {
-  const s = TONE_STYLES[tone];
-  return (
-    <span
-      aria-hidden
-      style={{
-        width: size,
-        height: size,
-        borderRadius: 8,
-        background: s.bg,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexShrink: 0,
-      }}
-    >
-      <Source width={Math.round(size * 0.58)} height={Math.round(size * 0.58)} style={{ fill: s.icon }} />
-    </span>
-  );
-}
-
-// One-word verdict pill. Pairs with a metric to turn a raw number into a judgment.
-export function StatusPill({ label, tone }: { label: string; tone: Tone }) {
-  const s = TONE_STYLES[tone];
-  return (
-    <span style={{ fontSize: 11, fontWeight: 600, color: s.fg, background: s.bg, padding: "2px 8px", borderRadius: 20, whiteSpace: "nowrap" }}>
-      {label}
     </span>
   );
 }
@@ -502,7 +456,23 @@ export function TrendChart({
 // ─── Horizontal funnel bar ──────────────────────────────────────────────────
 // `tone` colors the fill (default money/blue). `note` adds a right-aligned tag
 // such as a drop-off %, colored to match — used to flag the biggest leak in red.
-export function FunnelBar({ label, value, max, tone = "money", note }: { label: string; value: number; max: number; tone?: Tone; note?: string }) {
+// `showPct` appends the share-of-top; suppress it inside <Funnel>, where the
+// drop-off connector already tells the percentage story.
+export function FunnelBar({
+  label,
+  value,
+  max,
+  tone = "money",
+  note,
+  showPct = true,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  tone?: Tone;
+  note?: string;
+  showPct?: boolean;
+}) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
   const fill = TONE_STYLES[tone].icon;
   const highlight = tone === "bad" || tone === "watch";
@@ -511,12 +481,152 @@ export function FunnelBar({ label, value, max, tone = "money", note }: { label: 
       <InlineStack align="space-between" blockAlign="center">
         <span style={{ fontSize: 13, fontWeight: highlight ? 600 : 400, color: highlight ? TONE_STYLES[tone].fg : brand.ink }}>{label}</span>
         <span style={{ fontSize: 13, color: highlight ? TONE_STYLES[tone].fg : brand.ink500, fontWeight: highlight ? 600 : 400 }}>
-          {value.toLocaleString()}{max > 0 ? ` · ${pct}%` : ""}{note ? `  ${note}` : ""}
+          {value.toLocaleString()}{showPct && max > 0 ? ` · ${pct}%` : ""}{note ? `  ${note}` : ""}
         </span>
       </InlineStack>
       <div style={{ height: 8, background: brand.ink100, borderRadius: 6, overflow: "hidden" }}>
         <div style={{ width: `${pct}%`, height: "100%", background: fill, borderRadius: 6, transition: "width 300ms ease" }} />
       </div>
+    </BlockStack>
+  );
+}
+
+// ─── Funnel silhouette with drop-off summary ────────────────────────────────
+// One connected funnel: each stage is a centered trapezoid whose bottom edge is
+// the next stage's top edge, so the segments join into a single shape that
+// narrows as conversion falls away. Fill deepens toward the bottom for depth,
+// the count sits inside each band, and the stage name rides a left gutter. The
+// biggest leak is tinted red and summarized in a callout beneath (unless the
+// caller renders its own via `showLeakSummary={false}`). Pass `leakLabel` to
+// pin the flag to a server-computed leak; otherwise it's the biggest lost count.
+export type FunnelStage = { key?: string; label: string; value: number };
+
+// Blend two hex colors — used to graduate the funnel from a lighter blue at the
+// top to a deep blue at the bottom without hand-listing a shade per stage.
+function mixHex(a: string, b: string, t: number): string {
+  const parse = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [ar, ag, ab] = parse(a);
+  const [br, bg, bb] = parse(b);
+  const to = (x: number, y: number) => Math.round(x + (y - x) * t).toString(16).padStart(2, "0");
+  return `#${to(ar, br)}${to(ag, bg)}${to(ab, bb)}`;
+}
+
+export function Funnel({
+  stages,
+  leakLabel,
+  showLeakSummary = true,
+}: {
+  stages: FunnelStage[];
+  leakLabel?: string;
+  showLeakSummary?: boolean;
+}) {
+  const top = stages[0]?.value ?? 0;
+  const n = stages.length;
+
+  if (top <= 0) {
+    return <Text as="p" tone="subdued">No funnel data yet.</Text>;
+  }
+
+  // Auto-detect the leak (biggest single-step loss by count) when the caller
+  // hasn't named one.
+  let autoLeakIdx = -1;
+  let worstLost = 0;
+  for (let i = 1; i < n; i++) {
+    const lost = (stages[i - 1]?.value ?? 0) - stages[i].value;
+    if (lost > worstLost) {
+      worstLost = lost;
+      autoLeakIdx = i;
+    }
+  }
+  const leakIdx = leakLabel != null ? stages.findIndex((s, i) => i > 0 && s.label === leakLabel) : autoLeakIdx;
+
+  // Stylized display width: monotonic in the real share so ordering always
+  // holds, but floored to ~0.2 so even a tiny stage keeps a readable neck and
+  // the count fits inside it. The exact count (shown inside) carries precision;
+  // the shape is the at-a-glance read.
+  const dispFrac = (v: number) => 0.2 + 0.8 * Math.max(0, Math.min(1, v / top));
+  const half = (f: number) => Math.round(50 * f * 100) / 100;
+  const shade = (i: number) => mixHex("#4A6FD6", brand.blue700, n > 1 ? i / (n - 1) : 0);
+
+  const leak =
+    leakIdx > 0
+      ? {
+          from: stages[leakIdx - 1].label,
+          to: stages[leakIdx].label,
+          lost: Math.max(0, stages[leakIdx - 1].value - stages[leakIdx].value),
+          pct:
+            stages[leakIdx - 1].value > 0
+              ? Math.round(((stages[leakIdx - 1].value - stages[leakIdx].value) / stages[leakIdx - 1].value) * 100)
+              : 0,
+        }
+      : null;
+
+  return (
+    <BlockStack gap="300">
+      <div style={{ maxWidth: 520, width: "100%", margin: "0 auto" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(84px, 132px) 1fr", columnGap: 12 }}>
+          {stages.map((s, i) => {
+            const isLeak = i === leakIdx;
+            const wTop = dispFrac(s.value);
+            const wBot = i < n - 1 ? dispFrac(stages[i + 1].value) : wTop;
+            const clip = `polygon(${50 - half(wTop)}% 0%, ${50 + half(wTop)}% 0%, ${50 + half(wBot)}% 100%, ${50 - half(wBot)}% 100%)`;
+            const fill = isLeak ? brand.danger : shade(i);
+
+            return (
+              <Fragment key={s.key ?? s.label}>
+                <div style={{ height: 50, display: "flex", alignItems: "center", justifyContent: "flex-end", textAlign: "right" }}>
+                  <span style={{ fontSize: 12.5, fontWeight: isLeak ? 600 : 500, lineHeight: 1.25, color: isLeak ? brand.dangerInk : brand.ink700 }}>
+                    {s.label}
+                  </span>
+                </div>
+                <div style={{ height: 50, position: "relative" }}>
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      background: fill,
+                      clipPath: clip,
+                      WebkitClipPath: clip,
+                      transition: "clip-path 300ms ease, background 200ms ease",
+                    }}
+                  />
+                  <span
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: brand.white,
+                      fontSize: 13.5,
+                      fontWeight: 500,
+                      pointerEvents: "none",
+                    }}
+                  >
+                    {s.value.toLocaleString()}
+                  </span>
+                </div>
+              </Fragment>
+            );
+          })}
+        </div>
+      </div>
+
+      {showLeakSummary && leak && leak.lost > 0 && (
+        <div
+          style={{
+            border: `1px solid ${brand.ink100}`,
+            borderLeft: `4px solid ${brand.danger}`,
+            borderRadius: 10,
+            padding: "10px 12px",
+            background: brand.offwhite,
+          }}
+        >
+          <Text as="p" variant="bodySm">
+            <strong>Biggest drop-off:</strong> {leak.pct}% from {leak.from.toLowerCase()} to {leak.to.toLowerCase()} — {leak.lost.toLocaleString()} lost.
+          </Text>
+        </div>
+      )}
     </BlockStack>
   );
 }

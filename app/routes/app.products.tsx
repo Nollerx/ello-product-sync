@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import {
@@ -12,10 +13,17 @@ import {
   Tag,
   Banner,
 } from "@shopify/polaris";
+import {
+  ProductListIcon,
+  ProductIcon,
+  CollectionIcon,
+  TargetIcon,
+  ImageIcon,
+} from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
 import { resolveStorefront, fetchStorefrontProducts } from "../lib/storefront-names.server";
-import { SectionHeading, brand } from "../components/ui";
+import { SectionHeading, brand, IconChip, type IconSource } from "../components/ui";
 
 type Mode = "all" | "products" | "collections";
 interface ProductItem {
@@ -234,7 +242,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 // ─── Mode card ──────────────────────────────────────────────────────────────
-function ModeCard({ active, title, desc, onClick }: { active: boolean; title: string; desc: string; onClick: () => void }) {
+// Icon-led selectable card matching the admin design language: tinted icon chip
+// on the left, a radio indicator on the right so the chosen scope reads at a
+// glance. Mutually exclusive, so a radio (not a switch) is the right control.
+function ModeCard({
+  active,
+  title,
+  desc,
+  icon,
+  onClick,
+}: {
+  active: boolean;
+  title: string;
+  desc: string;
+  icon: IconSource;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
@@ -255,6 +278,11 @@ function ModeCard({ active, title, desc, onClick }: { active: boolean; title: st
         boxShadow: active ? "0 4px 14px rgba(59,99,212,0.12)" : "none",
       }}
     >
+      <IconChip source={icon} tone={active ? "money" : "neutral"} size={38} />
+      <span style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 }}>
+        <span style={{ fontWeight: 600, fontSize: 15, color: active ? brand.blue700 : brand.ink }}>{title}</span>
+        <span style={{ fontSize: 13, lineHeight: 1.45, color: brand.ink500 }}>{desc}</span>
+      </span>
       <span
         aria-hidden
         style={{
@@ -267,11 +295,27 @@ function ModeCard({ active, title, desc, onClick }: { active: boolean; title: st
           border: active ? `5px solid ${brand.blue}` : `2px solid ${brand.ink200}`,
         }}
       />
-      <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={{ fontWeight: 600, fontSize: 15, color: brand.ink }}>{title}</span>
-        <span style={{ fontSize: 13, lineHeight: 1.45, color: brand.ink500 }}>{desc}</span>
-      </span>
     </button>
+  );
+}
+
+// Empty-state tile with a muted icon chip so unfilled sections don't read blank.
+function EmptyState({ icon, children }: { icon: IconSource; children: ReactNode }) {
+  return (
+    <div
+      style={{
+        border: `1px dashed ${brand.ink200}`,
+        borderRadius: 14,
+        background: brand.offwhite,
+        padding: 18,
+        display: "flex",
+        gap: 12,
+        alignItems: "center",
+      }}
+    >
+      <IconChip source={icon} tone="neutral" size={34} />
+      <Text as="p" tone="subdued" variant="bodySm">{children}</Text>
+    </div>
   );
 }
 
@@ -539,12 +583,13 @@ export default function Products() {
                 eyebrow="Coverage"
                 title="Where should Try-On appear?"
                 description="Scope the experience to your whole catalog or just the pieces you choose."
+                icon={TargetIcon}
               />
 
               <InlineGrid columns={{ xs: 1, md: 3 }} gap="300">
-                <ModeCard active={mode === "all"} title="All clothing" desc="Show Try-On on every product." onClick={() => setMode("all")} />
-                <ModeCard active={mode === "products"} title="Select clothing" desc="Pick specific products that can be tried on." onClick={() => setMode("products")} />
-                <ModeCard active={mode === "collections"} title="By collection" desc="Show Try-On on every product in chosen collections." onClick={() => setMode("collections")} />
+                <ModeCard active={mode === "all"} title="All clothing" desc="Show Try-On on every product." icon={ProductListIcon} onClick={() => setMode("all")} />
+                <ModeCard active={mode === "products"} title="Select clothing" desc="Pick specific products that can be tried on." icon={ProductIcon} onClick={() => setMode("products")} />
+                <ModeCard active={mode === "collections"} title="By collection" desc="Show Try-On on every product in chosen collections." icon={CollectionIcon} onClick={() => setMode("collections")} />
               </InlineGrid>
 
               {mode === "products" && (
@@ -554,9 +599,7 @@ export default function Products() {
                     <Button onClick={pickProducts}>{products.length > 0 ? "Edit selection" : "Select products"}</Button>
                   </InlineStack>
                   {products.length === 0 ? (
-                    <div style={{ border: `1px solid ${brand.ink100}`, borderRadius: 14, background: brand.offwhite, padding: 18 }}>
-                      <Text as="p" tone="subdued" variant="bodySm">No products selected yet. Click “Select products” to pick from your catalog.</Text>
-                    </div>
+                    <EmptyState icon={ProductIcon}>No products selected yet. Click “Select products” to pick from your catalog.</EmptyState>
                   ) : (
                     <BlockStack gap="200">
                       {products.map((p) => (
@@ -581,9 +624,7 @@ export default function Products() {
                     <Button onClick={pickCollections}>{collections.length > 0 ? "Edit" : "Select"}</Button>
                   </InlineStack>
                   {collections.length === 0 ? (
-                    <div style={{ border: `1px solid ${brand.ink100}`, borderRadius: 14, background: brand.offwhite, padding: 18 }}>
-                      <Text as="p" tone="subdued" variant="bodySm">No collections selected yet. Click “Select” to choose from your store.</Text>
-                    </div>
+                    <EmptyState icon={CollectionIcon}>No collections selected yet. Click “Select” to choose from your store.</EmptyState>
                   ) : (
                     <div style={{ border: `1px solid ${brand.ink100}`, borderRadius: 14, background: brand.offwhite, padding: 18 }}>
                       <InlineStack gap="200" wrap>
@@ -612,6 +653,7 @@ export default function Products() {
                   eyebrow="Try-on photos"
                   title="Custom try-on photos"
                   description="Try-on renders from each product's featured image. If another shot works better — clearer, front-facing, on a model — set it here. This doesn't change where Try-On appears."
+                  icon={ImageIcon}
                 />
                 <InlineStack>
                   <Button onClick={pickPhotoProducts}>
@@ -619,11 +661,9 @@ export default function Products() {
                   </Button>
                 </InlineStack>
                 {photoProducts.length === 0 ? (
-                  <div style={{ border: `1px solid ${brand.ink100}`, borderRadius: 14, background: brand.offwhite, padding: 18 }}>
-                    <Text as="p" tone="subdued" variant="bodySm">
-                      No custom photos yet. Choose a product, then pick which of its photos the try-on should use.
-                    </Text>
-                  </div>
+                  <EmptyState icon={ImageIcon}>
+                    No custom photos yet. Choose a product, then pick which of its photos the try-on should use.
+                  </EmptyState>
                 ) : (
                   <BlockStack gap="200">
                     {photoProducts.map((p) => (
