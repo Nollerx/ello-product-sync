@@ -359,37 +359,123 @@
     }
   }
 
-  // On-screen test: real rendered box AND not inside a display:none subtree.
-  // offsetParent is null for display:none ancestors (and for position:fixed, but
-  // a fixed button still has a real rect, so the size check covers it).
+  // On-screen test: a real rendered box, not display:none, AND not merely
+  // "present but invisible" (visibility:hidden / opacity:0 on the element OR an
+  // ancestor). Steve Madden's Rebooted theme keeps a SECOND add-to-cart — the
+  // sticky bar that slides in on scroll — in the DOM at all times as a
+  // position:fixed, visibility:hidden node. It has a real 200×42 rect and a
+  // non-null offsetParent, so the old width/offsetParent-only test rated it
+  // "visible" and our button anchored INTO it instead of the real buy button
+  // the shopper sees (Andrew, stevemadden.com 2026-07-12). Rejecting hidden
+  // nodes — and walking a few ancestors, since opacity/visibility are usually
+  // set on the bar's WRAPPER — is what fixes that.
   function elloIsVisible(el) {
     if (!el) return false;
     var r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
-    if (el.offsetParent === null && window.getComputedStyle(el).position !== 'fixed') return false;
+    var cs = window.getComputedStyle(el);
+    // visibility inherits, so the element's own computed value already reflects a
+    // hidden ancestor; opacity does NOT inherit, so walk up to catch a faded bar.
+    var n = el;
+    for (var i = 0; i < 6 && n && n.nodeType === 1; i++) {
+      var s = (n === el) ? cs : window.getComputedStyle(n);
+      if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' || s.opacity === '0') return false;
+      n = n.parentElement;
+    }
+    if (el.offsetParent === null && cs.position !== 'fixed') return false;
     return true;
   }
-  // First VISIBLE add-to-cart control (skips the hidden duplicates AYBL renders).
+
+  // True if el sits inside a position:fixed container — a sticky/floating "quick
+  // add" bar pinned to the viewport, NOT the main in-flow buy box. Computed
+  // position keeps this theme-agnostic. position:sticky is deliberately allowed:
+  // themes routinely make the whole product buy column sticky, and that column
+  // IS the main button.
+  function elloInFixedBar(el) {
+    var n = el;
+    for (var i = 0; i < 12 && n && n.nodeType === 1; i++) {
+      if (window.getComputedStyle(n).position === 'fixed') return true;
+      n = n.parentElement;
+    }
+    return false;
+  }
+
+  // Add-to-cart buttons inside recommendation / quick-add / upsell blocks are
+  // never the main buy button — anchoring there is the same bug as the sticky
+  // bar. Steve Madden renders Algolia rec cards as `ais-hit--cart-button`
+  // /cart/add forms; other stores use quick-add / upsell / "you may also like"
+  // wrappers. Skip them all.
+  var ELLO_ATC_SKIP = '.product-recommendations,.related-products,[data-recently-viewed],' +
+    '.recently-viewed,[class*="ais-hit"],[class*="quick-add" i],[class*="quick_add" i],' +
+    '[class*="quickadd" i],[class*="upsell" i],[class*="cross-sell" i],[class*="crosssell" i],' +
+    '[id*="recommend" i],[class*="recommend" i],[class*="also-like" i],[class*="you-may" i]';
+  function elloInSkipContainer(el) {
+    try { return !!(el.closest && el.closest(ELLO_ATC_SKIP)); } catch (e) { return false; }
+  }
+
+  // Broad candidate set for the store's add-to-cart control. Themes vary wildly:
+  // Steve Madden's real button is `<button type="submit" id="addToCartBtn">` with
+  // NO name="add", so the old name=/submit-only selector only ever found the
+  // sticky-bar copy. We also text-sweep for buttons labelled "Add to cart/bag"
+  // that carry none of the usual markers. Returned in document order.
+  function elloAtcCandidates() {
+    var out = [];
+    var push = function (el) { if (el && out.indexOf(el) === -1) out.push(el); };
+    var sel = 'form[action*="/cart/add"] button[type="submit"],' +
+              'form[action*="/cart/add"] input[type="submit"],' +
+              'form[action*="/cart/add"] [name="add"],' +
+              'button[name="add"],button#addToCartBtn,' +
+              'button[class*="add-to-cart" i],button[class*="add_to_cart" i],' +
+              'a[class*="add-to-cart" i],[data-add-to-cart]';
+    try { document.querySelectorAll(sel).forEach(push); } catch (e) {}
+    try {
+      document.querySelectorAll('button,a[role="button"],input[type="submit"]').forEach(function (el) {
+        var t = (el.innerText || el.value || '').trim().toLowerCase();
+        if (t && t.length < 24 && /^add to (cart|bag|basket)\b/.test(t)) push(el);
+      });
+    } catch (e) {}
+    out.sort(function (a, b) {
+      var p = a.compareDocumentPosition(b);
+      if (p & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (p & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+    return out;
+  }
+
+  // The MAIN, on-screen add-to-cart button: visible, not in a rec/quick-add
+  // block, and — preferred — NOT pinned inside a fixed sticky bar. Falling back
+  // to a fixed candidate only when every visible one is fixed keeps stores whose
+  // buy button is legitimately fixed working.
   function elloPickVisibleAtc() {
-    var nodes = document.querySelectorAll(
-      'form[action*="/cart/add"] [type="submit"], form[action*="/cart/add"] [name="add"], button[name="add"]'
-    );
-    for (var i = 0; i < nodes.length; i++) { if (elloIsVisible(nodes[i])) return nodes[i]; }
-    return null;
+    var cands = elloAtcCandidates().filter(function (el) {
+      return elloIsVisible(el) && !elloInSkipContainer(el);
+    });
+    if (!cands.length) return null;
+    for (var i = 0; i < cands.length; i++) { if (!elloInFixedBar(cands[i])) return cands[i]; }
+    return cands[0]; // every visible candidate is in a fixed bar → best we have
   }
 
   // ── Native-looking inline "Try it on" button next to Add-to-Cart (PDP only) ──
   function injectInlineButton() {
     if (!onPdp()) return;
 
-    // Anchor on the first VISIBLE add-to-cart button. AYBL-class stores render
-    // SEVERAL /cart/add forms (quick-add rec cards, a hidden sticky bar, a
-    // mobile/desktop pair), and document.querySelector returns the FIRST in DOM
-    // order — which can be a display:none one, dropping our button into a hidden
-    // subtree (inlineBtnVisible:false — Andrew, AYBL slate-blue 2026-07-06).
+    // Anchor on the MAIN visible add-to-cart button. Stores render SEVERAL
+    // /cart/add controls (quick-add rec cards, a hidden sticky bar that pops in
+    // on scroll, a mobile/desktop pair). The old code took the FIRST in DOM
+    // order, which could be a hidden one (AYBL slate-blue 2026-07-06) or the
+    // sticky bar (Steve Madden 2026-07-12); elloPickVisibleAtc now prefers the
+    // real in-flow buy button and skips rec/quick-add blocks.
     var atc = elloPickVisibleAtc();
-    var form = atc ? atc.closest('form[action*="/cart/add"]')
-                   : document.querySelector('form[action*="/cart/add"]');
+    var form = atc ? atc.closest('form[action*="/cart/add"]') : null;
+    if (!form) {
+      // No button anchor yet — fall back to a visible buy FORM, but never the
+      // Algolia rec template or the sticky bar (same skip rules as the button).
+      var forms = document.querySelectorAll('form[action*="/cart/add"]');
+      for (var fi = 0; fi < forms.length; fi++) {
+        if (elloIsVisible(forms[fi]) && !elloInSkipContainer(forms[fi]) && !elloInFixedBar(forms[fi])) { form = forms[fi]; break; }
+      }
+    }
 
     var existing = document.getElementById('ello-demo-inline-btn');
     if (existing && existing.offsetParent !== null) return;   // already placed + on-screen → done

@@ -29,6 +29,18 @@
     • The theme/CSS is generic — final "matches your header icons" polish must
       still be eyeballed on the real store via `shopify app dev`.
 -->
+<script>
+  // ?dev_font=Playfair+Display — dress the harness in a distinctive "merchant
+  // theme font" (Google Fonts) to eyeball the widget's brand-font inheritance.
+  (function () {
+    var f = new URLSearchParams(location.search).get('dev_font');
+    if (!f) return;
+    f = f.replace(/[^\w \-]/g, '');
+    document.write('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=' +
+      encodeURIComponent(f).replace(/%20/g, '+') + ':wght@400;600;700&display=swap">' +
+      '<style>body{font-family:\'' + f + '\',serif !important;}</style>');
+  })();
+</script>
 <style>
   :root { --ink:#111; --muted:#6b6b6b; --line:#e6e6e6; }
   * { box-sizing: border-box; }
@@ -61,9 +73,14 @@
   .pdp select { width:100%; padding:10px; border:1px solid var(--line); border-radius:6px; font:inherit; }
   .atc { width:100%; padding:14px; margin-top:18px; background:#111; color:#fff; border:none; border-radius:6px; font-size:15px; cursor:pointer; }
   .devbar { position:fixed; left:12px; bottom:12px; z-index:2147483000; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 6px 24px rgba(0,0,0,.12); padding:10px 12px; font-size:12px; max-width:280px; }
-  .devbar h4 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .devbar h4 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); display:flex; align-items:center; justify-content:space-between; gap:10px; cursor:pointer; user-select:none; }
+  .devbar h4 .devbar-toggle { border:none; background:none; width:auto; margin:0; padding:0 2px; font-size:14px; line-height:1; color:var(--muted); cursor:pointer; }
   .devbar button { display:block; width:100%; text-align:left; margin:4px 0; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:#fafafa; cursor:pointer; font:inherit; }
   .devbar .shop { color:var(--muted); margin-top:8px; word-break:break-all; }
+  /* Collapsed: the whole card shrinks to a small pill — only the header stays. */
+  .devbar.collapsed { padding:7px 12px; }
+  .devbar.collapsed h4 { margin:0; }
+  .devbar.collapsed button:not(.devbar-toggle), .devbar.collapsed .shop { display:none; }
   @media (max-width:760px){ main { grid-template-columns: 1fr; } }
 
   /* Simulate LA Apparel: NO bottom-right launcher, ever. The try-on UI is one
@@ -156,18 +173,59 @@
   </div>
 </main>
 
-<div class="devbar">
-  <h4>Ello dev harness</h4>
+<div class="devbar" id="devbar">
+  <h4 id="devbar-header" title="Show/hide harness controls">Ello dev harness <button type="button" class="devbar-toggle" id="devbar-toggle" aria-label="Toggle dev harness">−</button></h4>
   <button onclick="window.Ello && window.Ello.openCollection({source:'devbar'})">Open hub → Collection</button>
   <button onclick="window.Ello && window.Ello.openWardrobe({source:'devbar'})">Open hub → Wardrobe</button>
   <button onclick="window.Ello && window.Ello.openTryOn({source:'devbar'})">Open inline try-on</button>
+  <!-- Wipe everything that marks this browser as a returning shopper (intro-seen
+       flag, consent-modal flag, saved photo) and reload — one tap back to the
+       true first-time experience for intro testing. -->
+  <button onclick="(function(){try{Object.keys(localStorage).filter(function(k){return k.indexOf('ello_intro_seen')===0||k.indexOf('vtow_')===0;}).forEach(function(k){localStorage.removeItem(k);});}catch(e){} location.reload();})()">↺ Reset first-time</button>
   <div class="shop" id="shop-readout"></div>
 </div>
 
 <script>
+  // ── 0) Collapsible dev bar ──────────────────────────────────────────────────
+  // The card covers a big slice of a mobile viewport, so it starts collapsed to
+  // a small pill and remembers the last state across the reload-heavy test loop
+  // (Reset first-time reloads the page).
+  (function () {
+    var bar = document.getElementById('devbar');
+    var toggle = document.getElementById('devbar-toggle');
+    var KEY = 'ello_devbar_collapsed';
+    function apply(collapsed) {
+      bar.classList.toggle('collapsed', collapsed);
+      toggle.textContent = collapsed ? '+' : '−';
+      try { localStorage.setItem(KEY, collapsed ? 'true' : 'false'); } catch (e) {}
+    }
+    var saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (e) {}
+    apply(saved === null ? true : saved === 'true');
+    document.getElementById('devbar-header').addEventListener('click', function () {
+      apply(!bar.classList.contains('collapsed'));
+    });
+  })();
+
   // ── 1) Resolve which shop to impersonate (?shop= overrides) ────────────────
   var SHOP = new URLSearchParams(location.search).get('shop') || 'YOUR-STORE.myshopify.com';
   document.getElementById('shop-readout').textContent = 'shop: ' + SHOP;
+
+  // ── 1b) Impersonate a REAL enabled product (?handle=) ──────────────────────
+  // detectCurrentProduct() can't match by URL here (the page path is
+  // /dev-pdp.html, not /products/<handle>), so publish the handle via JSON-LD —
+  // its Method 3. This keeps the harness URL reloadable while the widget
+  // resolves the real catalog product: product-aware intro, inline garment
+  // resolution, PDP-swap targeting all behave as on the live store.
+  var HANDLE = new URLSearchParams(location.search).get('handle');
+  if (HANDLE) {
+    var ld = document.createElement('script');
+    ld.type = 'application/ld+json';
+    ld.textContent = JSON.stringify({ '@type': 'Product', url: '/products/' + HANDLE });
+    document.head.appendChild(ld);
+    document.getElementById('pdp-title').textContent = HANDLE.replace(/-/g, ' ');
+    document.getElementById('shop-readout').textContent = 'shop: ' + SHOP + ' · handle: ' + HANDLE;
+  }
 
   // ── 2) Mock the Shopify globals the widget reads on a real PDP ─────────────
   window.Shopify = window.Shopify || { shop: SHOP, locale: 'en', currency: { active: 'USD' } };

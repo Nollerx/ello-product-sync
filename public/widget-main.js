@@ -32,6 +32,9 @@ let hasUserActivity = false;
 // working until their CDN cache expires.
 window.__elloInitializeWidget = function () {
     detectDevice();
+    // Footwear PDPs get feet-oriented upload copy (the template ships the
+    // clothing "full body" wording). After detectDevice so isMobile is set.
+    elloApplyFootwearUploadCopy();
     tryonChatHistory = [];  // Initialize as array instead of undefined
     generalChatHistory = []; // Initialize as array instead of undefined
 
@@ -1686,6 +1689,179 @@ function applyImageOverride(product) {
     return product;
 }
 
+// ============================================================================
+// FOOTWEAR PDP CONTEXT (shoe try-on support)
+// ============================================================================
+// Footwear is filtered OUT of sampleClothing by isClothingItem, so a shoe PDP
+// can never be recognized through the catalog. These helpers detect "the
+// shopper is on a footwear product page" from page-level signals instead, so
+// the upload UX, the body check, and the /tryon productType can adapt.
+// PDP-only by design: browse/cross-sell rails stay clothing-only.
+
+// Mirrors the ELLO_DEMO_BUCKETS 'footwear' word set, plus common shoe styles.
+var ELLO_FOOTWEAR_KEYWORDS = [
+    'shoe', 'shoes', 'sneaker', 'sneakers', 'boot', 'boots', 'heel', 'heels',
+    'sandal', 'sandals', 'loafer', 'loafers', 'slipper', 'slippers', 'trainer',
+    'trainers', 'cleat', 'cleats', 'mule', 'mules', 'slide', 'slides',
+    'flip flop', 'flip-flop', 'flip flops', 'clog', 'clogs', 'footwear',
+    'oxford', 'oxfords', 'pump', 'pumps', 'stiletto', 'stilettos', 'wedge',
+    'wedges', 'espadrille', 'moccasin'
+];
+// Apparel that CONTAINS a footwear substring but isn't footwear — a "bootcut
+// jean" must never read as a boot. Conservative: a false negative just means
+// today's clothing behavior, so err toward NOT flagging.
+var ELLO_FOOTWEAR_FALSE_POSITIVES = ['boot cut', 'bootcut', 'boot-cut', 'board short', 'boardshort', 'bootleg'];
+
+// Apparel words that VETO a footwear match anywhere in the text. "Oxford
+// Shirt", "Trainer Jacket", "Slide Shorts", "Waist Trainer", "Boot Socks" are
+// all clothing despite containing a footwear word. Veto beats footwear BY
+// DESIGN: a missed shoe PDP just keeps today's clothing behavior, while a
+// false footwear flip would relax the body check and rewrite the upload copy
+// on an apparel product (adversarial review finding, 2026-07-12).
+var ELLO_FOOTWEAR_APPAREL_VETO = [
+    'shirt', 'shirts', 'tee', 'tees', 't-shirt', 't-shirts', 'tshirt', 'tshirts',
+    'blouse', 'polo', 'tank', 'jacket', 'jackets', 'coat', 'coats', 'hoodie',
+    'hoodies', 'sweater', 'sweaters', 'sweatshirt', 'sweatshirts', 'cardigan',
+    'vest', 'shorts', 'pant', 'pants', 'jean', 'jeans', 'denim', 'legging',
+    'leggings', 'jogger', 'joggers', 'sweatpants', 'chino', 'chinos', 'trouser',
+    'trousers', 'skirt', 'skirts', 'sock', 'socks', 'hosiery', 'tights',
+    'stocking', 'stockings', 'bra', 'bralette', 'shapewear', 'waist', 'bodysuit',
+    'romper', 'jumpsuit', 'cover', 'pajama', 'pajamas', 'pyjama', 'pyjamas',
+    'robe', 'underwear', 'brief', 'briefs', 'boxer', 'boxers', 'camisole',
+    'corset', 'gown', 'gowns', 'dress', 'dresses'
+];
+
+function elloTextIsFootwear(text) {
+    if (!text) return false;
+    var t = ' ' + String(text).toLowerCase() + ' ';
+    for (var i = 0; i < ELLO_FOOTWEAR_FALSE_POSITIVES.length; i++) {
+        if (t.indexOf(ELLO_FOOTWEAR_FALSE_POSITIVES[i]) !== -1) return false;
+    }
+    // "Dress shoes" / "dress boots" ARE footwear — consume the bigram so the
+    // standalone 'dress' veto below can't kill them ("Wedge Dress" still vetoes).
+    t = t.replace(/dress(es)?[\s-]+(shoe|boot|sandal|pump|loafer|heel|sneaker|flat)(s?)/g, '$2$3');
+    for (var k = 0; k < ELLO_FOOTWEAR_APPAREL_VETO.length; k++) {
+        var v = ELLO_FOOTWEAR_APPAREL_VETO[k].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp('(^|[^a-z])' + v + '([^a-z]|$)').test(t)) return false;
+    }
+    for (var j = 0; j < ELLO_FOOTWEAR_KEYWORDS.length; j++) {
+        var w = ELLO_FOOTWEAR_KEYWORDS[j].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (new RegExp('(^|[^a-z])' + w + '([^a-z]|$)').test(t)) return true;
+    }
+    return false;
+}
+
+// True when the CURRENT PDP product is footwear. Type-first (Shopify
+// product_type is usually clean — "Shoes", "Sneakers"; titles are noisy).
+// Only a TRUE result is cached: the signals arrive over time (analytics meta,
+// elloSelectedGarment), so an early false answer must stay re-checkable.
+// The cache is PATH-KEYED: SPA/AJAX navigation changes location.pathname, so
+// a sneaker→dress client-side nav self-invalidates on the next call — no
+// dependency on the preview feature's history listeners (which are gated off
+// on mobile / preview-disabled stores).
+// Kill switch: style_overrides {"footwear_tryon_enabled": false} (wired in
+// applyStyleOverrides — 1 SQL, no redeploy) or window.ELLO_FOOTWEAR_TRYON =
+// false from the console / a theme snippet. Checked BEFORE the cache read so
+// flipping it off wins even after the context latched true.
+var __elloFootwearContext = null;
+var __elloFootwearContextPath = null;
+function elloIsFootwearContext() {
+    if (window.ELLO_FOOTWEAR_TRYON === false) return false;
+    if (__elloFootwearContext === true && __elloFootwearContextPath === window.location.pathname) return true;
+    var result = false;
+    try {
+        // 1. Shopify analytics meta — present on most PDPs, independent of sampleClothing.
+        var metaType = window.ShopifyAnalytics && window.ShopifyAnalytics.meta &&
+            window.ShopifyAnalytics.meta.product && window.ShopifyAnalytics.meta.product.type;
+        if (elloTextIsFootwear(metaType)) result = true;
+
+        // 2. The selected garment — but ONLY when it demonstrably IS the current
+        //    page's product. elloSelectedGarment survives SPA navigation, so a
+        //    shoe garment from the previous page must not vouch for this one.
+        if (!result && window.elloSelectedGarment && elloGarmentMatchesCurrentPage(window.elloSelectedGarment)) {
+            var g = window.elloSelectedGarment;
+            var gtags = Array.isArray(g.tags) ? g.tags.join(' ') : (g.tags || '');
+            if (elloTextIsFootwear([g.category, g.product_type, g.name, g.title, gtags].join(' '))) result = true;
+        }
+
+        // 3. og:title fallback (same last resort detectCurrentProduct uses).
+        if (!result) {
+            var ogTitleEl = document.querySelector('meta[property="og:title"]');
+            if (ogTitleEl && elloTextIsFootwear(ogTitleEl.getAttribute('content'))) result = true;
+        }
+    } catch (e) { /* never let detection throw */ }
+    if (result) {
+        __elloFootwearContext = true;
+        __elloFootwearContextPath = window.location.pathname;
+    }
+    return result;
+}
+
+// Does this garment belong to the page we're on right now? Matches by handle
+// (catalog garments use the handle as id) or by the product_url the og-fallback
+// stamps at detect time. Conservative: unknown → false (the garment then simply
+// doesn't vouch for page-level footwear context; signals 1 and 3 still can).
+function elloGarmentMatchesCurrentPage(g) {
+    try {
+        var path = window.location.pathname;
+        var handle = (typeof getProductIdFromUrl === 'function' ? getProductIdFromUrl(path) : null);
+        if (handle && (g.id === handle || g.handle === handle)) return true;
+        if (g.product_url) {
+            var gp = String(g.product_url).replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+            if (gp && gp === path) return true;
+        }
+    } catch (e) { /* fall through */ }
+    return false;
+}
+
+// productType for the /tryon payload. Belt-and-suspenders over the og-fallback
+// fix in detectCurrentProduct, scoped to isFallback ONLY: og-fallback garments
+// are the one case with lost type metadata, and they ARE the page product, so
+// the page's ShopifyAnalytics type belongs to them by construction. Catalog /
+// browse-rail garments always carry their real Shopify type and must NEVER be
+// relabeled from page-level signals (adversarial review finding: an "Oxford
+// Shirt" picked from the rail on a sneaker PDP was previously sent as the
+// page's "Sneakers" type).
+function elloResolveTryonProductType(garment) {
+    var resolved = garment?.category || garment?.product_type || null;
+    if (window.ELLO_FOOTWEAR_TRYON === false) return resolved;
+    if (!garment || garment.isFallback !== true) return resolved;
+    if (!resolved || resolved === 'clothing' || resolved === 'apparel') {
+        try {
+            var gTags = Array.isArray(garment.tags) ? garment.tags.join(' ') : '';
+            if (elloTextIsFootwear([garment.name, garment.title, gTags].filter(Boolean).join(' '))) {
+                resolved = (window.ShopifyAnalytics && window.ShopifyAnalytics.meta &&
+                    window.ShopifyAnalytics.meta.product && window.ShopifyAnalytics.meta.product.type) || 'shoes';
+            }
+        } catch (e) { /* fall through with the original value */ }
+    }
+    return resolved;
+}
+
+// Apply the upload copy for the CURRENT context — footwear gets feet-oriented
+// wording, everything else gets (or gets BACK) the stock clothing copy. Two-way
+// on purpose: SPA route changes (sneaker PDP → dress PDP) and late-arriving
+// signals (consent-gated ShopifyAnalytics) must both converge on the right
+// copy, so this is safe to call repeatedly. Null-safe — never breaks init.
+function elloApplyFootwearUploadCopy() {
+    try {
+        var fw = elloIsFootwearContext();
+        var instruction = document.querySelector('.photo-instruction');
+        if (instruction) {
+            instruction.textContent = fw
+                ? 'Upload a photo with your feet visible to get started'
+                : 'Upload full body image to get started';
+        }
+        var uploadArea = document.querySelector('.photo-upload');
+        var uploadText = uploadArea && uploadArea.querySelector('.upload-text:not(#changePhotoText)');
+        if (uploadText) {
+            uploadText.textContent = fw
+                ? (isMobile ? 'Tap to upload a photo with your feet visible' : 'Click to upload a photo with your feet visible')
+                : (isMobile ? 'Tap to upload full body image' : 'Click to upload full body image');
+        }
+    } catch (e) { /* copy tweak must never break init */ }
+}
+
 function detectCurrentProduct() {
     let product = null;
 
@@ -1746,6 +1922,13 @@ function detectCurrentProduct() {
             // Guardrail: Ensure og:image is not a generic placeholder (not perfect, but helpful)
             // And strictly require both title and image
             if (ogTitle && ogImage) {
+                // Real Shopify product type when available — footwear PDPs ALWAYS
+                // land on this fallback (isClothingItem filters shoes out of
+                // sampleClothing), and a hardcoded 'clothing' here used to reach
+                // the engine as productType, downgrading its prompt from "a pair
+                // of shoes" to a generic "a garment".
+                var ogMetaType = (window.ShopifyAnalytics && window.ShopifyAnalytics.meta &&
+                    window.ShopifyAnalytics.meta.product && window.ShopifyAnalytics.meta.product.type) || '';
                 // Construct temporary product
                 product = {
                     id: productHandle || 'unknown-product', // fallback ID
@@ -1753,7 +1936,7 @@ function detectCurrentProduct() {
                     title: ogTitle, // Add title for compatibility
                     image_url: ogImage,
                     variants: [],
-                    category: 'clothing',
+                    category: (ogMetaType || 'clothing').toLowerCase(),
                     product_url: window.location.href,
                     isFallback: true
                 };
@@ -2124,12 +2307,23 @@ function rejectActivePhotoAfterBodyCheck(photoId) {
 function runBackgroundBodyValidation(imageDataUrl, photoId) {
     // The photo is already saved at upload time. This pass only downgrades:
     // a hard rejection clears the persisted copy and warns; anything else leaves it saved.
+    // Footwear PDPs are exempt from the hard rejection — MoveNet keys on
+    // shoulders+hips, so a legs-and-feet close-up (exactly what shoes need)
+    // reads as "no body" and would wrongly clear the photo.
+    var footwear = elloIsFootwearContext();
     detectBodyInImage(imageDataUrl).then((bodyResult) => {
         if (!isActivePhotoValidation(photoId)) {
             return;
         }
 
         if (bodyResult && bodyResult.state === 'reject') {
+            if (footwear) {
+                // Feet/legs close-ups have no torso to detect — accept, don't clear.
+                activePhotoValidationStatus = 'valid';
+                showSuccessNotification('Quality Tips',
+                    'For shoes, make sure your feet are fully in the photo.', 4000, false);
+                return;
+            }
             rejectActivePhotoAfterBodyCheck(photoId);
             return;
         }
@@ -2137,7 +2331,10 @@ function runBackgroundBodyValidation(imageDataUrl, photoId) {
         activePhotoValidationStatus = 'valid';
 
         if (bodyResult && bodyResult.state === 'warning' && bodyResult.message) {
-            showSuccessNotification('Quality Tips', bodyResult.message, 4000, false);
+            // The stock warning copy says "shoulders to hips" — wrong ask for
+            // footwear, where feet-in-frame is what actually matters.
+            var msg = footwear ? 'For best results, keep your feet fully in frame.' : bodyResult.message;
+            showSuccessNotification('Quality Tips', msg, 4000, false);
         }
     }).catch((error) => {
         elloLog('Background body validation error:', error);
@@ -2244,7 +2441,7 @@ let browserCurrentPage = 1; // Current page in browser
 let browserCategoryFilter = 'all'; // active category-chip filter in the collection browser
 
 // --- Analytics State & Context ---
-const WIDGET_VERSION = '2.4.0';
+const WIDGET_VERSION = '2.4.1';
 let widgetViewId = null;
 let introViewId = null;
 let introShownAt = null;
@@ -2589,14 +2786,16 @@ function proceedWithChooseFromGallery() {
 }
 
 // Best Practices Modal Functions
+// 2026-07-13 (Andrew): the tips/consent modal no longer gates the upload flow —
+// it forced every first upload through an interstitial and sat inside the
+// 22s-median post-CTA gauntlet (31% CTA→upload loss). ToS/Privacy consent moved
+// to a passive notice at the upload entry points ("By uploading a photo, you
+// agree…"), and the tips content stays available behind the opt-in "Tips for
+// the best results" link (openPhotoTips). Returning false keeps every former
+// gate site on its direct-to-picker branch; flip this back to the localStorage
+// check to restore the forced modal.
 function checkShouldShowBestPractices() {
-    try {
-        const dismissed = localStorage.getItem('vtow_best_practices_dismissed');
-        return dismissed !== 'true';
-    } catch (error) {
-        console.error('Error checking best practices preference:', error);
-        return true; // Default to showing if we can't check
-    }
+    return false;
 }
 
 function dismissBestPractices(dontShowAgain) {
@@ -2618,6 +2817,14 @@ function showBestPracticesModal() {
         backdrop.classList.add('active');
         document.body.style.overflow = 'hidden';
     }
+}
+
+// Opt-in entry to the tips modal (the "Tips for the best results" link). The
+// modal never opens on its own anymore, so this is its only trigger — tracked
+// so we can see how many shoppers are actually curious.
+function openPhotoTips(source) {
+    trackEvent('photo_tips_open', { source: source || 'unknown' });
+    showBestPracticesModal();
 }
 
 function closeBestPracticesModal(skipPendingAction = false) {
@@ -2917,6 +3124,13 @@ function resetInlineResultState() {
 function openWidget() {
     // Reset analytics state for this widget view
     hadMeaningfulAction = false;
+
+    // Re-resolve the upload copy for the CURRENT page. Detection signals can
+    // arrive after init (consent-gated analytics) and SPA navigation swaps the
+    // product under us — every open is the reliable moment to converge, and
+    // this works even on stores where the preview history listeners are gated
+    // off. Cheap and idempotent.
+    elloApplyFootwearUploadCopy();
 
     // Default surface attribution — if no upstream caller set this (e.g., the
     // bubble click handler at initializeWidget time, or any future entry path),
@@ -3369,38 +3583,60 @@ const SAMPLE_MODELS = [
         "id": "model_1",
         "name": "Model 1",
         "url": "assets/models/model_1.jpg",
+        "gender": "male",
     },
     {
         "id": "model_2",
         "name": "Model 2",
         "url": "assets/models/model_2.jpg",
+        "gender": "female",
     },
     {
         "id": "model_3",
         "name": "Model 3",
         "url": "assets/models/model_3.jpg",
+        "gender": "male",
     },
     {
         "id": "model_4",
         "name": "Model 4",
         "url": "assets/models/model_4.jpg",
+        "gender": "female",
     },
     {
         "id": "model_5",
         "name": "Model 5",
         "url": "assets/models/model_5.jpg",
+        "gender": "male",
     },
     {
         "id": "model_6",
         "name": "Model 6",
         "url": "assets/models/model_6.jpg",
+        "gender": "male",
     },
     {
         "id": "model_7",
         "name": "Model 7",
         "url": "assets/models/model_7.jpg",
+        "gender": "female",
     }
 ];
+
+/**
+ * Sample models visible to this store's shoppers. style_overrides
+ * {"sample_model_gender": "female"} (or "male") restricts the model browser
+ * to that gender — single-gender stores don't want the other half of the
+ * roster. Absent/unknown values (or a filter that would empty the grid)
+ * show everyone.
+ */
+function elloVisibleSampleModels() {
+    var so = window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.styleOverrides;
+    var g = so && so.sample_model_gender;
+    if (g !== 'female' && g !== 'male') return SAMPLE_MODELS;
+    var filtered = SAMPLE_MODELS.filter(function (m) { return m.gender === g; });
+    return filtered.length ? filtered : SAMPLE_MODELS;
+}
 
 function populateModelBrowser() {
     elloLog("👉 Populating Model Browser...");
@@ -3414,7 +3650,7 @@ function populateModelBrowser() {
     // Start fetching the base64 chunk now (fire-and-forget) so it's ready by the time
     // the shopper actually picks a model. Thumbnails don't need it — they load from URL.
     ensureModelImagesLoaded().catch(() => {});
-    SAMPLE_MODELS.forEach(model => {
+    elloVisibleSampleModels().forEach(model => {
         const card = document.createElement('div');
         card.className = 'browser-clothing-card';
         card.onclick = () => selectModel(model.id);
@@ -3465,6 +3701,11 @@ async function selectModel(modelId) {
 
         // Close the browser modal
         closeModelBrowser();
+
+        // Focused view: repaint the stage so the chosen model lands on the
+        // "You" card and the copy flips off "Add photo" — mirrors the
+        // photo-upload hook (no-op outside focused mode).
+        if (typeof elloSetupFocusedExtras === 'function') elloSetupFocusedExtras();
 
         // Update UI state
         const tryOnBtn = document.getElementById('tryOnBtn');
@@ -4051,7 +4292,9 @@ function resetSelection() {
     if (uploadIcon) uploadIcon.style.display = 'block';
     if (uploadText) {
         uploadText.style.display = 'block';
-        uploadText.textContent = isMobile ? 'Tap to upload full body image' : 'Click to upload full body image';
+        uploadText.textContent = elloIsFootwearContext()
+            ? (isMobile ? 'Tap to upload a photo with your feet visible' : 'Click to upload a photo with your feet visible')
+            : (isMobile ? 'Tap to upload full body image' : 'Click to upload full body image');
     }
 
     // Hide result section
@@ -4391,6 +4634,11 @@ async function handlePhotoUpload(event) {
                 trackEvent('photo_upload_success', { method: 'file_picker' });
             }
             markMeaningfulAction(); // Successfully uploading a photo is meaningful
+
+            // Focused view: repaint the stage so the fresh photo lands on the
+            // "You" card and the copy flips from "Add photo" to "Change photo"
+            // (no-op outside focused mode).
+            if (typeof elloSetupFocusedExtras === 'function') elloSetupFocusedExtras();
 
             showSuccessNotification('Photo Uploaded', 'Your photo has been uploaded successfully!', 2000);
 
@@ -5879,7 +6127,7 @@ function elloEnsureCtlStyles() {
         '#ello-ctl-rail .ello-ctl-title svg{color:' + accent + ';}' +
         '#ello-ctl-rail .ello-ctl-sub{font:500 11px/1 ' + fontStack + ';color:#9a9a9a;letter-spacing:.02em;}' +
         '#ello-ctl-rail .ello-ctl-card{display:flex;gap:12px;align-items:center;border:1px solid #ececec;border-radius:12px;padding:10px;background:#fff;}' +
-        '#ello-ctl-rail .ello-ctl-thumb{width:60px;height:80px;border-radius:8px;object-fit:cover;background:#f4f4f4;flex:0 0 auto;}' +
+        '#ello-ctl-rail .ello-ctl-thumb{width:60px;height:80px;border-radius:8px;object-fit:contain;background:#f4f4f4;flex:0 0 auto;}' +
         '#ello-ctl-rail .ello-ctl-info{flex:1 1 auto;min-width:0;}' +
         '#ello-ctl-rail .ello-ctl-name{font:600 13px/1.3 ' + fontStack + ';color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
         '#ello-ctl-rail .ello-ctl-price{font:500 13px/1.3 ' + fontStack + ';color:#555;margin-top:2px;}' +
@@ -5889,7 +6137,7 @@ function elloEnsureCtlStyles() {
         // "Both" state: two thumbs + a full-width Add-both button (mirrors the
         // hero panel's morph so both surfaces feel like one feature).
         '#ello-ctl-rail .ello-ctl-thumbs{display:flex;gap:6px;flex:0 0 auto;}' +
-        '#ello-ctl-rail .ello-ctl-thumbs img{width:44px;height:58px;border-radius:7px;object-fit:cover;background:#f4f4f4;}' +
+        '#ello-ctl-rail .ello-ctl-thumbs img{width:44px;height:58px;border-radius:7px;object-fit:contain;background:#f4f4f4;}' +
         '#ello-ctl-rail .ello-ctl-add{box-sizing:border-box;width:100%;margin-top:10px;border:none;border-radius:10px;padding:12px;font:600 14px/1 ' + fontStack + ';cursor:pointer;background:' + primary + ';color:' + primaryText + ';display:flex;align-items:center;justify-content:center;gap:7px;transition:opacity .15s;}' +
         '#ello-ctl-rail .ello-ctl-add:hover{opacity:.9;}' +
         '#ello-ctl-rail .ello-ctl-add:disabled{opacity:.6;cursor:wait;}' +
@@ -5897,6 +6145,192 @@ function elloEnsureCtlStyles() {
         '#ello-ctl-rail .ello-ctl-msg.err{color:#b91c1c;display:block;}' +
         '#ello-ctl-rail .ello-ctl-link{display:block;width:100%;margin-top:8px;text-align:center;font:600 13px/1 ' + fontStack + ';color:#111;background:transparent;border:1px solid #d8d8d8;border-radius:10px;padding:11px;cursor:pointer;}';
     document.head.appendChild(s);
+}
+
+// ─── Complete the Look: image peek (shared by rail + hero card) ──────────────
+// The offer thumb stays deliberately small so the card never crowds the result
+// the shopper is looking at. Visibility comes from three layers instead:
+// (1) a right-sized Shopify CDN rendition shown UN-cropped (contain, not
+// cover — a 46×60 cover-crop of a full-body product shot reads as "fabric",
+// not "the jeans"), (2) a hover preview that fades in on pointer devices,
+// (3) a tap-to-view lightbox on every device.
+
+// Size a Shopify CDN image via its width param (3× the display size keeps
+// retina thumbs sharp). Non-Shopify URLs (Supabase overrides, og-scrapes)
+// pass through untouched. Never mutates item.image_url — variant
+// color-matching (elloResolveCartVariantForItem) reads the original object.
+function elloCtlImgUrl(url, px) {
+    try {
+        var u = String(url || '');
+        if (!u) return u;
+        if (!/\/\/cdn\.shopify\.com\//.test(u) && u.indexOf('/cdn/shop/') === -1) return u;
+        u = u.replace(/([?&])width=\d+&?/, '$1').replace(/[?&]$/, '');
+        return u + (u.indexOf('?') === -1 ? '?' : '&') + 'width=' + px;
+    } catch (e) { return url; }
+}
+
+function elloEnsureCtlPeekStyles() {
+    if (document.getElementById('ello-ctl-peek-styles')) return;
+    var f = '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+    var s = document.createElement('style');
+    s.id = 'ello-ctl-peek-styles';
+    s.textContent =
+        '.ello-ctl-peekable{cursor:zoom-in;}' +
+        // Hover preview: pointer devices only. Pure fade-and-lift, and never
+        // interactive (pointer-events:none) so it can't trap the cursor.
+        '#ello-ctl-hoverpeek{position:fixed;z-index:2147483647;pointer-events:none;opacity:0;transform:translateY(6px) scale(.98);transition:opacity .22s cubic-bezier(.2,.8,.2,1),transform .22s cubic-bezier(.2,.8,.2,1);will-change:opacity,transform;}' +
+        '#ello-ctl-hoverpeek.on{opacity:1;transform:none;}' +
+        '#ello-ctl-hoverpeek .ecp-card{width:212px;background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:14px;padding:8px;box-shadow:0 4px 10px rgba(0,0,0,.06),0 18px 44px rgba(0,0,0,.16);}' +
+        '#ello-ctl-hoverpeek .ecp-img{display:block;width:100%;height:250px;object-fit:contain;border-radius:9px;background:#f7f7f5;}' +
+        '#ello-ctl-hoverpeek .ecp-cap{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:8px 3px 2px;}' +
+        '#ello-ctl-hoverpeek .ecp-name{font:600 12px/1.3 ' + f + ';color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+        '#ello-ctl-hoverpeek .ecp-price{font:500 12px/1.3 ' + f + ';color:#666;flex:0 0 auto;}' +
+        // Tap-to-view lightbox: frosted scrim + one quiet card. Tap anywhere
+        // (or Esc) dismisses.
+        '#ello-ctl-lightbox{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:22px;background:rgba(17,17,17,.45);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);opacity:0;transition:opacity .24s ease;cursor:zoom-out;}' +
+        '#ello-ctl-lightbox.on{opacity:1;}' +
+        '#ello-ctl-lightbox .ecl-card{position:relative;width:min(400px,92vw);background:#fff;border-radius:18px;padding:10px 10px 12px;box-shadow:0 30px 90px rgba(0,0,0,.35);transform:translateY(10px) scale(.97);transition:transform .24s cubic-bezier(.2,.8,.2,1);}' +
+        '#ello-ctl-lightbox.on .ecl-card{transform:none;}' +
+        '#ello-ctl-lightbox .ecl-img{display:block;width:100%;max-height:min(62vh,540px);object-fit:contain;border-radius:12px;background:#f7f7f5;}' +
+        '#ello-ctl-lightbox .ecl-cap{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:10px 6px 0;}' +
+        '#ello-ctl-lightbox .ecl-name{font:600 14px/1.35 ' + f + ';color:#111;}' +
+        '#ello-ctl-lightbox .ecl-price{font:500 14px/1.35 ' + f + ';color:#666;flex:0 0 auto;}' +
+        '#ello-ctl-lightbox .ecl-x{position:absolute;top:-13px;right:-13px;width:32px;height:32px;border:none;border-radius:50%;background:#fff;color:#111;box-shadow:0 4px 14px rgba(0,0,0,.22);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}' +
+        '@media (max-width:640px){#ello-ctl-lightbox .ecl-x{top:6px;right:6px;background:rgba(255,255,255,.92);box-shadow:0 2px 8px rgba(0,0,0,.15);}}';
+    document.head.appendChild(s);
+}
+
+var __elloCtlPeek = { hover: null, box: null, esc: null, hideScroll: null, prevOverflow: '' };
+
+function elloCtlCanHover() {
+    try { return window.matchMedia('(hover: hover) and (pointer: fine)').matches; } catch (e) { return false; }
+}
+
+function elloCtlShowHoverPeek(thumbEl, item) {
+    try {
+        if (!elloCtlCanHover() || !thumbEl || !item || __elloCtlPeek.box) return;
+        elloEnsureCtlPeekStyles();
+        var pop = __elloCtlPeek.hover;
+        if (!pop) {
+            pop = document.createElement('div');
+            pop.id = 'ello-ctl-hoverpeek';
+            pop.innerHTML = '<div class="ecp-card"><img class="ecp-img" alt="" decoding="async"><div class="ecp-cap"><span class="ecp-name"></span><span class="ecp-price"></span></div></div>';
+            __elloCtlPeek.hover = pop;
+        }
+        pop.querySelector('.ecp-img').src = elloCtlImgUrl(item.image_url, 480);
+        pop.querySelector('.ecp-name').textContent = item.name || '';
+        pop.querySelector('.ecp-price').textContent = elloCtlNum(item.price) > 0 ? elloCtlMoney(item.price) : '';
+        if (!pop.parentNode) document.body.appendChild(pop);
+        pop.classList.remove('on');
+        elloCtlPlaceHoverPeek(pop, thumbEl);
+        requestAnimationFrame(function () { pop.classList.add('on'); });
+        // Scrolling moves the anchor under a fixed pop — RE-ANCHOR rather than
+        // hide: themes fire ambient scroll events constantly (capture-phase
+        // catches inner scrollers too), and a hide-on-any-scroll kills the pop
+        // the instant it appears. rAF-throttled; hides only when the thumb
+        // actually leaves the viewport.
+        var ticking = false;
+        var onScroll = function () {
+            if (ticking) return;
+            ticking = true;
+            requestAnimationFrame(function () {
+                ticking = false;
+                if (!pop.parentNode || !pop.classList.contains('on')) return;
+                var tr = thumbEl.getBoundingClientRect();
+                if (!tr.width || tr.bottom < 0 || tr.top > window.innerHeight) { elloCtlHideHoverPeek(); return; }
+                elloCtlPlaceHoverPeek(pop, thumbEl);
+            });
+        };
+        __elloCtlPeek.hideScroll = onScroll;
+        window.addEventListener('scroll', onScroll, { passive: true, capture: true });
+    } catch (e) {}
+}
+
+// Position the pop above the thumb, clamped to the viewport; flip below when
+// tight. offsetWidth/Height (not getBoundingClientRect) — the pop may be in
+// its pre-fade scale(.98) state, which would shave the gap.
+function elloCtlPlaceHoverPeek(pop, thumbEl) {
+    var r = thumbEl.getBoundingClientRect();
+    var pw = pop.offsetWidth, ph = pop.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.min(Math.max(8, r.left + r.width / 2 - pw / 2), vw - pw - 8);
+    var top = r.top - ph - 12;
+    if (top < 8) top = Math.min(r.bottom + 12, vh - ph - 8);
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+}
+
+function elloCtlHideHoverPeek() {
+    if (__elloCtlPeek.hideScroll) {
+        window.removeEventListener('scroll', __elloCtlPeek.hideScroll, { capture: true });
+        __elloCtlPeek.hideScroll = null;
+    }
+    var pop = __elloCtlPeek.hover;
+    if (!pop || !pop.parentNode) return;
+    pop.classList.remove('on');
+    setTimeout(function () { if (pop.parentNode && !pop.classList.contains('on')) pop.remove(); }, 240);
+}
+
+function elloCtlOpenPeekLightbox(item) {
+    try {
+        if (!item || !item.image_url) return;
+        elloEnsureCtlPeekStyles();
+        elloCtlHideHoverPeek();
+        elloCtlClosePeekLightbox(true);          // instant, in case one is mid-fade
+        var xIcon = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"></path></svg>';
+        var box = document.createElement('div');
+        box.id = 'ello-ctl-lightbox';
+        box.innerHTML =
+            '<div class="ecl-card">' +
+                '<button type="button" class="ecl-x" aria-label="Close">' + xIcon + '</button>' +
+                '<img class="ecl-img" alt="" decoding="async">' +
+                '<div class="ecl-cap"><span class="ecl-name"></span><span class="ecl-price"></span></div>' +
+            '</div>';
+        box.querySelector('.ecl-img').src = elloCtlImgUrl(item.image_url, 1080);
+        box.querySelector('.ecl-name').textContent = item.name || '';
+        box.querySelector('.ecl-price').textContent = elloCtlNum(item.price) > 0 ? elloCtlMoney(item.price) : '';
+        box.addEventListener('click', function () { elloCtlClosePeekLightbox(); });
+        document.body.appendChild(box);
+        __elloCtlPeek.box = box;
+        __elloCtlPeek.prevOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        var esc = function (e) { if (e.key === 'Escape') elloCtlClosePeekLightbox(); };
+        __elloCtlPeek.esc = esc;
+        document.addEventListener('keydown', esc);
+        requestAnimationFrame(function () { box.classList.add('on'); });
+        try { if (typeof trackEvent === 'function') trackEvent('complete_the_look_peek', {}); } catch (e2) {}
+    } catch (e) {}
+}
+
+function elloCtlClosePeekLightbox(instant) {
+    if (__elloCtlPeek.esc) { document.removeEventListener('keydown', __elloCtlPeek.esc); __elloCtlPeek.esc = null; }
+    var box = __elloCtlPeek.box;
+    if (!box) return;
+    __elloCtlPeek.box = null;
+    document.body.style.overflow = __elloCtlPeek.prevOverflow || '';
+    if (instant) { box.remove(); return; }
+    box.classList.remove('on');
+    setTimeout(function () { box.remove(); }, 260);
+}
+
+// Wire a rendered thumb: zoom-in cursor, hover preview (pointer devices),
+// tap-to-view lightbox (every device). The click never bubbles — on the hero
+// card an ancestor tap would reach the theme's click-to-zoom.
+function elloCtlAttachPeek(imgEl, item) {
+    if (!imgEl || !item || !item.image_url) return;
+    elloEnsureCtlPeekStyles();
+    imgEl.classList.add('ello-ctl-peekable');
+    var open = function () { elloCtlOpenPeekLightbox(item); };
+    imgEl.addEventListener('click', function (ev) {
+        ev.preventDefault(); ev.stopPropagation();
+        open();
+    });
+    // On the hero card the tap shield swallows in-panel clicks and re-invokes
+    // the hit element's __elloTap directly — without this ref the thumb is
+    // click-dead on shielded themes.
+    imgEl.__elloTap = open;
+    imgEl.addEventListener('mouseenter', function () { elloCtlShowHoverPeek(imgEl, item); });
+    imgEl.addEventListener('mouseleave', elloCtlHideHoverPeek);
 }
 
 // In-widget upsell state (Scenario A) — mirrors __elloCtlB on the hero path.
@@ -5938,7 +6372,7 @@ async function elloRenderCompleteTheLook(garmentA) {
                 '<span class="ello-ctl-sub">styled to go with this</span>' +
             '</div>' +
             '<div class="ello-ctl-card">' +
-                '<img class="ello-ctl-thumb" src="' + (item.image_url || '') + '" alt="" loading="lazy" decoding="async">' +
+                '<img class="ello-ctl-thumb" src="' + elloCtlImgUrl(item.image_url || '', 240) + '" alt="" loading="lazy" decoding="async">' +
                 '<div class="ello-ctl-info">' +
                     '<div class="ello-ctl-name"></div>' +
                     '<div class="ello-ctl-price"></div>' +
@@ -5948,6 +6382,7 @@ async function elloRenderCompleteTheLook(garmentA) {
         // Set name/price as text (never innerHTML) so merchant product names can't inject markup.
         rail.querySelector('.ello-ctl-name').textContent = item.name || 'Complementary item';
         rail.querySelector('.ello-ctl-price').textContent = priceStr;
+        elloCtlAttachPeek(rail.querySelector('.ello-ctl-thumb'), item);
 
         // Sit the rail ABOVE the Add-to-Cart CTAs (offer seen before the final buy).
         var ctas = document.getElementById('ello-inline-result-ctas');
@@ -6035,8 +6470,8 @@ function elloRenderCtlRailBoth() {
             '</div>' +
             '<div class="ello-ctl-card">' +
                 '<div class="ello-ctl-thumbs">' +
-                    '<img src="' + (A.image_url || '') + '" alt="">' +
-                    '<img src="' + (item.image_url || '') + '" alt="">' +
+                    '<img src="' + elloCtlImgUrl(A.image_url || '', 240) + '" alt="">' +
+                    '<img src="' + elloCtlImgUrl(item.image_url || '', 240) + '" alt="">' +
                 '</div>' +
                 '<div class="ello-ctl-info">' +
                     '<div class="ello-ctl-name"></div>' +
@@ -6047,6 +6482,9 @@ function elloRenderCtlRailBoth() {
             '<div class="ello-ctl-msg" id="ello-ctl-msg"></div>';
         rail.querySelector('.ello-ctl-name').textContent = (A.name || 'This item') + ' + ' + (item.name || 'the look');
         rail.querySelector('.ello-ctl-price').textContent = elloCtlMoney(total);
+        var railThumbs = rail.querySelectorAll('.ello-ctl-thumbs img');
+        if (railThumbs[0]) elloCtlAttachPeek(railThumbs[0], A);
+        if (railThumbs[1]) elloCtlAttachPeek(railThumbs[1], item);
         rail.querySelector('#ello-ctl-add-lbl').textContent = 'Add both to cart · ' + elloCtlMoney(total);
 
         var ctas = document.getElementById('ello-inline-result-ctas');
@@ -6131,7 +6569,7 @@ async function elloAddOutfitToCartInWidget() {
         var rail = document.getElementById('ello-ctl-rail');
         if (rail) {
             rail.innerHTML =
-                '<div class="ello-ctl-head" style="justify-content:center;color:#0a7d34;font-weight:600;">✓&nbsp;<span>Added to cart</span></div>' +
+                '<div class="ello-ctl-head" style="justify-content:center;color:#0a7d34;font-weight:var(--ello-fw-600, 600);">✓&nbsp;<span>Added to cart</span></div>' +
                 '<button type="button" class="ello-ctl-link" id="ello-ctl-viewcart">View cart</button>';
             var vc = rail.querySelector('#ello-ctl-viewcart');
             if (vc) vc.addEventListener('click', function () {
@@ -6147,6 +6585,8 @@ async function elloAddOutfitToCartInWidget() {
 }
 
 window.elloRenderCompleteTheLook = elloRenderCompleteTheLook;
+window.elloCtlAttachPeek = elloCtlAttachPeek;
+window.elloCtlOpenPeekLightbox = elloCtlOpenPeekLightbox;
 
 // Apply the active category chip + the search box together, then re-render.
 function applyBrowserFilters() {
@@ -6480,7 +6920,7 @@ async function callElloTryOn(personImageUrl, productImageUrl) {
         // Product context so the engine knows which item is for sale (e.g. transfer
         // the shirt, not a necklace the model is also wearing). All optional.
         productTitle: garment?.name || garment?.title || null,
-        productType: garment?.category || garment?.product_type || null,
+        productType: elloResolveTryonProductType(garment),
         productTags: garment?.tags || null,
     };
 
@@ -6581,6 +7021,21 @@ const TRYON_LOADING_TIPS = [
     "Results may vary based on pose, lighting, and product angle."
 ];
 
+// Footwear variant — the clothing tips ("full-body photos beat close crops")
+// steer shoppers AWAY from the framing shoes need. Same length keeps the
+// rotation cadence identical.
+const ELLO_FOOTWEAR_LOADING_TIPS = [
+    "Use a clear, well-lit photo for best results.",
+    "Stand so your feet and shoes are fully in the shot.",
+    "Avoid long hems covering your ankles.",
+    "A straight-on angle of your feet works best.",
+    "Results may vary based on pose, lighting, and product angle."
+];
+
+function elloActiveTryonTips() {
+    return elloIsFootwearContext() ? ELLO_FOOTWEAR_LOADING_TIPS : TRYON_LOADING_TIPS;
+}
+
 const tryOnLoadingIntervals = {};
 
 function getTryOnLoadingRoot(surface) {
@@ -6620,7 +7075,8 @@ function updateTryOnLoadingCopy(root, index) {
         stepEl.textContent = TRYON_LOADING_STATUS;
     }
     if (tipEl) {
-        tipEl.textContent = TRYON_LOADING_TIPS[index % TRYON_LOADING_TIPS.length];
+        const tips = elloActiveTryonTips();
+        tipEl.textContent = tips[index % tips.length];
     }
 }
 
@@ -6701,7 +7157,7 @@ function showLoadingBar(show) {
 
 function completeLoadingBar() {
     const container = document.getElementById("tryOnLoadingBar");
-    updateTryOnLoadingCopy(container, TRYON_LOADING_TIPS.length - 1);
+    updateTryOnLoadingCopy(container, elloActiveTryonTips().length - 1);
     updateTryOnLoadingProgress(container, 100);
     stopTryOnLoadingState('full');
 }
@@ -7149,15 +7605,21 @@ function ensureFocusedStyles() {
         // #tryonContent, so it stays. Then top-anchor the body so there's no
         // centered float and nothing to scroll to.
         '.virtual-tryon-widget.inline-mode.ello-pdp-hub .photo-section{display:none !important;}' +
+        // ID-prefixed duplicates: the template's mobile "ensure visible" block
+        // carries ID specificity and beat the two class-only hides above on
+        // phones — the base workspace + upload section rendered under the
+        // focused stage (the "whole widget below the doors" bug, 2026-07-13).
+        '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub .photo-section-content .try-on-workspace{display:none !important;}' +
+        '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub .photo-section{display:none !important;}' +
         '.virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .tryon-content{justify-content:flex-start !important;}' +
         '.ello-focus-wrap{width:100%;box-sizing:border-box;}' +
         '.ello-focus-stage{display:grid;grid-template-columns:minmax(0,1fr) 24px minmax(0,1fr);align-items:start;gap:8px;width:100%;box-sizing:border-box;padding:18px 18px 4px;}' +
         '.ello-focus-cell{min-width:0;}' +
         '.ello-focus-img{position:relative;width:100%;aspect-ratio:3/4;border-radius:14px;background:#f1f1f1 center/cover no-repeat;box-shadow:0 1px 3px rgba(0,0,0,.05),0 6px 16px rgba(0,0,0,.07);}' +
         '.ello-focus-plus{align-self:center;text-align:center;color:#c4c4c4;font-size:20px;line-height:1;}' +
-        '.ello-focus-cap{text-align:center;font-size:12px;font-weight:600;color:#555;margin-top:8px;line-height:1.3;}' +
-        '.ello-focus-change{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(17,17,17,.78);color:#fff;border:none;border-radius:999px;font:inherit;font-size:11px;font-weight:500;padding:5px 12px;cursor:pointer;white-space:nowrap;}' +
-        '.ello-focus-head{text-align:center;font-size:14px;font-weight:600;color:#2f2f2f;letter-spacing:-.01em;line-height:1.4;padding:28px 22px 4px;}' +
+        '.ello-focus-cap{text-align:center;font-size:12px;font-weight:var(--ello-fw-600, 600);color:#555;margin-top:8px;line-height:1.3;}' +
+        '.ello-focus-change{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(17,17,17,.78);color:#fff;border:none;border-radius:999px;font:inherit;font-size:11px;font-weight:var(--ello-fw-500, 500);padding:5px 12px;cursor:pointer;white-space:nowrap;}' +
+        '.ello-focus-head{text-align:center;font-size:14px;font-weight:var(--ello-fw-600, 600);color:#2f2f2f;letter-spacing:-.01em;line-height:1.4;padding:28px 22px 4px;}' +
         // Browse / Wardrobe stacked as full-width rows. We reuse the opened hub's
         // own .browse-all-btn / .wardrobe-btn card styling (icon + label + sub),
         // so this returning view stays in lockstep with the hub. Just need the
@@ -7214,16 +7676,36 @@ function elloSetupFocusedExtras() {
             '<div class="ello-focus-cell"><div class="ello-focus-img" data-img="product"></div><div class="ello-focus-cap" data-cap="product">This item</div></div>';
         host.insertBefore(stage, host.firstChild);
         stage.querySelector('.ello-focus-change').addEventListener('click', function () { if (typeof handlePhotoUploadClick === 'function') handlePhotoUploadClick(); });
+        // First-timer fallback: with no photo yet, the whole empty card opens
+        // the picker (the chip alone is a small target). With a photo present
+        // the card is inert — the chip stays the only tap target.
+        stage.querySelector('[data-img="photo"]').addEventListener('click', function (e) {
+            if (e.target && e.target.closest('.ello-focus-change')) return;
+            var hasPhoto = !!(window.elloUserImageUrl || (typeof userPhoto !== 'undefined' && userPhoto));
+            if (!hasPhoto && typeof handlePhotoUploadClick === 'function') handlePhotoUploadClick();
+        });
     }
     var pImg = stage.querySelector('[data-img="photo"]'); if (pImg && photoSrc) pImg.style.backgroundImage = 'url("' + photoSrc + '")';
     var qImg = stage.querySelector('[data-img="product"]'); if (qImg && productSrc) qImg.style.backgroundImage = 'url("' + productSrc + '")';
     var cap = stage.querySelector('[data-cap="product"]'); if (cap) cap.textContent = productName;
 
+    // The stage serves first-timers now too (the always-focused routing above):
+    // no photo yet → the chip reads "Add photo" and the header invites the
+    // upload instead of the welcome-back line. Refreshed every call so the
+    // copy flips the moment an upload lands.
+    var chip = stage.querySelector('.ello-focus-change');
+    if (chip) chip.textContent = photoSrc ? 'Change photo' : 'Add photo';
+
     // Short header line above the stage.
-    if (host && !widget.querySelector('.ello-focus-head')) {
-        var head = document.createElement('div'); head.className = 'ello-focus-head';
-        head.textContent = 'Hey — want to use this photo again? Just hit Try On below.';
+    var head = widget.querySelector('.ello-focus-head');
+    if (host && !head) {
+        head = document.createElement('div'); head.className = 'ello-focus-head';
         host.insertBefore(head, stage);
+    }
+    if (head) {
+        head.textContent = photoSrc
+            ? 'Hey — want to use this photo again? Just hit Try On below.'
+            : 'Add one photo to see it on you.';
     }
 
     // Browse / Wardrobe stacked rich cards, injected right after the stage. These
@@ -7260,15 +7742,18 @@ function elloSetupFocusedExtras() {
 }
 
 window.elloOpenTryOnFromInline = function (ctx) {
+    // No-widget store (bubble off everywhere): the PDP Try-on button ALWAYS
+    // opens the hybrid focused view — photo + product + Browse/Wardrobe doors —
+    // never the full widget home. (Andrew 2026-07-13: shoppers without a saved
+    // photo, or clicks racing the catalog load, fell through to the full panel
+    // and got Featured Today + the whole scrollable home on swap stores like
+    // ello-dev-store.) First-timers get the intro overlay on top; Use My Photo
+    // goes straight to the picker in focused mode, and the stage's empty photo
+    // card is the fallback upload affordance. The full panel home remains
+    // reachable via the Fitting Room header/nav entries, just not this button.
     if (elloIsNoWidgetStore()) {
-        // Returning + on a PDP → hybrid focused view (no noise, no auto-fire).
-        if (elloShouldFocusReturning()) { window.elloOpenFocusedReturning(ctx); return; }
-        // First-time / off-PDP → the full widget home (featured, quick picks,
-        // onboarding + photo flow).
-        if (typeof window.elloOpenPanelFromInline === 'function') {
-            window.elloOpenPanelFromInline(ctx);
-            return;
-        }
+        window.elloOpenFocusedReturning(ctx);
+        return;
     }
     // Widget stores (bubble ON): keep the focused auto-fire below — intended, the
     // inline button is the fast one-tap try-on when the bubble's on the page.
@@ -7332,7 +7817,7 @@ function elloEnsureHubSwitchStyles() {
     style.id = 'ello-hub-switch-styles';
     style.textContent =
         '.ello-hub-switch{display:inline-flex;gap:2px;background:rgba(0,0,0,0.06);border-radius:999px;padding:3px;}' +
-        '.ello-hub-switch button{border:none;background:transparent;cursor:pointer;font:inherit;font-size:13px;font-weight:500;padding:6px 14px;border-radius:999px;color:#555;line-height:1;transition:background .15s,color .15s;}' +
+        '.ello-hub-switch button{border:none;background:transparent;cursor:pointer;font:inherit;font-size:13px;font-weight:var(--ello-fw-500, 500);padding:6px 14px;border-radius:999px;color:#555;line-height:1;transition:background .15s,color .15s;}' +
         '.ello-hub-switch button.active{background:#fff;color:#111;box-shadow:0 1px 2px rgba(0,0,0,0.12);}';
     document.head.appendChild(style);
 }
@@ -7752,11 +8237,14 @@ function elloEnsurePdpSwapStyles() {
         // That selector's specificity beats any single class, so only !important
         // keeps the card card-sized there.
         '.ello-pdp-card{position:absolute !important;top:12px !important;right:12px !important;left:auto !important;bottom:auto !important;width:78px !important;height:auto !important;max-width:78px !important;margin:0 !important;transform:none !important;z-index:7;border:none;padding:0;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 4px 16px rgba(0,0,0,.28);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
-        '.ello-pdp-card img{width:100% !important;height:96px !important;position:static !important;object-fit:cover;display:block;background:#f3f3f3;}' +
+        // object-fit needs !important too: theme media rules (e.g. `.media img
+        // {object-fit:contain}`) otherwise win and letterbox the thumb with
+        // white bars from the card background (Andrew 2026-07-13).
+        '.ello-pdp-card img{width:100% !important;height:96px !important;position:static !important;object-fit:cover !important;display:block;background:#f3f3f3;}' +
         // Loading: a determinate bar that fills smoothly + a % readout.
         '.ello-pdp-card .ello-pdp-bar{height:5px;background:#e7e7e7;}' +
         '.ello-pdp-card .ello-pdp-bar>i{display:block;height:100%;width:0;background:#111;border-radius:0 3px 3px 0;transition:width .4s cubic-bezier(.4,0,.2,1);}' +
-        '.ello-pdp-card .ello-pdp-pct{display:block;text-align:center;font-size:11px;font-weight:600;line-height:1.4;padding:4px 2px;color:#111;background:#fff;}' +
+        '.ello-pdp-card .ello-pdp-pct{display:block;text-align:center;font-size:11px;font-weight:var(--ello-fw-600, 600);line-height:1.4;padding:4px 2px;color:#111;background:#fff;}' +
         // Toggle variant: just the photo + a small swap badge (no text), reads as a button.
         'button.ello-pdp-card{cursor:pointer;-webkit-appearance:none;appearance:none;transition:transform .12s ease,box-shadow .12s ease;}' +
         'button.ello-pdp-card:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,0,0,.32);}' +
@@ -7819,7 +8307,7 @@ function elloInstallPdpTapShield() {
             var t = ev.target;
             if (t instanceof Node && t.nodeType === 1) {
                 try {
-                    if (t.closest('#virtualTryonWidget, #ello-sz-overlay, .clothing-browser-modal, .modal-backdrop, dialog[open], [aria-modal="true"]')) return;
+                    if (t.closest('#virtualTryonWidget, #ello-sz-overlay, #ello-ctl-lightbox, .clothing-browser-modal, .modal-backdrop, dialog[open], [aria-modal="true"]')) return;
                 } catch (e) {}
             }
             // The tap is ours alone — the theme never sees ANY event of it.
@@ -7828,7 +8316,8 @@ function elloInstallPdpTapShield() {
             ev.preventDefault();
             if (region === thumb) { elloPdpSwapToggle(); return; }
             if (region === panel) {
-                var btns = panel.querySelectorAll('button');
+                // Peekable thumbs ride the same __elloTap dispatch as buttons.
+                var btns = panel.querySelectorAll('button, .ello-ctl-peekable');
                 for (var i = 0; i < btns.length; i++) {
                     if (!btns[i].disabled && hit(btns[i])) {
                         var fn = btns[i].__elloTap;
@@ -8454,8 +8943,32 @@ async function elloMaybeRestorePdpSwap() {
 // ═══════════════════════════════════════════════════════════════════════════
 var __elloCtlB = {
     panelEl: null, wrapEl: null, itemB: null, garmentA: null, priceA: 0,
-    triedOnVariantA: null, triedOnHandleA: null, layered: false, resolvedVB: null
+    triedOnVariantA: null, triedOnHandleA: null, layered: false, resolvedVB: null,
+    userPhotoB64: null
 };
+
+// The shopper's TRUE photo, for the two-piece card's zero-selection state
+// ("take it all back off" → the mirror shows THEM, not a render they just
+// excluded). userPhoto/elloUserImageUrl are re-based onto renders during CTL
+// layer passes, so this prefers the value stashed at panel mount — before any
+// re-base — then the persisted upload. Null when unavailable (model photos in
+// a fresh context); callers fall back to the item-A render.
+function elloCtlOriginalUserPhoto() {
+    if (__elloCtlB.userPhotoB64) return __elloCtlB.userPhotoB64;
+    try {
+        var p = localStorage.getItem(USER_PHOTO_STORAGE_KEY);
+        if (p && p.indexOf('data:image') === 0) return p;
+    } catch (e) {}
+    return null;
+}
+
+// Stash the un-re-based photo onto __elloCtlB — call ONLY at moments userPhoto
+// is still the true photo (offer mount, outfit restore, pre-re-base).
+function elloCtlStashUserPhoto() {
+    if (__elloCtlB.userPhotoB64) return;
+    var p = userPhoto || window.elloUserImageUrl || null;
+    if (typeof p === 'string' && p.indexOf('data:image') === 0) __elloCtlB.userPhotoB64 = p;
+}
 
 function elloCtlNum(v) { var n = (typeof v === 'number') ? v : parseFloat(v); return isNaN(n) ? 0 : n; }
 
@@ -8529,7 +9042,7 @@ function elloEnsureCtlPdpStyles() {
         '#ello-ctl-pdp-panel .ectl-head{display:flex;align-items:center;gap:6px;margin:0 0 9px;font:600 13px/1 ' + f + ';color:#111;}' +
         '#ello-ctl-pdp-panel .ectl-head svg{color:' + accent + ';flex:0 0 auto;}' +
         '#ello-ctl-pdp-panel .ectl-row{display:flex;gap:11px;align-items:center;}' +
-        '#ello-ctl-pdp-panel .ectl-thumb{width:46px;height:60px;border-radius:7px;object-fit:cover;background:#f1efe9;flex:0 0 auto;}' +
+        '#ello-ctl-pdp-panel .ectl-thumb{width:46px;height:60px;border-radius:7px;object-fit:contain;background:#f1efe9;flex:0 0 auto;}' +
         '#ello-ctl-pdp-panel .ectl-info{flex:1 1 auto;min-width:0;}' +
         '#ello-ctl-pdp-panel .ectl-name{font:600 12px/1.3 ' + f + ';color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
         '#ello-ctl-pdp-panel .ectl-price{font:500 12px/1.3 ' + f + ';color:#666;margin-top:1px;}' +
@@ -8539,7 +9052,7 @@ function elloEnsureCtlPdpStyles() {
         // Two-piece state: one slim row — selectable thumbs + adaptive add button.
         '#ello-ctl-pdp-panel .ectl-brow{display:flex;align-items:center;gap:8px;}' +
         '#ello-ctl-pdp-panel .ectl-pick{position:relative;flex:0 0 auto;border:none;background:none;padding:0;cursor:pointer;-webkit-appearance:none;appearance:none;}' +
-        '#ello-ctl-pdp-panel .ectl-pick img{width:40px;height:52px;border-radius:7px;object-fit:cover;background:#f1efe9;display:block;border:2px solid ' + primary + ';transition:opacity .15s,border-color .15s;}' +
+        '#ello-ctl-pdp-panel .ectl-pick img{width:40px;height:52px;border-radius:7px;object-fit:contain;background:#f1efe9;display:block;border:2px solid ' + primary + ';transition:opacity .15s,border-color .15s;}' +
         '#ello-ctl-pdp-panel .ectl-pick .ectl-tick{position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:' + primary + ';color:' + primaryText + ';display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.25);}' +
         '#ello-ctl-pdp-panel .ectl-pick .ectl-tick svg{width:9px;height:9px;}' +
         '#ello-ctl-pdp-panel .ectl-pick:not(.is-on) img{opacity:.4;border-color:#d8d8d8;}' +
@@ -8588,6 +9101,7 @@ async function elloMountCtlPdpPanel(garmentA) {
         // later color change / the layer pass can't drift it.
         __elloCtlB.garmentA = garmentA || window.elloSelectedGarment || null;
         __elloCtlB.triedOnVariantA = window.__elloTriedOnVariant || null;
+        elloCtlStashUserPhoto();   // userPhoto is still the true photo here (pre-layer)
         __elloCtlB.triedOnHandleA = window.__elloTriedOnHandle || (__elloCtlB.garmentA && __elloCtlB.garmentA.id) || null;
         // Resolve A's price robustly — a missing catalog price (unsynced demo /
         // bookmarklet stores) is what showed "Add to cart · $0.00".
@@ -8631,12 +9145,13 @@ function elloRenderCtlOffer() {
     panel.innerHTML =
         '<div class="ectl-head">' + ELLO_CTL_SPARK + '<span>Complete the look</span></div>' +
         '<div class="ectl-row">' +
-            '<img class="ectl-thumb" src="' + (item.image_url || '') + '" alt="" loading="lazy" decoding="async">' +
+            '<img class="ectl-thumb" src="' + elloCtlImgUrl(item.image_url || '', 240) + '" alt="" loading="lazy" decoding="async">' +
             '<div class="ectl-info"><div class="ectl-name"></div><div class="ectl-price"></div></div>' +
             '<button type="button" class="ectl-btn" id="ectl-try-btn">' + ELLO_CTL_PLUS + '<span>Try it on too</span></button>' +
         '</div>';
     panel.querySelector('.ectl-name').textContent = item.name || 'Complementary item';
     panel.querySelector('.ectl-price').textContent = elloCtlMoney(item.price);
+    elloCtlAttachPeek(panel.querySelector('.ectl-thumb'), item);
     var btn = panel.querySelector('#ectl-try-btn');
     if (btn) { btn.addEventListener('click', elloCtlLayerInB); btn.__elloTap = elloCtlLayerInB; }
 }
@@ -8662,6 +9177,8 @@ function elloCtlLayerInB() {
         window.__elloCtlLayeringInB = true;
         // Beat the 1.5s duplicate-click debounce — this layer tap is intentional.
         window._lastTryOnTimestamp = 0;
+        // Last chance to capture the true photo before the re-base overwrites it.
+        elloCtlStashUserPhoto();
         // Re-base on the previous result (person already wearing A), like addToOutfit.
         userPhoto = base;
         window.elloUserImageUrl = base;
@@ -8701,8 +9218,8 @@ function elloRenderCtlBoth(resultB64) {
         '<div class="ectl-msg" id="ectl-msg" style="display:none;"></div>';
     var pickA = panel.querySelector('[data-pick="a"]');
     var pickB = panel.querySelector('[data-pick="b"]');
-    pickA.querySelector('img').src = (A && A.image_url) || '';
-    pickB.querySelector('img').src = item.image_url || '';
+    pickA.querySelector('img').src = elloCtlImgUrl((A && A.image_url) || '', 160);
+    pickB.querySelector('img').src = elloCtlImgUrl(item.image_url || '', 160);
     pickA.setAttribute('aria-label', 'Include ' + ((A && A.name) || 'the first item'));
     pickB.setAttribute('aria-label', 'Include ' + (item.name || 'the second item'));
     function refresh() {
@@ -8722,9 +9239,14 @@ function elloRenderCtlBoth(resultB64) {
         // a "just B" body was never rendered, so there's nothing truer to show.
         // Skipped while the layer pass's reveal is still in flight.
         if (!__elloPdpSwap.loadingEl) {
-            var want = (!s.b && __elloCtlB.baseResultB64)
-                ? __elloCtlB.baseResultB64
-                : (__elloCtlB.outfitResultB64 || null);
+            // Zero pieces selected → the mirror empties too (Andrew 2026-07-13):
+            // show the shopper's ORIGINAL photo, not a render they just took
+            // off. Falls back to the item-A render when the true photo isn't
+            // retrievable (model photo in a fresh context).
+            var want;
+            if (!s.a && !s.b) want = elloCtlOriginalUserPhoto() || __elloCtlB.baseResultB64 || null;
+            else if (!s.b && __elloCtlB.baseResultB64) want = __elloCtlB.baseResultB64;
+            else want = __elloCtlB.outfitResultB64 || null;
             // Compare against the RAW render — the hero itself may hold the
             // box-shaped composite of it, which would never string-match.
             if (want && want !== (__elloPdpSwap.resultRawUrl || __elloPdpSwap.resultUrl)) elloCtlSetHeroResult(want);
@@ -8960,6 +9482,7 @@ function elloRestoreCtlOutfitPanel(garmentA, itemB, variantA, baseB64, outfitB64
         __elloCtlB.itemB = itemB;
         __elloCtlB.layered = true;
         __elloCtlB.resolvedVB = null;
+        elloCtlStashUserPhoto();   // page just loaded — userPhoto is un-re-based
         var panel = document.createElement('div');
         panel.id = 'ello-ctl-pdp-panel';
         panel.addEventListener('click', function (ev) { ev.stopPropagation(); });
@@ -9003,6 +9526,18 @@ function ensureInlineModeStyles() {
            above, so it wins. */
         .virtual-tryon-widget.inline-mode.ello-pdp-hub .browse-all-btn,
         .virtual-tryon-widget.inline-mode.ello-pdp-hub .wardrobe-btn { display: flex !important; }
+
+        /* ID-prefixed duplicates of the hide + restore pair above. The template
+           carries ID-specificity !important rules (e.g. the mobile "ensure all
+           content sections are visible" block) that outranked the class-only
+           hides on phones — the full browse home leaked under inline/focused
+           views. Matching the container ID makes the hide win everywhere; the
+           restore stays one class more specific so hub/focused keep their
+           Browse + Wardrobe doors. */
+        #virtual-tryon-widget-container .virtual-tryon-widget.inline-mode .featured-section,
+        #virtual-tryon-widget-container .virtual-tryon-widget.inline-mode .quick-picks-section { display: none !important; }
+        #virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub .browse-all-btn,
+        #virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub .wardrobe-btn { display: flex !important; }
 
         /* ─── Workspace: two equal cards with centered "+" between them ───── */
         .virtual-tryon-widget.inline-mode .try-on-workspace {
@@ -9061,7 +9596,7 @@ function ensureInlineModeStyles() {
             border: none;
             font: inherit;
             font-size: 12px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             cursor: pointer;
             backdrop-filter: blur(4px);
         }
@@ -9191,7 +9726,7 @@ function ensureInlineModeStyles() {
         .virtual-tryon-widget.inline-mode #uploadPhotoCard .option-title {
             margin: 4px 0 0 !important;
             font-size: 13px !important;
-            font-weight: 600 !important;
+            font-weight: var(--ello-fw-600, 600) !important;
             color: #0B1220 !important;
             line-height: 1.25 !important;
         }
@@ -9211,7 +9746,7 @@ function ensureInlineModeStyles() {
             border-radius: 6px !important;
             font: inherit !important;
             font-size: 11px !important;
-            font-weight: 600 !important;
+            font-weight: var(--ello-fw-600, 600) !important;
             cursor: pointer !important;
             white-space: nowrap !important;
             width: auto !important;
@@ -9367,7 +9902,7 @@ function ensureResultCtasStyles() {
         #ello-inline-result-ctas .ello-inline-attribution a {
             color: #6b7280;
             text-decoration: none;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
         }
         #ello-inline-result-ctas .ello-inline-attribution a:hover {
             color: #111;
@@ -9382,7 +9917,7 @@ function ensureResultCtasStyles() {
         #ello-inline-result-ctas .ello-inline-btn {
             box-sizing: border-box; width: 100%;
             padding: 13px 20px; border: none; border-radius: 6px;
-            font: inherit; font-weight: 600; font-size: 15px;
+            font: inherit; font-weight: var(--ello-fw-600, 600); font-size: 15px;
             cursor: pointer; transition: opacity 0.15s;
         }
         #ello-inline-result-ctas .ello-inline-btn-primary {
@@ -9401,7 +9936,7 @@ function ensureResultCtasStyles() {
             margin-top: 16px; padding: 16px;
         }
         #ello-inline-cart-success .success-check {
-            font-size: 20px; color: #059669; font-weight: 600;
+            font-size: 20px; color: #059669; font-weight: var(--ello-fw-600, 600);
         }
     `;
     document.head.appendChild(style);
@@ -9655,18 +10190,18 @@ function elloShowSizePicker(info) {
         overlay.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;background:rgba(0,0,0,.55);z-index:2147483647;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);';
         var sizesHtml = info.sizes.map(function (s) {
             var dis = s.available ? '' : 'opacity:.4;cursor:not-allowed;text-decoration:line-through;';
-            return '<button class="ello-sz" data-vid="' + s.variantId + '" data-av="' + (s.available ? '1' : '0') + '" style="padding:13px 8px;border:1.5px solid #e3e3e3;background:#fff;border-radius:12px;font:inherit;font-weight:600;font-size:14px;color:#111;cursor:pointer;text-transform:uppercase;letter-spacing:.04em;transition:all .15s;' + dis + '">' + (s.label || '-') + '</button>';
+            return '<button class="ello-sz" data-vid="' + s.variantId + '" data-av="' + (s.available ? '1' : '0') + '" style="padding:13px 8px;border:1.5px solid #e3e3e3;background:#fff;border-radius:12px;font:inherit;font-weight:var(--ello-fw-600, 600);font-size:14px;color:#111;cursor:pointer;text-transform:uppercase;letter-spacing:.04em;transition:all .15s;' + dis + '">' + (s.label || '-') + '</button>';
         }).join('');
         var sub = [info.title, info.colorLabel].filter(Boolean).join(' · ');
         overlay.innerHTML =
             '<div style="background:#fff;padding:24px 22px 20px;border-radius:20px;max-width:360px;width:90%;box-shadow:0 24px 70px rgba(0,0,0,.3);font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">' +
             (info.image ? '<div style="text-align:center;margin-bottom:12px;"><img src="' + info.image + '" alt="" style="width:84px;height:104px;object-fit:cover;border-radius:12px;display:inline-block;"></div>' : '') +
-            '<div style="text-align:center;margin-bottom:4px;font-size:17px;font-weight:700;color:#111;">Select your size</div>' +
+            '<div style="text-align:center;margin-bottom:4px;font-size:17px;font-weight:var(--ello-fw-700, 700);color:#111;">Select your size</div>' +
             (sub ? '<div style="text-align:center;margin-bottom:18px;color:#777;font-size:13px;">' + sub + '</div>' : '<div style="margin-bottom:18px;"></div>') +
             '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:18px;">' + sizesHtml + '</div>' +
             '<div style="display:flex;gap:10px;">' +
-            '<button id="ello-sz-cancel" style="flex:1;padding:13px;background:#f1f1f1;border:none;border-radius:12px;cursor:pointer;font:inherit;font-weight:600;color:#555;font-size:14px;">Cancel</button>' +
-            '<button id="ello-sz-add" disabled style="flex:1.4;padding:13px;background:#111;color:#fff;border:none;border-radius:12px;cursor:pointer;font:inherit;font-weight:600;font-size:14px;opacity:.45;">Add to cart</button>' +
+            '<button id="ello-sz-cancel" style="flex:1;padding:13px;background:#f1f1f1;border:none;border-radius:12px;cursor:pointer;font:inherit;font-weight:var(--ello-fw-600, 600);color:#555;font-size:14px;">Cancel</button>' +
+            '<button id="ello-sz-add" disabled style="flex:1.4;padding:13px;background:#111;color:#fff;border:none;border-radius:12px;cursor:pointer;font:inherit;font-weight:var(--ello-fw-600, 600);font-size:14px;opacity:.45;">Add to cart</button>' +
             '</div></div>';
         document.body.appendChild(overlay);
         var chosen = null;
@@ -9795,11 +10330,11 @@ function showCartSuccessState() {
     success.innerHTML = `
         <div class="success-check">✓ Added to cart</div>
         <button class="ello-inline-btn ello-inline-btn-secondary" id="ello-inline-continue-btn"
-                style="box-sizing:border-box;width:100%;padding:14px 20px;border:1px solid #d1d5db;border-radius:6px;background:transparent;color:#000;font:inherit;font-weight:600;font-size:15px;cursor:pointer;">
+                style="box-sizing:border-box;width:100%;padding:14px 20px;border:1px solid #d1d5db;border-radius:6px;background:transparent;color:#000;font:inherit;font-weight:var(--ello-fw-600, 600);font-size:15px;cursor:pointer;">
             Continue shopping
         </button>
         <button class="ello-inline-btn ello-inline-btn-primary" id="ello-inline-view-cart-btn"
-                style="box-sizing:border-box;width:100%;padding:14px 20px;border:none;border-radius:6px;background:#000;color:#fff;font:inherit;font-weight:600;font-size:15px;cursor:pointer;">
+                style="box-sizing:border-box;width:100%;padding:14px 20px;border:none;border-radius:6px;background:#000;color:#fff;font:inherit;font-weight:var(--ello-fw-600, 600);font-size:15px;cursor:pointer;">
             View cart
         </button>
     `;
@@ -10287,12 +10822,12 @@ function showElloLeadCaptureModal(garment) {
                 : '<div style="width:64px;height:64px;border-radius:50%;margin:0 auto;background:#FFFFFF;display:flex;align-items:center;justify-content:center;font-size:28px;box-shadow:0 10px 26px rgba(11,18,32,0.12);">✨</div>') +
         '</div>' +
         '<div style="padding:18px 26px 24px;">' +
-            '<div style="font-size:10px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#3B63D4;margin-bottom:8px;">Your virtual fitting room</div>' +
-            '<div style="font-size:21px;font-weight:800;letter-spacing:-0.01em;color:#0B1220;margin-bottom:7px;">Don&#39;t lose this look</div>' +
+            '<div style="font-size:10px;font-weight:var(--ello-fw-700, 700);letter-spacing:0.14em;text-transform:uppercase;color:#3B63D4;margin-bottom:8px;">Your virtual fitting room</div>' +
+            '<div style="font-size:21px;font-weight:var(--ello-fw-800, 800);letter-spacing:-0.01em;color:#0B1220;margin-bottom:7px;">Don&#39;t lose this look</div>' +
             '<div style="font-size:13.5px;color:#434D63;line-height:1.55;margin-bottom:16px;">Enter your email and we&#39;ll keep your try-on results — plus you&#39;ll get first dibs on new drops.</div>' +
             '<input id="ello-lead-email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" style="width:100%;box-sizing:border-box;padding:13px 15px;border:1.5px solid #D8DCE3;border-radius:12px;font-size:15px;color:#0B1220;outline:none;transition:border-color 140ms ease,box-shadow 140ms ease;" />' +
             '<div id="ello-lead-error" style="display:none;color:#D94E4E;font-size:12px;margin-top:8px;text-align:left;"></div>' +
-            '<button id="ello-lead-submit" type="button" style="width:100%;box-sizing:border-box;padding:13px;margin-top:12px;border:none;border-radius:12px;background:' + accent + ';color:' + accentText + ';font-size:15px;font-weight:700;letter-spacing:0.01em;cursor:pointer;box-shadow:0 8px 22px rgba(11,18,32,0.18);">Save my looks</button>' +
+            '<button id="ello-lead-submit" type="button" style="width:100%;box-sizing:border-box;padding:13px;margin-top:12px;border:none;border-radius:12px;background:' + accent + ';color:' + accentText + ';font-size:15px;font-weight:var(--ello-fw-700, 700);letter-spacing:0.01em;cursor:pointer;box-shadow:0 8px 22px rgba(11,18,32,0.18);">Save my looks</button>' +
             '<div style="font-size:11px;color:#9098A8;margin-top:12px;">No spam, ever. Unsubscribe anytime.</div>' +
         '</div>';
 
@@ -10340,7 +10875,7 @@ function showElloLeadCaptureModal(garment) {
         card.innerHTML =
             '<div style="padding:44px 26px 40px;">' +
                 '<div style="width:56px;height:56px;border-radius:50%;margin:0 auto 14px;background:#E8EEFD;display:flex;align-items:center;justify-content:center;font-size:26px;">🎉</div>' +
-                '<div style="font-size:20px;font-weight:800;color:#0B1220;margin-bottom:6px;">You&#39;re in</div>' +
+                '<div style="font-size:20px;font-weight:var(--ello-fw-800, 800);color:#0B1220;margin-bottom:6px;">You&#39;re in</div>' +
                 '<div style="font-size:13.5px;color:#434D63;">We&#39;ll keep your looks safe.</div>' +
             '</div>';
         setTimeout(close, 1400);
@@ -10499,6 +11034,8 @@ function showSizeSelector(clothing) {
 
         // Create popup HTML (rest of your existing popup code...)
         const popup = document.createElement('div');
+        // Body-mounted with no id — the class puts it in the brand-font scope.
+        popup.className = 'ello-widget-surface';
         popup.style.cssText = `
     position: fixed;
     top: 0;
@@ -10528,7 +11065,7 @@ function showSizeSelector(clothing) {
             <h3 style="
                 margin: 0 0 8px 0;
                 font-size: 18px;
-                font-weight: 700;
+                font-weight: var(--ello-fw-700, 700);
                 color: ${P.title};
                 text-transform: uppercase;
                 letter-spacing: 1px;
@@ -10553,7 +11090,7 @@ function showSizeSelector(clothing) {
                     background: ${P.btnBg};
                     cursor: pointer;
                     border-radius: 6px;
-                    font-weight: 600;
+                    font-weight: var(--ello-fw-600, 600);
                     font-size: 14px;
                     color: ${P.btnColor};
                     transition: all 0.3s ease;
@@ -10573,7 +11110,7 @@ function showSizeSelector(clothing) {
                 border: 1px solid ${P.cancelBorder};
                 border-radius: 6px;
                 cursor: pointer;
-                font-weight: 600;
+                font-weight: var(--ello-fw-600, 600);
                 color: ${P.cancelColor};
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
@@ -10587,7 +11124,7 @@ function showSizeSelector(clothing) {
                 border: 1px solid ${P.confirmBorder};
                 border-radius: 6px;
                 cursor: pointer;
-                font-weight: 600;
+                font-weight: var(--ello-fw-600, 600);
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
                 font-size: 13px;
@@ -11091,6 +11628,8 @@ async function sendAnalyticsTracking(conversionType, clothing, variantToAdd, try
 function showCustomPurchaseModal(clothing, variantToAdd) {
     // Create a simple modal for custom purchase flow
     const modal = document.createElement('div');
+    // Body-mounted with no id — the class puts it in the brand-font scope.
+    modal.className = 'ello-widget-surface';
     modal.style.cssText = `
     position: fixed;
     top: 0;
@@ -11120,7 +11659,7 @@ function showCustomPurchaseModal(clothing, variantToAdd) {
             <h3 style="
                 margin: 0 0 8px 0;
                 font-size: 18px;
-                font-weight: 700;
+                font-weight: var(--ello-fw-700, 700);
                 color: #333;
             ">Purchase ${clothing.name}</h3>
             <p style="
@@ -11144,7 +11683,7 @@ function showCustomPurchaseModal(clothing, variantToAdd) {
                 border: 1px solid #e0e0e0;
                 border-radius: 6px;
                 cursor: pointer;
-                font-weight: 600;
+                font-weight: var(--ello-fw-600, 600);
                 color: #666;
             ">Close</button>
             <button id="contactStore" style="
@@ -11155,7 +11694,7 @@ function showCustomPurchaseModal(clothing, variantToAdd) {
                 border: 1px solid #333;
                 border-radius: 6px;
                 cursor: pointer;
-                font-weight: 600;
+                font-weight: var(--ello-fw-600, 600);
             ">Contact Store</button>
         </div>
     </div>
@@ -11471,6 +12010,199 @@ function applyMinimizedWidgetColor() {
     }
 }
 
+// ============================================================================
+// BRAND FONT — the widget wears the merchant theme's font by default
+// ============================================================================
+
+// Every widget surface that carries text, including the ones mounted on
+// document.body OUTSIDE the container (modals, toasts, PDP panel/card) that
+// container-scoped rules can't reach.
+var ELLO_FONT_SCOPES = [
+    '#virtual-tryon-widget-container',
+    '.ello-pdp-card',
+    '#ello-ctl-pdp-panel',
+    '#ello-sz-overlay',
+    '#ello-lead-capture-overlay',
+    '.custom-notification',
+    '.ello-widget-surface'
+];
+
+function elloFontScopeSelector() {
+    return ELLO_FONT_SCOPES.map(function (s) { return s + ',' + s + ' *'; }).join(',');
+}
+
+/**
+ * Read the merchant page's main font stack. Body's computed font-family is the
+ * primary signal (Shopify themes set the body font there); if the body reads
+ * as a raw browser default (Times / -webkit-standard), the theme styles text
+ * elsewhere — sample prominent content nodes instead. Returns null when no
+ * theme-set font is found (widget keeps Poppins). A theme that GENUINELY sets
+ * bare "Times New Roman" is indistinguishable from the UA default and keeps
+ * Poppins too — the per-store font_family override is the fix for that store.
+ *
+ * Non-null results are cached; null re-probes on the next call, so a detection
+ * that ran before the theme's CSS settled gets retried by the config ladder.
+ */
+function elloDetectBrandFont() {
+    if (elloDetectBrandFont._stack) return elloDetectBrandFont._stack;
+
+    // Only true browser defaults: a computed -apple-system / system-ui stack
+    // means the theme deliberately chose system fonts — inherit it.
+    var UA_DEFAULT = /^(-webkit-standard|times new roman|times|serif)$/i;
+    function firstFamily(ff) {
+        return (ff || '').split(',')[0].replace(/['"]/g, '').trim();
+    }
+
+    var stack = null;
+    try {
+        var bodyFont = document.body ? window.getComputedStyle(document.body).fontFamily : '';
+        if (bodyFont && !UA_DEFAULT.test(firstFamily(bodyFont))) {
+            stack = bodyFont;
+        } else {
+            var picks = document.querySelectorAll('h1, .product__title, main p, p');
+            for (var i = 0; i < picks.length && i < 12; i++) {
+                if (picks[i].closest('#virtual-tryon-widget-container')) continue;
+                var ff = window.getComputedStyle(picks[i]).fontFamily;
+                if (ff && !UA_DEFAULT.test(firstFamily(ff))) { stack = ff; break; }
+            }
+        }
+    } catch (e) { /* keep Poppins */ }
+
+    if (stack) {
+        // Computed values shouldn't contain these, but the string is headed
+        // into a stylesheet — scrub anything that could break out of the rule.
+        stack = stack.replace(/[{}();<>!]/g, '').trim().slice(0, 400);
+    }
+    elloDetectBrandFont._stack = stack || null;
+    return elloDetectBrandFont._stack;
+}
+
+/**
+ * Read the theme's font-weight scale: body text weight plus heading weight
+ * (first prominent heading outside the widget). Feeds the --ello-fw-* tier
+ * remap in applyBrandFont so a light-typography theme (e.g. Jost at 400/500)
+ * doesn't sit next to Poppins-era 700/800 widget accents.
+ *
+ * Caches only once a heading is found — like the font-stack cache, a probe
+ * that ran before the theme's CSS settled gets retried by the config ladder.
+ */
+function elloDetectBrandWeights() {
+    if (elloDetectBrandWeights._w) return elloDetectBrandWeights._w;
+
+    function num(el) {
+        if (!el) return null;
+        var w = parseFloat(window.getComputedStyle(el).fontWeight);
+        return (w >= 100 && w <= 1000) ? w : null;
+    }
+
+    var body = null, head = null;
+    try {
+        body = num(document.body);
+        var picks = document.querySelectorAll('h1, h2, .product__title, .product-title, h3');
+        for (var i = 0; i < picks.length && i < 12; i++) {
+            if (picks[i].closest('#virtual-tryon-widget-container')) continue;
+            head = num(picks[i]);
+            if (head) break;
+        }
+    } catch (e) { /* keep defaults */ }
+
+    var w = { body: body || 400, head: head || 700 };
+    if (head) elloDetectBrandWeights._w = w;
+    return w;
+}
+
+/**
+ * Default-on font inheritance: apply the detected theme font to every widget
+ * surface so the widget reads as part of the merchant's brand. Rides the same
+ * config ladder as applyStyleOverrides (called from it, above the early
+ * return, so it runs even for stores with no style_overrides row).
+ *
+ * Yields to per-store knobs: an explicit font_family override disables it
+ * (that store chose a specific font), and font_inherit:false opts a store out
+ * back to Poppins. Preview hooks mirror ?ello_theme: ?ello_brand_font=0 kills
+ * it for this page view, ?ello_brand_font=1 forces it past an opt-out.
+ *
+ * Weight inheritance rides along: when the widget wears the theme's font it
+ * also adopts the theme's weight scale. Template weights are declared as
+ * var(--ello-fw-500/600/700/800) with the original value as fallback, so this
+ * only sets the variables — no vars, pixel-identical widget. The tier remap
+ * shifts by (theme heading weight − 700): a Jost theme with 500 headings
+ * pulls the 700/800 accents down to 500/600; the 500/600 tiers only ever
+ * lighten (a heavy-heading theme doesn't bolden body-adjacent text). Floors
+ * keep tiers monotonic so hierarchy never inverts. font_weight_inherit:false
+ * opts out of the weight part alone; ?ello_brand_weight=0/1 previews.
+ */
+function applyBrandFont() {
+    var so = window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.styleOverrides;
+    var tag = document.getElementById('ello-brand-font');
+
+    var force = null;
+    try {
+        var q = new URLSearchParams(window.location.search).get('ello_brand_font');
+        if (q === '0' || q === 'off') force = false;
+        else if (q === '1' || q === 'on') force = true;
+    } catch (e) { /* fall through to store config */ }
+
+    var enabled;
+    if (force !== null) enabled = force;
+    else if (so && typeof so.font_family === 'string' && so.font_family.trim()) enabled = false;
+    else if (so && so.font_inherit === false) enabled = false;
+    else enabled = true;
+
+    var stack = enabled ? elloDetectBrandFont() : null;
+    if (!stack) {
+        if (tag) tag.remove();
+        return;
+    }
+
+    var css = elloFontScopeSelector() + '{font-family:' + stack + ' !important;}';
+
+    // ── Theme font-weight inheritance (rides the family inheritance) ──
+    var wforce = null;
+    try {
+        var wq = new URLSearchParams(window.location.search).get('ello_brand_weight');
+        if (wq === '0' || wq === 'off') wforce = false;
+        else if (wq === '1' || wq === 'on') wforce = true;
+    } catch (e) { /* fall through to store config */ }
+    var wEnabled = (wforce !== null) ? wforce : !(so && so.font_weight_inherit === false);
+
+    if (wEnabled) {
+        var w = elloDetectBrandWeights();
+        var r100 = function (n) { return Math.round(n / 100) * 100; };
+        var clamp = function (n, lo, hi) { return Math.min(hi, Math.max(lo, n)); };
+        var bodyW = clamp(r100(w.body), 300, 500);
+        var delta = clamp(r100(w.head) - 700, -300, 100);
+        var soft = Math.min(delta, 0);
+        var fw500 = clamp(500 + soft, bodyW, 600);
+        var fw600 = clamp(600 + soft, fw500, 700);
+        var fw700 = clamp(700 + delta, fw600, 800);
+        var fw800 = clamp(800 + delta, fw700, 900);
+
+        var rules = '';
+        // Base text weight cascades from the scope roots (no !important, so
+        // any template rule that sets an explicit weight still wins).
+        if (bodyW !== 400) rules += 'font-weight:' + bodyW + ';';
+        if (delta !== 0) {
+            rules += '--ello-fw-500:' + fw500 + ';--ello-fw-600:' + fw600 +
+                ';--ello-fw-700:' + fw700 + ';--ello-fw-800:' + fw800 + ';';
+        }
+        if (rules) css += '\n' + ELLO_FONT_SCOPES.join(',') + '{' + rules + '}';
+    }
+
+    if (!tag) {
+        tag = document.createElement('style');
+        tag.id = 'ello-brand-font';
+        // Sit BEFORE the style-overrides tag so ops custom_css wins ties.
+        var overrides = document.getElementById('ello-style-overrides');
+        if (overrides) document.head.insertBefore(tag, overrides);
+        else document.head.appendChild(tag);
+    }
+    if (tag.textContent !== css) {
+        tag.textContent = css;
+        elloLog('🔤 Brand font inherited from theme:', stack);
+    }
+}
+
 /**
  * Apply per-store style overrides from window.ELLO_STORE_CONFIG.styleOverrides.
  *
@@ -11493,12 +12225,23 @@ function applyMinimizedWidgetColor() {
  *   launcher_label_spacing  string  — letter-spacing (default 0.6px)
  *   launcher_label_text     string  — replace the hover label text
  *   font_family + font_url  string  — @font-face a merchant brand font
- *                           (https woff2/woff/otf/ttf) and apply widget-wide
- *   font_inherit            boolean — inherit the merchant theme's body font
- *                           instead of Poppins (ignored if font_family set)
+ *                           (https woff2/woff/otf/ttf) and apply widget-wide;
+ *                           disables the default theme-font inheritance
+ *   font_inherit            boolean — theme-font inheritance is DEFAULT-ON
+ *                           (applyBrandFont); set false to opt a store back
+ *                           to Poppins (ignored if font_family set)
+ *   font_weight_inherit     boolean — theme font-WEIGHT inheritance is
+ *                           DEFAULT-ON whenever font inheritance is active
+ *                           (--ello-fw-* tier remap from the theme's
+ *                           body/heading weights); set false to keep the
+ *                           stock weight scale under the inherited font
+ *   sample_model_gender     string  — "female" | "male": show only that
+ *                           gender in the sample-model browser (single-
+ *                           gender stores); absent/other = all models
  *   hide_emojis             boolean — strip decorative emoji (📷 ✨ 👕 📸 …)
- *                           from ALL widget text via a scoped
- *                           MutationObserver. Functional marks survive
+ *                           from ALL widget text — container AND body-level
+ *                           surfaces (lead capture, toasts, size picker) —
+ *                           via MutationObservers. Functional marks survive
  *                           (✓ added-to-cart, ✕ close, ➜ step arrows).
  *   custom_css              string  — escape hatch, appended verbatim.
  *                           OPS-AUTHORED ONLY — never merchant input.
@@ -11517,6 +12260,23 @@ function applyStyleOverrides() {
     // widget's first paint, and this is the hook that re-runs when it does.
     // Must sit above the early return so a cleared override restores white.
     applyWidgetThemeColors();
+
+    // Default-on brand font — also above the early return: stores with NO
+    // style_overrides row still inherit the merchant theme's font.
+    applyBrandFont();
+
+    // ── Footwear try-on kill switch (per-store, no redeploy) ──
+    // style_overrides {"footwear_tryon_enabled": false} disables ALL footwear
+    // UX (upload copy, tips, body-check leniency, payload type override).
+    // Only touched when the key is present so a console/theme-set flag isn't
+    // clobbered; copy re-applies either way because this function rides the
+    // config retry ladder and config usually lands after first paint.
+    if (so && so.footwear_tryon_enabled === false) {
+        window.ELLO_FOOTWEAR_TRYON = false;
+    } else if (so && so.footwear_tryon_enabled === true) {
+        window.ELLO_FOOTWEAR_TRYON = true;
+    }
+    elloApplyFootwearUploadCopy();
 
     if (!so || typeof so !== 'object') {
         if (existing) existing.remove();
@@ -11564,7 +12324,8 @@ function applyStyleOverrides() {
     }
 
     // ── Widget font (replaces the hardcoded Poppins) ──
-    var fontStack = null;
+    // Theme-font inheritance is DEFAULT-ON via applyBrandFont() above; this
+    // branch is the explicit per-store font (which disables inheritance).
     if (typeof so.font_family === 'string' && so.font_family.trim()) {
         // Strip anything that could break out of the font-family string.
         var famName = so.font_family.trim().replace(/['"\\;{}<>]/g, '');
@@ -11575,16 +12336,7 @@ function applyStyleOverrides() {
             css += "@font-face{font-family:'" + famName + "';src:url('" + so.font_url +
                 "') format('" + fmt + "');font-display:swap;font-weight:100 900;}\n";
         }
-        fontStack = "'" + famName + "'";
-    } else if (so.font_inherit === true) {
-        // Match the merchant theme: read the storefront body's computed stack.
-        try {
-            var bodyFont = window.getComputedStyle(document.body).fontFamily;
-            if (bodyFont) fontStack = bodyFont;
-        } catch (e) { /* stick with Poppins */ }
-    }
-    if (fontStack) {
-        css += C + ',' + C + ' *{font-family:' + fontStack + ",'Poppins',sans-serif !important;}\n";
+        css += elloFontScopeSelector() + "{font-family:'" + famName + "','Poppins',sans-serif !important;}\n";
     }
 
     // ── Escape hatch: raw scoped CSS (ops-authored only) ──
@@ -11599,9 +12351,15 @@ function applyStyleOverrides() {
     // ✓ (U+2713), ✕ (U+2715) and ➜ (U+279C) are functional and survive.
     if (so.hide_emojis === true) {
         ensureEmojiStripper();
-    } else if (applyStyleOverrides._emojiObs) {
-        applyStyleOverrides._emojiObs.disconnect();
-        applyStyleOverrides._emojiObs = null;
+    } else {
+        if (applyStyleOverrides._emojiObs) {
+            applyStyleOverrides._emojiObs.disconnect();
+            applyStyleOverrides._emojiObs = null;
+        }
+        if (applyStyleOverrides._emojiBodyObs) {
+            applyStyleOverrides._emojiBodyObs.disconnect();
+            applyStyleOverrides._emojiBodyObs = null;
+        }
     }
 
     if (!css.trim()) {
@@ -11625,12 +12383,6 @@ function applyStyleOverrides() {
  * never re-triggers itself.
  */
 function ensureEmojiStripper() {
-    if (applyStyleOverrides._emojiObs) return;
-    var container = document.getElementById('virtual-tryon-widget-container');
-    // Container may not exist yet on early calls — the retry ladder and every
-    // re-minimize re-run applyStyleOverrides, so a later call attaches.
-    if (!container) return;
-
     var EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{26FF}\u{2728}\u{2B50}\u{FE0F}]/gu;
 
     function stripIn(root) {
@@ -11645,23 +12397,60 @@ function ensureEmojiStripper() {
         }
     }
 
-    stripIn(container);
-    var obs = new MutationObserver(function (mutations) {
-        for (var i = 0; i < mutations.length; i++) {
-            var m = mutations[i];
-            if (m.type === 'characterData') {
-                stripIn(m.target.parentNode || container);
-            } else {
-                for (var j = 0; j < m.addedNodes.length; j++) {
-                    var n = m.addedNodes[j];
-                    if (n.nodeType === 3 && n.parentNode) stripIn(n.parentNode);
-                    else if (n.nodeType === 1) stripIn(n);
+    // ── Main widget container: scoped observer (hot path) ──
+    var container = document.getElementById('virtual-tryon-widget-container');
+    // Container may not exist yet on early calls — the retry ladder and every
+    // re-minimize re-run applyStyleOverrides, so a later call attaches.
+    if (container && !applyStyleOverrides._emojiObs) {
+        stripIn(container);
+        var obs = new MutationObserver(function (mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                var m = mutations[i];
+                if (m.type === 'characterData') {
+                    stripIn(m.target.parentNode || container);
+                } else {
+                    for (var j = 0; j < m.addedNodes.length; j++) {
+                        var n = m.addedNodes[j];
+                        if (n.nodeType === 3 && n.parentNode) stripIn(n.parentNode);
+                        else if (n.nodeType === 1) stripIn(n);
+                    }
                 }
             }
-        }
-    });
-    obs.observe(container, { childList: true, subtree: true, characterData: true });
-    applyStyleOverrides._emojiObs = obs;
+        });
+        obs.observe(container, { childList: true, subtree: true, characterData: true });
+        applyStyleOverrides._emojiObs = obs;
+    }
+
+    // ── Body-level widget surfaces (lead capture ✨/🎉, toasts, size picker,
+    // PDP panel/card) live outside the container, so a second observer watches
+    // document.body — but only strips inside our own surfaces, so merchant DOM
+    // churn costs one closest() per added node at worst.
+    var BODY_SURFACES = ELLO_FONT_SCOPES
+        .filter(function (s) { return s !== '#virtual-tryon-widget-container'; })
+        .join(',');
+    if (document.body && !applyStyleOverrides._emojiBodyObs) {
+        try {
+            var existing = document.querySelectorAll(BODY_SURFACES);
+            for (var k = 0; k < existing.length; k++) stripIn(existing[k]);
+        } catch (e) { /* selector never throws, but stay paranoid */ }
+        var bodyObs = new MutationObserver(function (mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                var m = mutations[i];
+                if (m.type === 'characterData') {
+                    var p = m.target.parentElement;
+                    if (p && p.closest && p.closest(BODY_SURFACES)) stripIn(p);
+                } else {
+                    for (var j = 0; j < m.addedNodes.length; j++) {
+                        var n = m.addedNodes[j];
+                        var el = (n.nodeType === 3) ? n.parentElement : (n.nodeType === 1 ? n : null);
+                        if (el && el.closest && el.closest(BODY_SURFACES)) stripIn(el);
+                    }
+                }
+            }
+        });
+        bodyObs.observe(document.body, { childList: true, subtree: true, characterData: true });
+        applyStyleOverrides._emojiBodyObs = bodyObs;
+    }
 }
 
 /**
@@ -13181,6 +13970,14 @@ function handleRouteChanged() {
     // Hide preview if open
     dismissPreview(true); // temporary dismiss (force close now, but allow re-open on new page)
 
+    // New page = new product context. The footwear cache is path-keyed (it
+    // self-invalidates on pathname change), but clear it anyway and re-apply
+    // the upload copy proactively for stores where these listeners run. The
+    // widget-open hook covers stores where they don't (preview gated off).
+    __elloFootwearContext = null;
+    __elloFootwearContextPath = null;
+    elloApplyFootwearUploadCopy();
+
     // Reset engagement state for new page
     previewEngaged = false;
 
@@ -13654,7 +14451,7 @@ var handlePreviewTryOn = async function () {
 
     function finishPreviewTransition() {
         if (overlay) {
-            updateTryOnLoadingCopy(overlay, TRYON_LOADING_TIPS.length - 1);
+            updateTryOnLoadingCopy(overlay, elloActiveTryonTips().length - 1);
             updateTryOnLoadingProgress(overlay, 100);
         }
         stopTryOnLoadingState('preview');
@@ -13686,6 +14483,55 @@ var handlePreviewTryOn = async function () {
 // FIRST-RUN OVERLAY LOGIC
 // ============================================================================
 
+// Product-aware intro: a first-timer decides in ~2.5s from the first frame
+// alone (2026-07-13 audit: bounce median 2.5s, converters click at 2.4s — the
+// intro is glanced at, never read). When we know the exact product being
+// viewed, the 3-card stock strip collapses to ONE hero card showing that
+// product (the .fro-product-aware CSS hides the You/result cards — stock
+// female placeholders that mis-signaled on menswear stores). The PDP already
+// loaded this image, so it paints from browser cache. Falls back to the
+// generic strip off-PDP, for non-catalog products, or if anything throws.
+function personalizeIntroStrip(overlay) {
+    try {
+        let imageUrl = null;
+        try {
+            const product = detectCurrentProduct();
+            imageUrl = (product && product.image_url) || null;
+        } catch (e) { /* fall through to the og:image fallback */ }
+
+        // Catalog not loaded yet (fast open racing the async product fetch):
+        // trust the PDP's own og:image so the intro is still personal. Only
+        // when the URL says this is a product page — once the catalog IS
+        // loaded, a miss means "not try-on-able" and the generic strip is right.
+        if (!imageUrl && (!Array.isArray(sampleClothing) || sampleClothing.length === 0)
+            && getProductIdFromUrl(window.location.pathname)) {
+            const og = document.querySelector('meta[property="og:image"]');
+            if (og && og.content) imageUrl = og.content;
+        }
+
+        if (!imageUrl) {
+            overlay.classList.remove('fro-product-aware');
+            return;
+        }
+
+        const itemImg = overlay.querySelector('.fro-step.item-card .fro-media img');
+        if (!itemImg) return;
+        itemImg.src = imageUrl;
+        itemImg.style.display = ''; // undo the placeholder's onerror fallback if it fired
+        const icon = itemImg.nextElementSibling;
+        if (icon) icon.style.display = 'none';
+
+        const headline = overlay.querySelector('.fro-headline');
+        if (headline) headline.innerHTML = 'See this on you.<br>Instantly.';
+        const subtext = overlay.querySelector('.fro-subtext');
+        if (subtext) subtext.textContent = 'One photo is all it takes.';
+
+        overlay.classList.add('fro-product-aware');
+    } catch (e) {
+        overlay.classList.remove('fro-product-aware');
+    }
+}
+
 function checkOnboarding() {
     const overlay = document.getElementById('firstRunOverlay');
     if (!overlay) return;
@@ -13710,6 +14556,10 @@ function checkOnboarding() {
         introViewId = generateIntroViewId();
         introShownAt = Date.now();
         introActionFired = false;
+
+        // Personalize BEFORE the overlay becomes visible so the first paint
+        // already shows the shopper's product (never a flash of the generic strip).
+        personalizeIntroStrip(overlay);
 
         // Make sure it's visible. In hub mode paint it OPAQUE on the first frame
         // (add .active synchronously, no fade) so it covers the panel before the
@@ -13771,11 +14621,12 @@ function useMyPhotoFlow() {
 
     window.__elloSelectedSource = 'user';
 
-    // Hub mode: go STRAIGHT to the file picker (via the best-practices/consent
-    // modal) instead of dropping the shopper on the bare upload workspace. After
-    // they pick, the upload handler auto-fires the try-on (ELLO_AUTO_FIRE is
-    // armed by the inline button) → straight to the PDP swap.
-    if (elloPdpHubModeOn()) {
+    // Hub mode OR focused mode: go STRAIGHT to the file picker instead of
+    // dropping the shopper on the bare upload workspace. Focused mode NEEDS
+    // this — its CSS hides the whole .photo-section, so the old scroll-to-card
+    // path pointed at an invisible target. After they pick, the upload handler
+    // repaints the focused stage (and auto-fires the try-on when armed).
+    if (elloPdpHubModeOn() || window.ELLO_FOCUSED_MODE === true) {
         const fire = () => { const i = document.getElementById('photoInput'); if (i) i.click(); };
         if (typeof checkShouldShowBestPractices === 'function' && checkShouldShowBestPractices()) {
             pendingPhotoAction = fire;
@@ -13804,9 +14655,11 @@ function useModelFlow() {
 
     window.__elloSelectedSource = 'model';
 
-    // Hub mode: open the model browser directly (the bare workspace + its inline-
-    // hidden model card are bypassed in hub mode).
-    if (elloPdpHubModeOn() && typeof openModelBrowser === 'function') {
+    // Hub mode OR inline mode: open the model browser directly. The inline
+    // workspace hides #useModelCard entirely (display:none in the template CSS),
+    // so the scroll-to-card path below dead-ends there — the 2026-07-13 audit
+    // measured 43 "Use a Model" intro clicks → 9 model selections because of it.
+    if ((elloPdpHubModeOn() || window.ELLO_INLINE_MODE === true) && typeof openModelBrowser === 'function') {
         openModelBrowser();
         return;
     }
@@ -13889,6 +14742,7 @@ window.__elloWidget.addWardrobeItemToCart = (typeof addWardrobeItemToCart !== 'u
 window.__elloWidget.chooseFromGallery = (typeof chooseFromGallery !== 'undefined') ? chooseFromGallery : window.chooseFromGallery;
 window.__elloWidget.clearSelectedClothing = (typeof clearSelectedClothing !== 'undefined') ? clearSelectedClothing : window.clearSelectedClothing;
 window.__elloWidget.closeBestPracticesModal = (typeof closeBestPracticesModal !== 'undefined') ? closeBestPracticesModal : window.closeBestPracticesModal;
+window.__elloWidget.openPhotoTips = (typeof openPhotoTips !== 'undefined') ? openPhotoTips : window.openPhotoTips;
 window.__elloWidget.closeClothingBrowser = (typeof closeClothingBrowser !== 'undefined') ? closeClothingBrowser : window.closeClothingBrowser;
 window.__elloWidget.closeImageModal = (typeof closeImageModal !== 'undefined') ? closeImageModal : window.closeImageModal;
 window.__elloWidget.closeModelBrowser = (typeof closeModelBrowser !== 'undefined') ? closeModelBrowser : window.closeModelBrowser;

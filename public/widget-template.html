@@ -185,7 +185,7 @@
         /* Label (Outside the frame) */
         #virtual-tryon-widget-container .fro-label{
             font-size: 11px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #6b7280;
             margin: 0;
             line-height: 1;
@@ -259,11 +259,79 @@
             }
         }
 
+        /* Product-aware intro (JS adds .fro-product-aware when the exact PDP
+           product is known): the strip collapses to ONE hero card — that
+           product — and the stock You/result cards disappear. The !importants
+           must beat the responsive .fro-media !important sizes above. */
+        #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-step.user-card,
+        #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-step.result-card,
+        #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-arrow{
+            display: none !important;
+        }
+
+        #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-step.item-card .fro-media{
+            width: 176px !important;
+            height: auto !important;
+            aspect-ratio: 3/4;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.10);
+        }
+
+        /* Hero mode: the generic item-tile padding shrank the garment — let the
+           product photo fill the frame. */
+        #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-step.item-card img{
+            padding: 0;
+        }
+
+        #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-step.item-card .fro-label{
+            display: none;
+        }
+
+        /* Passive ToS/Privacy notice (2026-07-13): the intro overlay is the ONE
+           consent point — every upload path passes through it first (Andrew's
+           call: two notices looked cluttered). The tips modal is opt-in via the
+           small "Photo tips" link inside the upload card. */
+        #virtual-tryon-widget-container .fro-legal{
+            font-size: 11px;
+            color: #9ca3af;
+            margin-top: 12px;
+            line-height: 1.5;
+            max-width: 300px;
+        }
+        #virtual-tryon-widget-container .fro-legal a{
+            color: inherit;
+            text-decoration: underline;
+        }
+        #virtual-tryon-widget-container .photo-tips-link{
+            background: none;
+            border: none;
+            padding: 0;
+            font-size: 12px;
+            font-weight: 600;
+            color: #4b5563;
+            cursor: pointer;
+            text-decoration: underline;
+            text-underline-offset: 3px;
+        }
+        #virtual-tryon-widget-container .photo-tips-inline{
+            display: inline;
+            margin-left: 4px;
+            font: inherit;
+            font-weight: 600;
+            text-decoration: underline;
+        }
+        #virtual-tryon-widget-container.theme-black .fro-legal{
+            color: rgba(255, 255, 255, 0.5);
+        }
+        #virtual-tryon-widget-container.theme-black .photo-tips-link{
+            color: rgba(255, 255, 255, 0.75);
+        }
+
         /* Typography */
         #virtual-tryon-widget-container .fro-headline{
             font-family: 'Poppins', sans-serif;
             font-size: 22px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             color: #111827;
             margin-bottom: 12px;
             line-height: 1.3;
@@ -292,7 +360,7 @@
             padding: 16px 0;
             border-radius: 16px;
             font-size: 15px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             cursor: pointer;
             transition: all 0.2s ease;
             display: flex;
@@ -465,7 +533,7 @@
             display: flex;
             align-items: center;
             gap: 12px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             font-size: 14px;
             max-width: 350px;
             transform: translateY(-100px) scale(0.8);
@@ -539,7 +607,7 @@
         }
 
         .notification-title{
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             margin-bottom: 2px;
             font-size: 15px;
         }
@@ -547,7 +615,7 @@
         .notification-subtitle{
             opacity: 0.9;
             font-size: 13px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
         }
 
         .notification-close{
@@ -588,7 +656,7 @@
         }
         #virtual-tryon-widget-container #ello-limit-reached .ello-limit-title{
             font-size: 15px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #111;
         }
         #virtual-tryon-widget-container #ello-limit-reached .ello-limit-sub{
@@ -604,7 +672,7 @@
             border-radius: 999px;
             text-decoration: none;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             margin-top: 4px;
         }
 
@@ -614,7 +682,7 @@
             color: #999;
             text-align: center;
             margin-top: 8px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             letter-spacing: 0.5px;
             opacity: 0.8;
         }
@@ -986,7 +1054,7 @@
             opacity: 0;
             color: var(--minimized-text-color, #0B1220);
             font-size: 12px;
-            font-weight: 800;
+            font-weight: var(--ello-fw-800, 800);
             line-height: 1;
             letter-spacing: 0.6px;
             white-space: nowrap;
@@ -1259,7 +1327,7 @@
             border-radius: 12px;
             padding: 16px 0;
             font-size: 15px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             cursor: pointer;
             transition: all 0.2s ease;
             width: 100%;
@@ -1401,7 +1469,7 @@
         #virtual-tryon-widget-container .tryon-generation-status{
             min-height: 24px;
             font-size: 20px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             line-height: 1.2;
             color: #000000;
         }
@@ -1428,7 +1496,7 @@
             margin-top: -10px;
             font-size: 14px;
             line-height: 1;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             color: #9ca3af;
             text-align: center;
         }
@@ -1453,7 +1521,7 @@
             line-height: 1;
             letter-spacing: 1.2px;
             text-transform: uppercase;
-            font-weight: 800;
+            font-weight: var(--ello-fw-800, 800);
             color: #9ca3af;
         }
 
@@ -1464,7 +1532,7 @@
             justify-content: center;
             font-size: 14px;
             line-height: 1.35;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #4b5563;
             text-align: center;
             width: 100%;
@@ -1551,7 +1619,7 @@
 
         #virtual-tryon-widget-container .widget-title{
             font-size: 18px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             text-transform: uppercase;
             letter-spacing: 2px;
             color: #333;
@@ -1609,7 +1677,7 @@
             background: transparent;
             cursor: pointer;
             transition: all 0.3s ease;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             font-size: 13px;
             color: #666;
             position: relative;
@@ -1733,10 +1801,14 @@
                 opacity: 1 !important;
             }
 
-            /* Ensure all content sections are visible on mobile */
-            #virtual-tryon-widget-container .featured-section,
-            #virtual-tryon-widget-container .quick-picks-section,
-            #virtual-tryon-widget-container .photo-section{
+            /* Ensure all content sections are visible on mobile.
+               Scoped to the NORMAL widget only — inline/focused modes hide
+               these sections by design (one-product view), and this rule's ID
+               specificity was overpowering those class-only hides on mobile,
+               leaking the full browse home under the focused stage. */
+            #virtual-tryon-widget-container .virtual-tryon-widget:not(.inline-mode) .featured-section,
+            #virtual-tryon-widget-container .virtual-tryon-widget:not(.inline-mode) .quick-picks-section,
+            #virtual-tryon-widget-container .virtual-tryon-widget:not(.inline-mode) .photo-section{
                 visibility: visible !important;
                 opacity: 1 !important;
                 display: block !important;
@@ -1940,7 +2012,7 @@
 
         #virtual-tryon-widget-container .section-title{
             font-size: 16px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             color: #333;
             margin-bottom: 16px;
             display: flex;
@@ -2048,7 +2120,7 @@
 
         #virtual-tryon-widget-container .featured-name{
             font-size: 14px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #333;
             margin-bottom: 4px;
             text-transform: uppercase;
@@ -2064,7 +2136,7 @@
 
         #virtual-tryon-widget-container .featured-price{
             font-size: 16px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             color: #333;
             margin-bottom: 6px;
         }
@@ -2084,7 +2156,7 @@
             padding: 4px 10px;
             border-radius: 8px;
             font-size: 10px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             text-transform: uppercase;
             letter-spacing: 0.5px;
             border: 1px solid #ccc;
@@ -2313,7 +2385,7 @@
 
         #virtual-tryon-widget-container .quick-pick-name{
             font-size: 11px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: white;
             margin-bottom: 6px;
             position: absolute;
@@ -2383,7 +2455,7 @@
             margin-bottom: 12px;
             color: #333;
             font-size: 14px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
@@ -2393,7 +2465,7 @@
             #virtual-tryon-widget-container .photo-instruction{
                 font-size: 13px;
                 margin-bottom: 10px;
-                font-weight: 700;
+                font-weight: var(--ello-fw-700, 700);
             }
         }
 
@@ -2513,7 +2585,7 @@
         #virtual-tryon-widget-container .upload-text{
             color: #666;
             font-size: 13px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             position: relative;
             z-index: 1;
         }
@@ -2600,7 +2672,7 @@
 
         #virtual-tryon-widget-container .analysis-text-bar{
             font-size: 14px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             color: #4a5568;
         }
 
@@ -2836,7 +2908,7 @@
 
         #virtual-tryon-widget-container .selected-clothing-name{
             font-size: 14px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #333;
             line-height: 1.3;
             text-transform: uppercase;
@@ -2858,7 +2930,7 @@
         #virtual-tryon-widget-container .selected-clothing-label{
             font-size: 11px;
             color: #666;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             text-transform: uppercase;
             letter-spacing: 0.3px;
         }
@@ -2979,7 +3051,7 @@
             cursor: pointer;
             transition: all 0.3s ease;
             font-size: 12px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -3059,7 +3131,7 @@
             padding: 14px;
             border: none;
             border-radius: 12px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             cursor: pointer;
             transition: all 0.3s ease;
             font-size: 13px;
@@ -3264,7 +3336,7 @@
 
         #virtual-tryon-widget-container .rb-label{
             font-size: 12.5px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             letter-spacing: 0.6px;
             text-transform: uppercase;
             color: #1a1a1a;
@@ -3272,7 +3344,7 @@
 
         #virtual-tryon-widget-container .rb-sub{
             font-size: 10.5px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             letter-spacing: 0.2px;
             color: #9a9a9a;
         }
@@ -3290,7 +3362,7 @@
             padding: 4px 10px;
             border-radius: 20px;
             font-size: 11px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             min-width: 16px;
             text-align: center;
             flex-shrink: 0;
@@ -3436,7 +3508,7 @@
             text-transform: uppercase;
             letter-spacing: 1px;
             font-size: 16px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
         }
 
         #virtual-tryon-widget-container .error-container p{
@@ -3471,7 +3543,7 @@
             min-width: 140px;
             padding: 12px 20px;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             text-transform: uppercase;
             letter-spacing: 0.5px;
             border-radius: 6px;
@@ -3554,7 +3626,7 @@
             text-transform: uppercase;
             letter-spacing: 1px;
             font-size: 16px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
         }
 
         #virtual-tryon-widget-container .processing-container p{
@@ -3589,7 +3661,7 @@
             min-width: 140px;
             padding: 12px 20px;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             text-transform: uppercase;
             letter-spacing: 0.5px;
             border-radius: 6px;
@@ -3756,7 +3828,7 @@
         #virtual-tryon-widget-container .tryon-attribution a{
             color: #555;
             text-decoration: none;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             transition: color 0.2s ease;
         }
 
@@ -3784,7 +3856,7 @@
             padding: 14px 24px;
             border-radius: 6px;
             font-size: 14px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             cursor: pointer;
             transition: background 0.3s ease, box-shadow 0.3s ease, opacity 0.3s ease;
             display: inline-flex;
@@ -3852,7 +3924,7 @@
         /* Loading text styling */
         #virtual-tryon-widget-container .loading-text{
             font-size: 16px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #333;
             margin: 0;
             text-align: left;
@@ -3898,7 +3970,7 @@
 
         #virtual-tryon-widget-container .loading.tryon-loading{
             font-size: 16px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #333;
         }
 
@@ -3928,7 +4000,7 @@
 
         #virtual-tryon-widget-container .loading.tryon-processing{
             font-size: 18px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             color: #333;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -4015,7 +4087,7 @@
 
         #virtual-tryon-widget-container .tryon-loading-title{
             font-size: 18px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             color: #333;
             margin-bottom: 12px;
             text-transform: uppercase;
@@ -4213,7 +4285,7 @@
 
         #virtual-tryon-widget-container .wardrobe-title{
             font-size: 20px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             text-transform: uppercase;
             letter-spacing: 1px;
         }
@@ -4295,7 +4367,7 @@
 
         #virtual-tryon-widget-container .wardrobe-empty h3{
             font-size: 18px;
-            font-weight: 650;
+            font-weight: var(--ello-fw-600, 650);
             margin: 0 0 28px;
             color: #1f2430;
             letter-spacing: -0.01em;
@@ -4313,7 +4385,7 @@
             border-radius: 999px;
             font: inherit;
             font-size: 14px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             cursor: pointer;
             box-shadow: 0 4px 14px rgba(0,0,0,0.14);
             transition: transform .14s ease, box-shadow .14s ease, opacity .14s ease;
@@ -4526,7 +4598,7 @@
         /* Wardrobe item text styling */
         #virtual-tryon-widget-container .wardrobe-item-name{
             font-size: 12px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: white;
             margin-bottom: 4px;
             line-height: 1.3;
@@ -4569,7 +4641,7 @@
             padding: 6px 10px;
             border-radius: 4px;
             font-size: 10px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             cursor: pointer;
             transition: all 0.2s ease;
             display: flex;
@@ -4774,7 +4846,7 @@
 
         #virtual-tryon-widget-container .best-practices-title{
             font-size: 24px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             margin: 0;
             text-transform: none;
             letter-spacing: -0.3px;
@@ -4916,7 +4988,7 @@
 
         #virtual-tryon-widget-container .tip-content h3{
             font-size: 18px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             margin: 0;
             color: #1a1a1a;
             letter-spacing: -0.2px;
@@ -4949,7 +5021,7 @@
             font-size: 14px;
             color: #4a5568;
             user-select: none;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             transition: color 0.2s ease;
         }
 
@@ -4974,7 +5046,7 @@
         #virtual-tryon-widget-container .best-practices-got-it{
             padding: 14px 32px;
             font-size: 16px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             border-radius: 12px;
             cursor: pointer;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -5083,7 +5155,7 @@
             gap: 10px;
             font-size: 14px;
             color: #2d3748;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
         }
 
         #virtual-tryon-widget-container .tip-bullet svg{
@@ -5106,7 +5178,7 @@
         #virtual-tryon-widget-container .upload-photo-btn{
             padding: 14px 32px;
             font-size: 16px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             border-radius: 12px;
             cursor: pointer;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -5320,7 +5392,7 @@
 
         #virtual-tryon-widget-container .browser-title{
             font-size: 20px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             text-transform: uppercase;
             letter-spacing: 1px;
         }
@@ -5509,7 +5581,7 @@
             color: #4b5563;
             font: inherit;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             line-height: 1;
             white-space: nowrap;
             cursor: pointer;
@@ -5760,7 +5832,7 @@
         /* Browser card text styling */
         #virtual-tryon-widget-container .browser-card-name{
             font-size: 12px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #333;
             margin: 8px 0 0 0;
             padding: 0;
@@ -5897,7 +5969,7 @@
         }
         #virtual-tryon-widget-container .epc-name{
             font-size: 13px;
-            font-weight: 550;
+            font-weight: var(--ello-fw-500, 550);
             color: #1f2430;
             line-height: 1.3;
             white-space: nowrap;
@@ -5906,7 +5978,7 @@
         }
         #virtual-tryon-widget-container .epc-price{
             font-size: 13px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             color: #6b7280;
             line-height: 1.2;
         }
@@ -5953,7 +6025,7 @@
             border-radius: 11px;
             font: inherit;
             font-size: 13.5px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             line-height: 1;
             white-space: nowrap;
             cursor: pointer;
@@ -5977,7 +6049,7 @@
             left: 8px;
             z-index: 3;
             font-size: 11px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             letter-spacing: .01em;
             line-height: 1;
             padding: 5px 9px;
@@ -6109,7 +6181,7 @@
             border-radius: 6px;
             cursor: pointer;
             font-size: 14px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             transition: all 0.3s ease;
             min-width: 44px;
             text-align: center;
@@ -6129,7 +6201,7 @@
             background: #333;
             color: #fff;
             border-color: #333;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
         }
 
         #virtual-tryon-widget-container .pagination-btn:disabled{
@@ -6308,7 +6380,7 @@
         #virtual-tryon-widget-container .ewv-meta{ min-width: 0; flex: 1 1 240px; }
         #virtual-tryon-widget-container .ewv-title{
             font-size: 14.5px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             color: #111418;
             line-height: 1.35;
         }
@@ -6316,7 +6388,7 @@
             display: inline-block;
             margin-left: 8px;
             font-size: 11px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             line-height: 1;
             padding: 3.5px 8px;
             border-radius: 999px;
@@ -6364,7 +6436,7 @@
             left: 16px;
             z-index: 4;
             font-size: 12px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             line-height: 1;
             padding: 6px 10px;
             border-radius: 999px;
@@ -7238,7 +7310,7 @@
             background-color: #000000;
             color: white;
             font-size: 10px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             padding: 4px 12px;
             border-radius: 20px;
             text-transform: uppercase;
@@ -7286,7 +7358,7 @@
 
         #virtual-tryon-widget-container .option-title{
             font-size: 16px;
-            font-weight: 700;
+            font-weight: var(--ello-fw-700, 700);
             color: #111827;
             margin-bottom: 6px;
             font-family: 'Poppins', sans-serif;
@@ -7308,7 +7380,7 @@
             border-radius: 8px;
             color: #374151;
             font-size: 13px;
-            font-weight: 600;
+            font-weight: var(--ello-fw-600, 600);
             cursor: pointer;
             transition: all 0.2s;
         }
@@ -7353,7 +7425,7 @@
             padding: 8px 16px;
             border-radius: 20px;
             font-size: 13px;
-            font-weight: 500;
+            font-weight: var(--ello-fw-500, 500);
             cursor: pointer;
             backdrop-filter: blur(4px);
             transition: all 0.2s ease;
@@ -7563,6 +7635,12 @@
                         Use a Model
                     </button>
                 </div>
+
+                <!-- Passive consent — the upload flow no longer routes through the
+                     consent modal, so the notice lives at the entry point. -->
+                <div class="fro-legal">By uploading a photo, you agree to our
+                    <a href="https://ello.services/legal?tab=terms" target="_blank" rel="noopener noreferrer">Terms</a> &amp;
+                    <a href="https://ello.services/legal?tab=privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</div>
             </div>
         </div>
 
@@ -7643,7 +7721,9 @@
                                         <div class="option-icon">📷</div>
                                     </div>
                                     <h3 class="option-title">Upload your photo</h3>
-                                    <p class="option-subtitle">Full-body photos work best.</p>
+                                    <p class="option-subtitle">Full-body photos work best.
+                                        <button type="button" class="photo-tips-link photo-tips-inline"
+                                            onclick="event.stopPropagation(); __elloWidget.openPhotoTips('workspace');">Photo tips</button></p>
                                     <button class="option-btn">Upload your photo</button>
                                 </div>
 
@@ -7731,7 +7811,7 @@
                     <div id="ello-tryon-loader" style="display: none; align-items: center; justify-content: center;">
                     </div>
                     <div id="ello-tryon-error"
-                        style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: 500;">
+                        style="display: none; color: #e11d48; font-size: 14px; margin-top: 12px; margin-bottom: 12px; padding: 12px; background-color: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; text-align: center; font-weight: var(--ello-fw-500, 500);">
                     </div>
                     <div id="ello-tryon-result" class="tryon-result-container" style="display: none;">
                         <img id="ello-tryon-result-image" alt="Try-on result" class="tryon-result-image" />
@@ -8022,28 +8102,14 @@
                         results.</p>
                 </div>
             </div>
+            <!-- 2026-07-13: this modal is opt-in now (opened only from the "Tips for
+                 the best results" link) — no upload gate, no checkbox, no consent
+                 here. The ToS/Privacy notice is a passive line at the upload entry
+                 points instead. -->
             <div class="best-practices-footer">
-                <label class="dont-show-again-label">
-                    <input type="checkbox" id="dontShowAgainCheckbox">
-                    <span>Don't show this again</span>
-                </label>
-                <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
-                    <button class="upload-photo-btn" onclick="__elloWidget.handleBestPracticesUpload()">
-                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg"
-                            style="margin-right: 8px;">
-                            <path d="M10 2V13M10 13L6 9M10 13L14 9" stroke="currentColor" stroke-width="2"
-                                stroke-linecap="round" stroke-linejoin="round" />
-                            <path d="M2 18H18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-                        </svg>
-                        Continue
-                    </button>
-                    <p style="font-size: 11px; color: #6b7280; margin: 0; text-align: right; line-height: 1.4; max-width: 260px;">
-                        By clicking Continue, you agree to our
-                        <a href="https://ello.services/legal?tab=terms" target="_blank" rel="noopener noreferrer" style="color: #3B63D4;">Terms</a>
-                        &amp;
-                        <a href="https://ello.services/legal?tab=privacy" target="_blank" rel="noopener noreferrer" style="color: #3B63D4;">Privacy Policy</a>.
-                    </p>
-                </div>
+                <button class="upload-photo-btn" style="margin-left: auto;" onclick="__elloWidget.handleBestPracticesUpload()">
+                    Got it
+                </button>
             </div>
         </div>
     </div>
