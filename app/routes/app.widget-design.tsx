@@ -210,7 +210,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     quickPicks = [];
   }
 
-  // The CTL 50/50 test toggle lives on the Proof page now (with the rest of
+  // The CTL holdout test toggle lives on the Proof page now (with the rest of
   // the testing) — this action must never write ctl_holdout_enabled, or a
   // routine design save would silently stop a running test.
   const { data, error } = await supabaseAdmin
@@ -2147,7 +2147,7 @@ export default function WidgetDesign() {
                         Want proof it lifts order value?
                       </span>
                       <div style={{ fontSize: 12, color: brand.ink500, marginTop: 2, lineHeight: 1.45 }}>
-                        Run the 50/50 test from the Proof page — half your shoppers see the offer,
+                        Run the holdout test from the Proof page — a slice of shoppers never sees the offer,
                         half never do, and the order-value gap is the true lift.
                       </div>
                     </div>

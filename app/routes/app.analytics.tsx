@@ -1022,7 +1022,7 @@ function capitalize(s: string) {
 
 // ─── Complete the Look — performance card ────────────────────────────────────
 // Correlational performance only: AOV of attributed orders whose session used
-// the look vs those that didn't (always available). The causal 50/50 test —
+// the look vs those that didn't (always available). The causal holdout test —
 // controls and treatment-vs-holdout results — lives on the Proof page with the
 // rest of the testing. Lift percentages only render once both sides clear a
 // minimum sample — below that we show the raw counts and say we're still
@@ -1092,8 +1092,8 @@ function CtlProofCard({
         <InlineStack gap="300" blockAlign="center" wrap>
           <Text as="span" variant="bodySm" tone="subdued">
             {ctl.holdoutActive
-              ? "The 50/50 proof test is running — treatment-vs-holdout results are on the Proof page."
-              : "Want the causal number? Run the 50/50 proof test from the Proof page."}
+              ? "The outfit holdout test is running — treatment-vs-holdout results are on the Proof page."
+              : "Want the causal number? Run the outfit holdout test from the Proof page."}
           </Text>
           <Button variant="plain" onClick={() => navigate("/app/proof")}>
             Open Proof

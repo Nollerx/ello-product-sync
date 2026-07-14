@@ -5,7 +5,7 @@
 //      purchase (tracked since day one, displayed here for the first time).
 //   2. The proof test: start/stop a widget-wide A/B holdout and read the lift
 //      with a significance verdict. Measured, not modeled.
-//   3. The outfit-upsell test: the Complete-the-Look 50/50 split (treatment vs
+//   3. The outfit-upsell test: the Complete-the-Look holdout split (treatment vs
 //      holdout AOV). The toggle used to live on Widget Design; every
 //      experiment now starts and reports here.
 //   4. The receipts: every attributed order with its Shopify order id and the
@@ -76,7 +76,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     getReturnRates(slug, from, to),
     supabaseAdmin
       .from("vto_stores")
-      .select("complete_the_look_enabled, ctl_holdout_enabled, ctl_holdout_enabled_at")
+      .select("complete_the_look_enabled, ctl_holdout_enabled, ctl_holdout_enabled_at, ctl_holdout_percent")
       .eq("shop_domain", shop)
       .maybeSingle()
       .then((r) => r.data),
@@ -114,6 +114,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ctlFeatureOn: storeRow?.complete_the_look_enabled === true,
     ctlTestRunning: storeRow?.ctl_holdout_enabled === true,
     ctlTestSince: (storeRow?.ctl_holdout_enabled_at as string | null) ?? null,
+    ctlTestPct: Number(storeRow?.ctl_holdout_percent ?? 50),
     returns,
     rangeDays: RANGE_DAYS,
   };
@@ -134,11 +135,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     if (!experimentId) return { ok: false, error: "Missing experiment id." };
     return stopExperiment(store.slug, experimentId);
   }
-  // CTL 50/50 test lifecycle (moved here from Widget Design). Same
-  // bookkeeping as before: ctl_holdout_enabled_at is stamped only on the
-  // OFF→ON transition so re-toggling can never shrink the measurement window.
+  // CTL test lifecycle (moved here from Widget Design). Same bookkeeping as
+  // before: ctl_holdout_enabled_at is stamped only on the OFF→ON transition
+  // so re-toggling can never shrink the measurement window.
   if (intent === "ctl_start" || intent === "ctl_stop") {
     const wantOn = intent === "ctl_start";
+    const rawPct = Math.round(Number(form.get("ctlHoldoutPercent") ?? 50));
+    const pct = Number.isFinite(rawPct) ? Math.min(50, Math.max(1, rawPct)) : 50;
     const { data: prior } = await supabaseAdmin
       .from("vto_stores")
       .select("ctl_holdout_enabled, complete_the_look_enabled")
@@ -152,7 +155,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       .from("vto_stores")
       .update({
         ctl_holdout_enabled: wantOn,
-        ...(turningOn ? { ctl_holdout_enabled_at: new Date().toISOString() } : {}),
+        ...(turningOn
+          ? { ctl_holdout_enabled_at: new Date().toISOString(), ctl_holdout_percent: pct }
+          : {}),
       })
       .eq("shop_domain", session.shop);
     if (error) {
@@ -314,6 +319,45 @@ function CtlArmPanel({
   );
 }
 
+// The money shot: without on the left, with on the right, and the lift as
+// the biggest number on the page. Every test's results end in one of these.
+function LiftHero({
+  value,
+  label,
+  subline,
+  pill,
+}: {
+  value: string;
+  label: string;
+  subline?: string;
+  pill?: { label: string; tone: Tone };
+}) {
+  return (
+    <div
+      style={{
+        background: brand.blue50,
+        border: `1px solid ${brand.blue200}`,
+        borderRadius: 12,
+        padding: "22px 24px",
+        textAlign: "center",
+      }}
+    >
+      <BlockStack gap="150" inlineAlign="center">
+        {pill && <StatusPill label={pill.label} tone={pill.tone} />}
+        <span style={{ fontSize: 56, fontWeight: 650, lineHeight: 1, color: brand.blue, letterSpacing: "-0.02em" }}>
+          {value}
+        </span>
+        <span style={{ fontSize: 14, fontWeight: 600, color: brand.ink }}>{label}</span>
+        {subline && (
+          <Text as="span" variant="bodySm" tone="subdued">
+            {subline}
+          </Text>
+        )}
+      </BlockStack>
+    </div>
+  );
+}
+
 // Rate panel: the returns comparison — a big percentage with its units line.
 function RatePanel({
   label,
@@ -378,6 +422,7 @@ export default function ProofPage() {
   const fetcher = useFetcher<{ ok: boolean; error?: string }>();
   const navigate = useNavigate();
   const [holdoutPct, setHoldoutPct] = useState("10");
+  const [ctlPct, setCtlPct] = useState("50");
 
   if (!data.ready) {
     return (
@@ -389,7 +434,7 @@ export default function ProofPage() {
     );
   }
 
-  const { summary, experiment, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, returns, rangeDays } = data;
+  const { summary, experiment, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, returns, rangeDays } = data;
   const busy = fetcher.state !== "idle";
 
   // Returns comparison renders only once real refunds exist — a "0% return
@@ -413,7 +458,7 @@ export default function ProofPage() {
     results?.relativeLift != null ? `${results.relativeLift >= 0 ? "+" : ""}${(results.relativeLift * 100).toFixed(1)}%` : "—";
   const confidencePct = results?.confidence != null ? `${Math.min(99.9, results.confidence * 100).toFixed(1)}%` : "—";
 
-  // CTL 50/50 verdict: causal AOV lift, gated on orders per arm (AOV needs
+  // CTL test verdict: causal AOV lift, gated on orders per arm (AOV needs
   // orders to stabilize, unlike the conversion test's session gate).
   const ctlReady =
     ctl != null &&
@@ -572,38 +617,36 @@ export default function ProofPage() {
                   <>
                     <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
                       <ArmPanel
-                        label="Saw the widget"
-                        hint="shoppers with try-on available"
+                        label="Without try-on"
+                        hint="the holdout — same store, Ello hidden"
+                        stats={results.holdout}
+                        currency={currency}
+                      />
+                      <ArmPanel
+                        label="With try-on"
+                        hint="shoppers who could use Ello"
                         stats={results.exposed}
                         currency={currency}
                         accent
                       />
-                      <ArmPanel
-                        label="Holdout (no widget)"
-                        hint="same store, try-on hidden"
-                        stats={results.holdout}
-                        currency={currency}
-                      />
                     </InlineGrid>
                     {results.hasMinimumSample ? (
-                      <InlineStack gap="300" blockAlign="center" wrap>
-                        {verdict && <StatusPill label={verdict.label} tone={verdict.tone} />}
-                        <Text as="span" variant="bodyMd">
-                          Conversion lift <strong>{liftPct}</strong> at <strong>{confidencePct}</strong> confidence
-                          {results.incrementalRevenue != null && results.incrementalRevenue > 0 && (
-                            <>
-                              {" "}· lift-implied new sales{" "}
-                              <strong>{money(results.incrementalRevenue, currency)}</strong>
-                            </>
-                          )}
-                        </Text>
-                      </InlineStack>
+                      <LiftHero
+                        value={liftPct}
+                        label="conversion lift from try-on"
+                        subline={`${confidencePct} confidence${
+                          results.incrementalRevenue != null && results.incrementalRevenue > 0
+                            ? ` · lift-implied new sales ${money(results.incrementalRevenue, currency)}`
+                            : ""
+                        } · measured on your own shoppers`}
+                        pill={verdict ?? undefined}
+                      />
                     ) : (
                       <Banner tone="info">
                         <p>
                           Collecting data — verdicts unlock at {AB_MIN_SESSIONS_PER_ARM.toLocaleString()} sessions
-                          per group ({results.exposed.sessions.toLocaleString()} exposed /{" "}
-                          {results.holdout.sessions.toLocaleString()} holdout so far). Numbers shown before that
+                          per group ({results.exposed.sessions.toLocaleString()} with try-on /{" "}
+                          {results.holdout.sessions.toLocaleString()} without so far). Numbers shown before that
                           would just be noise.
                         </p>
                       </Banner>
@@ -620,7 +663,7 @@ export default function ProofPage() {
             <InlineStack align="space-between" blockAlign="center">
               <SectionHeading
                 title="The outfit upsell test"
-                description="Complete the Look, 50/50: half your shoppers see the outfit offer, half never do. The order-value gap between the halves is the lift the feature actually causes."
+                description="Complete the Look: hide the outfit offer from a slice of shoppers, then compare average order value. The gap between the groups is the lift the feature actually causes."
               />
               {ctlTestRunning && <StatusPill label="Running" tone="watch" />}
             </InlineStack>
@@ -635,15 +678,27 @@ export default function ProofPage() {
             )}
 
             {ctlFeatureOn && !ctlTestRunning && (
-              <InlineStack gap="300" blockAlign="center" wrap>
+              <InlineStack gap="300" blockAlign="end" wrap>
+                <Select
+                  label="Holdout size"
+                  options={[
+                    { label: "10% never see the offer", value: "10" },
+                    { label: "20% never see the offer", value: "20" },
+                    { label: "50% never see the offer (recommended)", value: "50" },
+                  ]}
+                  value={ctlPct}
+                  onChange={setCtlPct}
+                />
                 <fetcher.Form method="post">
                   <input type="hidden" name="intent" value="ctl_start" />
+                  <input type="hidden" name="ctlHoldoutPercent" value={ctlPct} />
                   <Button submit variant="primary" loading={busy}>
-                    Start 50/50 test
+                    Start test
                   </Button>
                 </fetcher.Form>
                 <Text as="span" variant="bodySm" tone="subdued">
-                  Assignment is sticky per shopper. Stop any time; everyone sees the offer again instantly.
+                  Assignment is sticky per shopper. Stop any time; everyone sees the offer again
+                  instantly. 50% reaches a verdict fastest — order value needs orders on both sides.
                 </Text>
               </InlineStack>
             )}
@@ -653,7 +708,7 @@ export default function ProofPage() {
                 <InlineStack gap="300" blockAlign="center" wrap>
                   <Badge tone="success">Running</Badge>
                   <Text as="span" variant="bodySm" tone="subdued">
-                    50% holdout
+                    {ctlTestPct}% holdout
                     {ctlTestSince
                       ? ` · started ${new Date(ctlTestSince).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
                       : ""}
@@ -671,7 +726,16 @@ export default function ProofPage() {
                   <>
                     <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
                       <CtlArmPanel
-                        label="Saw the offer"
+                        label="Without the offer"
+                        hint="the holdout — same store, outfit rail hidden"
+                        aov={ctl.hAov}
+                        sessions={ctl.hSessions}
+                        orders={ctl.hOrders}
+                        revenue={ctl.hRevenue}
+                        currency={currency}
+                      />
+                      <CtlArmPanel
+                        label="With the offer"
                         hint="shoppers with the outfit rail available"
                         aov={ctl.tAov}
                         sessions={ctl.tSessions}
@@ -680,28 +744,17 @@ export default function ProofPage() {
                         currency={currency}
                         accent
                       />
-                      <CtlArmPanel
-                        label="Holdout (no offer)"
-                        hint="same store, outfit rail hidden"
-                        aov={ctl.hAov}
-                        sessions={ctl.hSessions}
-                        orders={ctl.hOrders}
-                        revenue={ctl.hRevenue}
-                        currency={currency}
-                      />
                     </InlineGrid>
                     {ctlLift != null ? (
-                      <InlineStack gap="300" blockAlign="center" wrap>
-                        <StatusPill
-                          label={ctlLift >= 0 ? "Causal AOV lift" : "No lift yet"}
-                          tone={ctlLift >= 0 ? "good" : "watch"}
-                        />
-                        <Text as="span" variant="bodyMd">
-                          Average order value{" "}
-                          <strong>{`${ctlLift >= 0 ? "+" : ""}${ctlLift}%`}</strong> vs holdout —
-                          measured, not modeled; the only difference between the groups is the offer.
-                        </Text>
-                      </InlineStack>
+                      <LiftHero
+                        value={`${ctlLift >= 0 ? "+" : ""}${ctlLift}%`}
+                        label="average order value lift from the outfit offer"
+                        subline="measured, not modeled — the only difference between the groups is the offer"
+                        pill={{
+                          label: ctlLift >= 0 ? "Causal AOV lift" : "No lift yet",
+                          tone: ctlLift >= 0 ? "good" : "watch",
+                        }}
+                      />
                     ) : (
                       <Banner tone="info">
                         <p>
@@ -726,26 +779,24 @@ export default function ProofPage() {
               />
               <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
                 <RatePanel
+                  label="Store-wide baseline"
+                  ratePct={returns.allReturnRatePct}
+                  detail={`${returns.allUnitsRefunded.toLocaleString()} of ${returns.allUnitsSold.toLocaleString()} units returned`}
+                />
+                <RatePanel
                   label="Tried on before buying"
                   ratePct={returns.triedReturnRatePct}
                   detail={`${returns.triedUnitsRefunded.toLocaleString()} of ${returns.triedUnitsSold.toLocaleString()} units returned`}
                   accent
                 />
-                <RatePanel
-                  label="Store-wide baseline"
-                  ratePct={returns.allReturnRatePct}
-                  detail={`${returns.allUnitsRefunded.toLocaleString()} of ${returns.allUnitsSold.toLocaleString()} units returned`}
-                />
               </InlineGrid>
               {returnsGap != null && returnsGap > 0 && (
-                <InlineStack gap="300" blockAlign="center" wrap>
-                  <StatusPill label="Fewer returns" tone="good" />
-                  <Text as="span" variant="bodyMd">
-                    Tried-on items come back{" "}
-                    <strong>{returnsGap.toFixed(1)} points less often</strong> than your store
-                    average — from your own orders, not an industry stat.
-                  </Text>
-                </InlineStack>
+                <LiftHero
+                  value={`−${returnsGap.toFixed(1)} pts`}
+                  label="fewer returns when shoppers try on first"
+                  subline="from your own orders and refunds, not an industry stat"
+                  pill={{ label: "Fewer returns", tone: "good" }}
+                />
               )}
             </BlockStack>
           </Card>

@@ -262,7 +262,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.8.4';
+    const WIDGET_VERSION = '2.8.5';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -404,9 +404,11 @@
             // Complete the Look (outfit-upsell styling rail) — gated ON TOP of
             // pdpImageSwapEnabled. Explicit opt-in, OFF by default.
             completeTheLookEnabled: storeConfig.complete_the_look_enabled === true,
-            // 50/50 proof test: suppress the upsell for the holdout half so
-            // the dashboard can report causal AOV lift. OFF by default.
+            // CTL proof test: suppress the upsell for the merchant-chosen
+            // holdout slice so the dashboard can report causal AOV lift.
+            // OFF by default.
             ctlHoldoutEnabled: storeConfig.ctl_holdout_enabled === true,
+            ctlHoldoutPercent: typeof storeConfig.ctl_holdout_percent === 'number' ? storeConfig.ctl_holdout_percent : 50,
             // Lead capture (email after Nth try-on) — off by default.
             leadCaptureEnabled: storeConfig.lead_capture_enabled === true,
             leadCaptureAfterN: storeConfig.lead_capture_after_n || 1,
@@ -452,6 +454,7 @@
             pdpImageSelector: null,
             completeTheLookEnabled: false,
             ctlHoldoutEnabled: false,
+            ctlHoldoutPercent: 50,
             abExperimentEnabled: false,
             abExperimentId: null,
             abHoldoutPercent: 10

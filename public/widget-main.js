@@ -7507,16 +7507,26 @@ function elloPdpSwapOn() {
 // result + rail and SKIPS the PDP swap (see startTryOn), keeping the whole
 // upsell inside Ello's chrome. Explicit opt-in, default OFF → every existing
 // merchant is byte-for-byte unchanged.
-// Deterministic 50/50 proof-test bucket, derived from the ello session id's
-// last-character parity. The dashboard RPC computes the SAME bucket in SQL
-// (ascii(right(session_id, 1)) % 2), so no extra event data is needed and the
-// widget and the report can never disagree about who saw the upsell. No
-// session id → 'treatment' (fail-open: show the upsell).
-function elloCtlHoldoutBucket() {
+// Deterministic proof-test bucket: FNV-1a 32-bit of (session_id + ':ctl')
+// mod 100, holdout when bucket < the merchant's chosen ctlHoldoutPercent.
+// The dashboard RPC computes the SAME bucket in SQL via
+// ello_ab_bucket(session_id, 'ctl'), so the widget and the report can never
+// disagree about who saw the upsell. The ':ctl' salt keeps this split
+// independent of the widget-wide holdout experiment. No session id →
+// 'treatment' (fail-open: show the upsell).
+function elloCtlHoldoutBucket(pct) {
     try {
         var sid = window.ELLO_SESSION_ID;
         if (!sid || typeof sid !== 'string' || !sid.length) return 'treatment';
-        return (sid.charCodeAt(sid.length - 1) % 2 === 0) ? 'treatment' : 'holdout';
+        var s = sid + ':ctl';
+        var h = 0x811c9dc5;
+        for (var i = 0; i < s.length; i++) {
+            h ^= s.charCodeAt(i);
+            h = Math.imul(h, 0x01000193);
+        }
+        var bucket = (h >>> 0) % 100;
+        var holdoutPct = typeof pct === 'number' && pct >= 1 && pct <= 50 ? pct : 50;
+        return bucket < holdoutPct ? 'holdout' : 'treatment';
     } catch (e) { return 'treatment'; }
 }
 
@@ -7532,10 +7542,10 @@ function elloCompleteTheLookOn() {
         if (window.localStorage.getItem('ello_ctl') === '1') return true;
     } catch (e) { /* private mode / storage disabled — fall through */ }
     if (c.completeTheLookEnabled !== true) return false;
-    // 50/50 PROOF TEST: while the merchant runs a holdout, half the shoppers
-    // never see the upsell (they still try on and buy). The AOV gap between
-    // the halves is the causal lift number the dashboard reports.
-    if (c.ctlHoldoutEnabled === true && elloCtlHoldoutBucket() === 'holdout') return false;
+    // PROOF TEST: while the merchant runs a holdout, a merchant-chosen slice
+    // of shoppers never sees the upsell (they still try on and buy). The AOV
+    // gap between the arms is the causal lift number the dashboard reports.
+    if (c.ctlHoldoutEnabled === true && elloCtlHoldoutBucket(c.ctlHoldoutPercent) === 'holdout') return false;
     return true;
 }
 
