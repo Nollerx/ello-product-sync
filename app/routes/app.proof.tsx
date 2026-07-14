@@ -11,13 +11,14 @@
 //   4. The receipts: every attributed order with its Shopify order id and the
 //      try-on→purchase gap, exportable, auditable line by line.
 //
-// The two tests are independent by construction: the widget-wide holdout
-// buckets on FNV(session:experiment_id), the CTL split on session-id last-char
-// parity — running both at once cannot cross-contaminate.
+// One test, three answers: starting the proof test starts the outfit split
+// alongside (same holdout percentage), and the returns section fills in as
+// refunds arrive. The two splits stay mechanically independent (FNV salted
+// per experiment vs FNV salted 'ctl'), so they can never cross-contaminate.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useNavigate, useSearchParams } from "react-router";
+import { useFetcher, useLoaderData, useSearchParams } from "react-router";
 import {
   Page,
   Card,
@@ -31,10 +32,18 @@ import {
   DataTable,
   Select,
 } from "@shopify/polaris";
-import { CashDollarIcon, TargetIcon, ClockIcon, ChartVerticalFilledIcon } from "@shopify/polaris-icons";
+import {
+  CashDollarIcon,
+  TargetIcon,
+  ClockIcon,
+  ChartVerticalFilledIcon,
+  ConnectIcon,
+  HideIcon,
+  ReturnIcon,
+} from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import { SectionHeading, brand } from "../components/ui";
-import { HeadlineStrip, KpiTile, StatusPill, type Tone } from "../components/analytics";
+import { HeadlineStrip, IconChip, KpiTile, StatusPill, type Tone } from "../components/analytics";
 import {
   getConversionSummary,
   getCtlPerformance,
@@ -191,9 +200,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         .eq("shop_domain", session.shop)
         .maybeSingle();
       if (prior?.complete_the_look_enabled === true && prior?.ctl_holdout_enabled !== true) {
+        // One holdout number for everything: the outfit split reuses the
+        // proof test's percentage instead of asking twice.
+        const ctlPct = Math.min(50, Math.max(1, Math.round(pct)));
         await supabaseAdmin
           .from("vto_stores")
-          .update({ ctl_holdout_enabled: true, ctl_holdout_enabled_at: new Date().toISOString() })
+          .update({
+            ctl_holdout_enabled: true,
+            ctl_holdout_enabled_at: new Date().toISOString(),
+            ctl_holdout_percent: ctlPct,
+          })
           .eq("shop_domain", session.shop);
       }
     }
@@ -491,6 +507,55 @@ function RatePanel({
   );
 }
 
+// Icon-led section heading — the Ello admin pattern (icon chip, decision-first
+// words) applied to the three sections of the one test.
+function IconHeading({
+  icon,
+  tone,
+  title,
+  description,
+}: {
+  icon: ComponentProps<typeof IconChip>["source"];
+  tone: Tone;
+  title: string;
+  description: string;
+}) {
+  return (
+    <InlineStack gap="300" blockAlign="start" wrap={false}>
+      <IconChip source={icon} tone={tone} size={36} />
+      <SectionHeading title={title} description={description} />
+    </InlineStack>
+  );
+}
+
+// One row of the start block: an icon and the plain-English answer this test
+// will produce. Three of these replace two cards of controls.
+function AnswerRow({
+  icon,
+  tone,
+  title,
+  text,
+}: {
+  icon: ComponentProps<typeof IconChip>["source"];
+  tone: Tone;
+  title: string;
+  text: string;
+}) {
+  return (
+    <InlineStack gap="300" blockAlign="start" wrap={false}>
+      <IconChip source={icon} tone={tone} size={34} />
+      <div style={{ minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: brand.ink, display: "block" }}>
+          {title}
+        </span>
+        <Text as="span" variant="bodySm" tone="subdued">
+          {text}
+        </Text>
+      </div>
+    </InlineStack>
+  );
+}
+
 function liftVerdict(results: AbResults): { label: string; tone: Tone } {
   if (!results.hasMinimumSample) return { label: "Collecting data", tone: "neutral" };
   if (results.relativeLift == null || results.confidence == null)
@@ -506,7 +571,6 @@ function liftVerdict(results: AbResults): { label: string; tone: Tone } {
 export default function ProofPage() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ ok: boolean; error?: string; action?: string }>();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [holdoutPct, setHoldoutPct] = useState("10");
 
@@ -529,7 +593,6 @@ export default function ProofPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher.data]);
-  const [ctlPct, setCtlPct] = useState("50");
 
   if (!data.ready) {
     return (
@@ -725,9 +788,11 @@ export default function ProofPage() {
         <Card padding="500">
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="start" wrap>
-              <SectionHeading
+              <IconHeading
+                icon={HideIcon}
+                tone="good"
                 title="The proof test"
-                description="Hide the widget from a slice of shoppers, then compare. The holdout group answers the only question that matters: would they have bought anyway?"
+                description="A slice of your shoppers browses without Ello. Every gap below is measured against them — would they have bought anyway?"
               />
               {experiments.length > 1 && (
                 <Select
@@ -751,32 +816,60 @@ export default function ProofPage() {
             )}
 
             {!experiment && (
-              <InlineStack gap="300" blockAlign="end" wrap>
-                <Select
-                  label="Holdout size"
-                  labelHidden={false}
-                  options={[
-                    { label: "5% of shoppers", value: "5" },
-                    { label: "10% of shoppers (recommended)", value: "10" },
-                    { label: "20% of shoppers", value: "20" },
-                    { label: "50% of shoppers", value: "50" },
-                  ]}
-                  value={holdoutPct}
-                  onChange={setHoldoutPct}
+              <BlockStack gap="400">
+                <AnswerRow
+                  icon={HideIcon}
+                  tone="good"
+                  title="Conversion"
+                  text="The holdout never sees try-on. If everyone else buys more often, that gap is the proof."
                 />
-                <fetcher.Form method="post">
-                  <input type="hidden" name="intent" value="start" />
-                  <input type="hidden" name="holdoutPercent" value={holdoutPct} />
-                  <Button submit variant="primary" loading={busy}>
-                    Start proof test
-                  </Button>
-                </fetcher.Form>
-                <Text as="span" variant="bodySm" tone="subdued">
-                  Assignment is sticky per shopper. Stop any time; the widget returns instantly.
-                  Starts the outfit upsell test alongside when Complete the Look is on — one test,
-                  every section of this page.
-                </Text>
-              </InlineStack>
+                {ctlFeatureOn ? (
+                  <AnswerRow
+                    icon={ConnectIcon}
+                    tone="money"
+                    title="Order value"
+                    text="The outfit offer hides from the same shoppers. The order-value gap is what the offer causes."
+                  />
+                ) : (
+                  <AnswerRow
+                    icon={ConnectIcon}
+                    tone="neutral"
+                    title="Order value"
+                    text="Turn on Complete the Look in Widget Design to include the outfit offer in this test."
+                  />
+                )}
+                <AnswerRow
+                  icon={ReturnIcon}
+                  tone="neutral"
+                  title="Returns"
+                  text="Tried-on purchases get compared with your store's baseline return rate as refunds come in."
+                />
+                <InlineStack gap="300" blockAlign="end" wrap>
+                  <Select
+                    label="Holdout size"
+                    labelHidden={false}
+                    options={[
+                      { label: "5% of shoppers", value: "5" },
+                      { label: "10% of shoppers (recommended)", value: "10" },
+                      { label: "20% of shoppers", value: "20" },
+                      { label: "50% of shoppers", value: "50" },
+                    ]}
+                    value={holdoutPct}
+                    onChange={setHoldoutPct}
+                  />
+                  <fetcher.Form method="post">
+                    <input type="hidden" name="intent" value="start" />
+                    <input type="hidden" name="holdoutPercent" value={holdoutPct} />
+                    <Button submit variant="primary" loading={busy}>
+                      Start the test
+                    </Button>
+                  </fetcher.Form>
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    One holdout, every answer. Sticky per shopper; stop any time and everything
+                    returns instantly.
+                  </Text>
+                </InlineStack>
+              </BlockStack>
             )}
 
             {experiment && (
@@ -855,53 +948,20 @@ export default function ProofPage() {
           </BlockStack>
         </Card>
 
+        {(ctlTestRunning || ctlHasWindowData) && (
         <Card padding="500">
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="center">
-              <SectionHeading
-                title="The outfit upsell test"
-                description="Complete the Look: hide the outfit offer from a slice of shoppers, then compare average order value. The gap between the groups is the lift the feature actually causes."
+              <IconHeading
+                icon={ConnectIcon}
+                tone="money"
+                title="The outfit upsell"
+                description="Same holdout, order value. The gap between the groups is what the outfit offer causes."
               />
-              {ctlTestRunning && <StatusPill label="Running" tone="watch" />}
+              {ctlTestRunning && !viewingPast && <StatusPill label="Running" tone="watch" />}
             </InlineStack>
 
-            {!ctlFeatureOn && (
-              <InlineStack gap="300" blockAlign="center" wrap>
-                <Text as="span" variant="bodyMd" tone="subdued">
-                  Complete the Look is off — turn it on first, then come back to prove its lift.
-                </Text>
-                <Button onClick={() => navigate("/app/widget-design")}>Open Widget Design</Button>
-              </InlineStack>
-            )}
-
-            {ctlFeatureOn && !ctlTestRunning && !viewingPast && (
-              <InlineStack gap="300" blockAlign="end" wrap>
-                <Select
-                  label="Holdout size"
-                  options={[
-                    { label: "10% never see the offer", value: "10" },
-                    { label: "20% never see the offer", value: "20" },
-                    { label: "50% never see the offer (recommended)", value: "50" },
-                  ]}
-                  value={ctlPct}
-                  onChange={setCtlPct}
-                />
-                <fetcher.Form method="post">
-                  <input type="hidden" name="intent" value="ctl_start" />
-                  <input type="hidden" name="ctlHoldoutPercent" value={ctlPct} />
-                  <Button submit variant="primary" loading={busy}>
-                    Start test
-                  </Button>
-                </fetcher.Form>
-                <Text as="span" variant="bodySm" tone="subdued">
-                  Assignment is sticky per shopper. Stop any time; everyone sees the offer again
-                  instantly. Starting the proof test above starts this one too — they read as one
-                  test.
-                </Text>
-              </InlineStack>
-            )}
-
-            {ctlFeatureOn && (ctlTestRunning || ctlHasWindowData) && (
+            {(
               <BlockStack gap="300">
                 <InlineStack gap="300" blockAlign="center" wrap>
                   {ctlTestRunning && !viewingPast ? (
@@ -912,14 +972,8 @@ export default function ProofPage() {
                         {ctlTestSince
                           ? ` · started ${new Date(ctlTestSince).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
                           : ""}
-                        {" · your preview link (?ello_ctl=1) always shows the offer, so you can demo while it runs"}
+                        {" · stops together with the proof test · your preview link (?ello_ctl=1) always shows the offer"}
                       </Text>
-                      <fetcher.Form method="post">
-                        <input type="hidden" name="intent" value="ctl_stop" />
-                        <Button submit tone="critical" variant="plain" loading={busy}>
-                          Stop test
-                        </Button>
-                      </fetcher.Form>
                     </>
                   ) : (
                     <>
@@ -978,14 +1032,25 @@ export default function ProofPage() {
             )}
           </BlockStack>
         </Card>
+        )}
 
-        {returnsReady && (
+        {(experiment != null || returnsReady) && (
           <Card padding="500">
             <BlockStack gap="400">
-              <SectionHeading
+              <IconHeading
+                icon={ReturnIcon}
+                tone="neutral"
                 title="Returns"
-                description="Do tried-on items come back less often? Refunded units as a share of units sold, from your store's own refunds — tried-on items next to your store-wide baseline."
+                description="Do tried-on items come back less often? Your own refunds against your own baseline."
               />
+              {!returnsReady && (
+                <Text as="p" tone="subdued">
+                  No refunds in this window yet. Refunds land days or weeks after purchases, so
+                  this section fills in last — tried-on items will be compared with your
+                  store-wide baseline as they arrive.
+                </Text>
+              )}
+              {returnsReady && (
               <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
                 <RatePanel
                   label="Store-wide baseline"
@@ -999,7 +1064,8 @@ export default function ProofPage() {
                   accent
                 />
               </InlineGrid>
-              {returnsGap != null && returnsGap > 0 && (
+              )}
+              {returnsReady && returnsGap != null && returnsGap > 0 && (
                 <LiftHero
                   value={`−${returnsGap.toFixed(1)} pts`}
                   label="fewer returns when shoppers try on first"
