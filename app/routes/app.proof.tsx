@@ -68,29 +68,69 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const to = new Date();
   const from = new Date(to.getTime() - RANGE_DAYS * 24 * 60 * 60 * 1000);
 
+  const url = new URL(request.url);
+
+  // Fresh walkthrough view: render the page exactly as a brand-new store sees
+  // it — nothing deleted, nothing stopped, just a view. Exit brings it all back.
+  if (url.searchParams.get("view") === "fresh") {
+    const storeRow = await supabaseAdmin
+      .from("vto_stores")
+      .select("complete_the_look_enabled")
+      .eq("shop_domain", shop)
+      .maybeSingle()
+      .then((r) => r.data);
+    return {
+      ready: true as const,
+      freshView: true as const,
+      summary: null,
+      experiment: null,
+      experiments: [],
+      latestExperimentId: null,
+      results: null,
+      receipts: [],
+      titles: {} as Record<string, string>,
+      ctl: null,
+      ctlFeatureOn: storeRow?.complete_the_look_enabled === true,
+      ctlTestRunning: false,
+      ctlTestSince: null as string | null,
+      ctlTestPct: 50,
+      returns: null,
+      rangeDays: RANGE_DAYS,
+      windowLabel: null as string | null,
+    };
+  }
+
   // History: every test is kept forever. The page shows the latest by default;
-  // ?experiment=<id> pins a past one (the merchant's "show the client what
-  // done looks like" view).
-  const requestedExperimentId = new URL(request.url).searchParams.get("experiment");
-  const [summary, experiments, receipts, ctl, returns, storeRow] = await Promise.all([
-    getConversionSummary(slug, from, to),
-    listExperiments(slug),
-    getReceipts(slug, from, to, 100),
-    getCtlPerformance(slug, from, to),
-    getReturnRates(slug, from, to),
+  // ?experiment=<id> pins a past one. One test = one window: when a test is
+  // selected, the WHOLE page (scorecard, outfit test, returns, receipts) reads
+  // over that test's window, so a past test brings the entire readout back.
+  const requestedExperimentId = url.searchParams.get("experiment");
+  const experiments = await listExperiments(slug);
+  const latestExperiment = experiments[0] ?? null;
+  const experiment =
+    (requestedExperimentId && experiments.find((e) => e.id === requestedExperimentId)) ||
+    latestExperiment;
+  const winFrom = experiment ? new Date(experiment.startedAt) : from;
+  const winTo = experiment?.endedAt ? new Date(experiment.endedAt) : to;
+
+  const [summary, receipts, ctl, returns, storeRow, results] = await Promise.all([
+    getConversionSummary(slug, winFrom, winTo),
+    getReceipts(slug, winFrom, winTo, 100),
+    getCtlPerformance(slug, winFrom, winTo),
+    getReturnRates(slug, winFrom, winTo),
     supabaseAdmin
       .from("vto_stores")
       .select("complete_the_look_enabled, ctl_holdout_enabled, ctl_holdout_enabled_at, ctl_holdout_percent")
       .eq("shop_domain", shop)
       .maybeSingle()
       .then((r) => r.data),
+    experiment ? getExperimentResults(slug, experiment.id) : Promise.resolve(null),
   ]);
-  const latestExperiment = experiments[0] ?? null;
-  const experiment =
-    (requestedExperimentId && experiments.find((e) => e.id === requestedExperimentId)) ||
-    latestExperiment;
-  const results: AbResults | null = experiment
-    ? await getExperimentResults(slug, experiment.id)
+
+  const fmtDay = (d: Date) =>
+    d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const windowLabel = experiment
+    ? `${fmtDay(winFrom)} – ${experiment.endedAt ? fmtDay(winTo) : "now"}`
     : null;
 
   // Product titles for the receipts table (best-effort; ids fall back through).
@@ -113,6 +153,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return {
     ready: true as const,
+    freshView: false as const,
     summary,
     experiment,
     experiments,
@@ -127,6 +168,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ctlTestPct: Number(storeRow?.ctl_holdout_percent ?? 50),
     returns,
     rangeDays: RANGE_DAYS,
+    windowLabel,
   };
 };
 
@@ -138,12 +180,46 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const intent = String(form.get("intent") ?? "");
   if (intent === "start") {
     const pct = Number(form.get("holdoutPercent") ?? 10);
-    return startExperiment(store.slug, pct);
+    const res = await startExperiment(store.slug, pct);
+    if (res.ok) {
+      // One test: the outfit 50/50 rides along whenever Complete the Look is
+      // on. Stamp only on OFF→ON so an already-running outfit window is never
+      // shrunk (its arms recompute per window from the enabled_at stamp).
+      const { data: prior } = await supabaseAdmin
+        .from("vto_stores")
+        .select("ctl_holdout_enabled, complete_the_look_enabled")
+        .eq("shop_domain", session.shop)
+        .maybeSingle();
+      if (prior?.complete_the_look_enabled === true && prior?.ctl_holdout_enabled !== true) {
+        await supabaseAdmin
+          .from("vto_stores")
+          .update({ ctl_holdout_enabled: true, ctl_holdout_enabled_at: new Date().toISOString() })
+          .eq("shop_domain", session.shop);
+      }
+    }
+    return res;
   }
   if (intent === "stop") {
     const experimentId = String(form.get("experimentId") ?? "");
     if (!experimentId) return { ok: false, error: "Missing experiment id." };
-    return stopExperiment(store.slug, experimentId);
+    const res = await stopExperiment(store.slug, experimentId);
+    if (res.ok) {
+      // One test: stopping the test releases the outfit 50/50 too (flag only —
+      // the enabled_at stamp stays, so this window's arms remain readable).
+      await supabaseAdmin
+        .from("vto_stores")
+        .update({ ctl_holdout_enabled: false })
+        .eq("shop_domain", session.shop);
+    }
+    return res;
+  }
+  // Reset for walkthroughs: stop any running widget test (it stays in history)
+  // and let the client flip to the fresh view. The outfit test is deliberately
+  // left as-is so past windows keep their arms.
+  if (intent === "reset_demo") {
+    const running = (await listExperiments(store.slug)).find((e) => e.status === "running");
+    if (running) await stopExperiment(store.slug, running.id);
+    return { ok: true, action: "reset" as const };
   }
   // CTL test lifecycle (moved here from Widget Design). Same bookkeeping as
   // before: ctl_holdout_enabled_at is stamped only on the OFF→ON transition
@@ -429,17 +505,26 @@ function liftVerdict(results: AbResults): { label: string; tone: Tone } {
 
 export default function ProofPage() {
   const data = useLoaderData<typeof loader>();
-  const fetcher = useFetcher<{ ok: boolean; error?: string }>();
+  const fetcher = useFetcher<{ ok: boolean; error?: string; action?: string }>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [holdoutPct, setHoldoutPct] = useState("10");
 
-  // After any successful action (start/stop), snap back to the current test —
-  // a pinned past test would otherwise hide the one that just started.
+  // After a successful action, steer the view: a reset lands on the fresh
+  // walkthrough page; anything else (start/stop) snaps back to the current
+  // test so a pinned past test or fresh view can't mask what just happened.
   useEffect(() => {
-    if (fetcher.data?.ok && searchParams.has("experiment")) {
-      const next = new URLSearchParams(searchParams);
+    if (!fetcher.data?.ok) return;
+    const next = new URLSearchParams(searchParams);
+    if (fetcher.data.action === "reset") {
       next.delete("experiment");
+      next.set("view", "fresh");
+      setSearchParams(next, { replace: true });
+      return;
+    }
+    if (next.has("experiment") || next.has("view")) {
+      next.delete("experiment");
+      next.delete("view");
       setSearchParams(next, { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -456,7 +541,18 @@ export default function ProofPage() {
     );
   }
 
-  const { summary, experiment, experiments, latestExperimentId, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, returns, rangeDays } = data;
+  const { summary, experiment, experiments, latestExperimentId, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, returns, rangeDays, freshView, windowLabel } = data;
+
+  const setFreshView = (on: boolean) => {
+    const next = new URLSearchParams(searchParams);
+    if (on) {
+      next.delete("experiment");
+      next.set("view", "fresh");
+    } else {
+      next.delete("view");
+    }
+    setSearchParams(next, { replace: true });
+  };
 
   const viewingPast =
     experiment != null && latestExperimentId != null && experiment.id !== latestExperimentId;
@@ -471,6 +567,8 @@ export default function ProofPage() {
     else next.set("experiment", id);
     setSearchParams(next, { replace: true });
   };
+
+  const ctlHasWindowData = ctl != null && (ctl.tSessions > 0 || ctl.hSessions > 0);
 
   const fmtExperiment = (e: (typeof experiments)[number]) => {
     const d = (s: string) =>
@@ -541,11 +639,43 @@ export default function ProofPage() {
   };
 
   return (
-    <Page title="Proof" subtitle="Measured on your own shoppers. Not modeled, not projected.">
+    <Page
+      title="Proof"
+      subtitle="Measured on your own shoppers. Not modeled, not projected."
+      secondaryActions={
+        freshView
+          ? [{ content: "Exit fresh view", onAction: () => setFreshView(false) }]
+          : [
+              { content: "View as a new store", onAction: () => setFreshView(true) },
+              ...(experiments.length > 0
+                ? [
+                    {
+                      content: "Reset page (tests stay in history)",
+                      destructive: true,
+                      onAction: () => fetcher.submit({ intent: "reset_demo" }, { method: "post" }),
+                    },
+                  ]
+                : []),
+            ]
+      }
+    >
       <BlockStack gap="500">
         {actionError && <Banner tone="critical"><p>{actionError}</p></Banner>}
 
-        <HeadlineStrip eyebrow={`Last ${rangeDays} days at a glance`}>
+        {freshView && (
+          <Banner tone="info" title="Fresh walkthrough view">
+            <p>
+              This is the page exactly as a brand-new store sees it. Nothing was deleted — your
+              data and every past test come back when you{" "}
+              <Button variant="plain" onClick={() => setFreshView(false)}>
+                exit fresh view
+              </Button>
+              .
+            </p>
+          </Banner>
+        )}
+
+        <HeadlineStrip eyebrow={windowLabel ? `This test: ${windowLabel}` : `Last ${rangeDays} days at a glance`}>
           <span style={{ fontSize: 15, color: brand.ink }}>
             Shoppers who tried something on generated{" "}
             <strong>{money(attributedRevenue, currency)}</strong> across{" "}
@@ -643,6 +773,8 @@ export default function ProofPage() {
                 </fetcher.Form>
                 <Text as="span" variant="bodySm" tone="subdued">
                   Assignment is sticky per shopper. Stop any time; the widget returns instantly.
+                  Starts the outfit upsell test alongside when Complete the Look is on — one test,
+                  every section of this page.
                 </Text>
               </InlineStack>
             )}
@@ -742,7 +874,7 @@ export default function ProofPage() {
               </InlineStack>
             )}
 
-            {ctlFeatureOn && !ctlTestRunning && (
+            {ctlFeatureOn && !ctlTestRunning && !viewingPast && (
               <InlineStack gap="300" blockAlign="end" wrap>
                 <Select
                   label="Holdout size"
@@ -763,31 +895,43 @@ export default function ProofPage() {
                 </fetcher.Form>
                 <Text as="span" variant="bodySm" tone="subdued">
                   Assignment is sticky per shopper. Stop any time; everyone sees the offer again
-                  instantly. 50% reaches a verdict fastest — order value needs orders on both sides.
+                  instantly. Starting the proof test above starts this one too — they read as one
+                  test.
                 </Text>
               </InlineStack>
             )}
 
-            {ctlFeatureOn && ctlTestRunning && (
+            {ctlFeatureOn && (ctlTestRunning || ctlHasWindowData) && (
               <BlockStack gap="300">
                 <InlineStack gap="300" blockAlign="center" wrap>
-                  <Badge tone="success">Running</Badge>
-                  <Text as="span" variant="bodySm" tone="subdued">
-                    {ctlTestPct}% holdout
-                    {ctlTestSince
-                      ? ` · started ${new Date(ctlTestSince).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
-                      : ""}
-                    {" · your preview link (?ello_ctl=1) always shows the offer, so you can demo while it runs"}
-                  </Text>
-                  <fetcher.Form method="post">
-                    <input type="hidden" name="intent" value="ctl_stop" />
-                    <Button submit tone="critical" variant="plain" loading={busy}>
-                      Stop test
-                    </Button>
-                  </fetcher.Form>
+                  {ctlTestRunning && !viewingPast ? (
+                    <>
+                      <Badge tone="success">Running</Badge>
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        {ctlTestPct}% holdout
+                        {ctlTestSince
+                          ? ` · started ${new Date(ctlTestSince).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+                          : ""}
+                        {" · your preview link (?ello_ctl=1) always shows the offer, so you can demo while it runs"}
+                      </Text>
+                      <fetcher.Form method="post">
+                        <input type="hidden" name="intent" value="ctl_stop" />
+                        <Button submit tone="critical" variant="plain" loading={busy}>
+                          Stop test
+                        </Button>
+                      </fetcher.Form>
+                    </>
+                  ) : (
+                    <>
+                      <Badge tone="info">{viewingPast ? "Part of this test" : "Window results"}</Badge>
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        outfit 50/50 over {windowLabel ?? `the last ${rangeDays} days`}
+                      </Text>
+                    </>
+                  )}
                 </InlineStack>
 
-                {ctl && (
+                {ctlHasWindowData && (
                   <>
                     <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
                       <CtlArmPanel
