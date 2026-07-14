@@ -15,9 +15,9 @@
 // buckets on FNV(session:experiment_id), the CTL split on session-id last-char
 // parity — running both at once cannot cross-contaminate.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useNavigate } from "react-router";
+import { useFetcher, useLoaderData, useNavigate, useSearchParams } from "react-router";
 import {
   Page,
   Card,
@@ -48,8 +48,8 @@ import {
 } from "../lib/ab-shared";
 import {
   getExperimentResults,
-  getLatestExperiment,
   getReceipts,
+  listExperiments,
   startExperiment,
   stopExperiment,
 } from "../lib/ab-testing.server";
@@ -68,9 +68,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const to = new Date();
   const from = new Date(to.getTime() - RANGE_DAYS * 24 * 60 * 60 * 1000);
 
-  const [summary, experiment, receipts, ctl, returns, storeRow] = await Promise.all([
+  // History: every test is kept forever. The page shows the latest by default;
+  // ?experiment=<id> pins a past one (the merchant's "show the client what
+  // done looks like" view).
+  const requestedExperimentId = new URL(request.url).searchParams.get("experiment");
+  const [summary, experiments, receipts, ctl, returns, storeRow] = await Promise.all([
     getConversionSummary(slug, from, to),
-    getLatestExperiment(slug),
+    listExperiments(slug),
     getReceipts(slug, from, to, 100),
     getCtlPerformance(slug, from, to),
     getReturnRates(slug, from, to),
@@ -81,6 +85,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       .maybeSingle()
       .then((r) => r.data),
   ]);
+  const latestExperiment = experiments[0] ?? null;
+  const experiment =
+    (requestedExperimentId && experiments.find((e) => e.id === requestedExperimentId)) ||
+    latestExperiment;
   const results: AbResults | null = experiment
     ? await getExperimentResults(slug, experiment.id)
     : null;
@@ -107,6 +115,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ready: true as const,
     summary,
     experiment,
+    experiments,
+    latestExperimentId: latestExperiment?.id ?? null,
     results,
     receipts,
     titles,
@@ -421,7 +431,19 @@ export default function ProofPage() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<{ ok: boolean; error?: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [holdoutPct, setHoldoutPct] = useState("10");
+
+  // After any successful action (start/stop), snap back to the current test —
+  // a pinned past test would otherwise hide the one that just started.
+  useEffect(() => {
+    if (fetcher.data?.ok && searchParams.has("experiment")) {
+      const next = new URLSearchParams(searchParams);
+      next.delete("experiment");
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetcher.data]);
   const [ctlPct, setCtlPct] = useState("50");
 
   if (!data.ready) {
@@ -434,7 +456,29 @@ export default function ProofPage() {
     );
   }
 
-  const { summary, experiment, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, returns, rangeDays } = data;
+  const { summary, experiment, experiments, latestExperimentId, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, returns, rangeDays } = data;
+
+  const viewingPast =
+    experiment != null && latestExperimentId != null && experiment.id !== latestExperimentId;
+  // A new test can start only when nothing is running (the latest experiment
+  // is the only one that can ever be running).
+  const canStartNew =
+    experiments.length > 0 && experiments[0].status === "completed";
+
+  const showExperiment = (id: string | null) => {
+    const next = new URLSearchParams(searchParams);
+    if (!id || id === latestExperimentId) next.delete("experiment");
+    else next.set("experiment", id);
+    setSearchParams(next, { replace: true });
+  };
+
+  const fmtExperiment = (e: (typeof experiments)[number]) => {
+    const d = (s: string) =>
+      new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return `${d(e.startedAt)} – ${e.endedAt ? d(e.endedAt) : "now"} · ${
+      e.status === "running" ? "Running" : "Completed"
+    } · ${e.holdoutPercent}% holdout`;
+  };
   const busy = fetcher.state !== "idle";
 
   // Returns comparison renders only once real refunds exist — a "0% return
@@ -550,10 +594,31 @@ export default function ProofPage() {
 
         <Card padding="500">
           <BlockStack gap="400">
-            <SectionHeading
-              title="The proof test"
-              description="Hide the widget from a slice of shoppers, then compare. The holdout group answers the only question that matters: would they have bought anyway?"
-            />
+            <InlineStack align="space-between" blockAlign="start" wrap>
+              <SectionHeading
+                title="The proof test"
+                description="Hide the widget from a slice of shoppers, then compare. The holdout group answers the only question that matters: would they have bought anyway?"
+              />
+              {experiments.length > 1 && (
+                <Select
+                  label="Test history"
+                  options={experiments.map((e) => ({ label: fmtExperiment(e), value: e.id }))}
+                  value={experiment?.id}
+                  onChange={showExperiment}
+                />
+              )}
+            </InlineStack>
+
+            {viewingPast && (
+              <Banner tone="info">
+                <p>
+                  You&apos;re viewing a past test — every test is kept here forever.{" "}
+                  <Button variant="plain" onClick={() => showExperiment(null)}>
+                    Back to the current test
+                  </Button>
+                </p>
+              </Banner>
+            )}
 
             {!experiment && (
               <InlineStack gap="300" blockAlign="end" wrap>
@@ -604,7 +669,7 @@ export default function ProofPage() {
                       </Button>
                     </fetcher.Form>
                   )}
-                  {experiment.status === "completed" && (
+                  {canStartNew && !viewingPast && (
                     <fetcher.Form method="post">
                       <input type="hidden" name="intent" value="start" />
                       <input type="hidden" name="holdoutPercent" value={holdoutPct} />

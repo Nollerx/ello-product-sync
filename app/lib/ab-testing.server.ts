@@ -62,6 +62,21 @@ export async function getLatestExperiment(slug: string): Promise<AbExperiment | 
   return data ? mapExperiment(data) : null;
 }
 
+/** Every experiment for the store, newest first — the Proof page's history picker. */
+export async function listExperiments(slug: string): Promise<AbExperiment[]> {
+  const { data, error } = await supabaseAdmin
+    .from("vto_experiments")
+    .select("*")
+    .eq("store_slug", slug)
+    .order("started_at", { ascending: false })
+    .limit(24);
+  if (error) {
+    console.error("[ab] experiment list failed (non-fatal):", error.message);
+    return [];
+  }
+  return (data ?? []).map(mapExperiment);
+}
+
 /**
  * Start a holdout experiment: one running experiment per store (DB-enforced),
  * and the vto_stores ab_* flags flow to the widget via get_widget_config with
