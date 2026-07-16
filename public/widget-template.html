@@ -520,7 +520,7 @@
             transition: all 0.5s ease;
         }
 
-        .custom-notification{
+        .ello-notification{
             position: fixed;
             top: 20px;
             right: 20px;
@@ -563,32 +563,32 @@
             pointer-events: auto !important;
         }
 
-        .custom-notification.show{
+        .ello-notification.show{
             transform: translateY(0) scale(1);
             opacity: 1;
         }
 
-        .custom-notification.hide{
+        .ello-notification.hide{
             transform: translateY(-50px) scale(0.9);
             opacity: 0;
         }
 
         /* Force notification to absolute top layer */
-        .custom-notification{
+        .ello-notification{
             z-index: 2147483647 !important;
             position: fixed !important;
         }
 
         /* Ensure no modal can override notification z-index */
-        .wardrobe-modal.active~.custom-notification,
-        .clothing-browser-modal.active~.custom-notification,
-        .image-modal.active~.custom-notification,
-        .modal-backdrop.active~.custom-notification{
+        .wardrobe-modal.active~.ello-notification,
+        .clothing-browser-modal.active~.ello-notification,
+        .image-modal.active~.ello-notification,
+        .modal-backdrop.active~.ello-notification{
             z-index: 2147483647 !important;
             position: fixed !important;
         }
 
-        .notification-icon{
+        .ello-notification-icon{
             width: 24px;
             height: 24px;
             background: rgba(255, 255, 255, 0.2);
@@ -601,24 +601,24 @@
             animation: successPulse 0.6s ease;
         }
 
-        .notification-content{
+        .ello-notification-content{
             flex: 1;
             line-height: 1.4;
         }
 
-        .notification-title{
+        .ello-notification-title{
             font-weight: var(--ello-fw-700, 700);
             margin-bottom: 2px;
             font-size: 15px;
         }
 
-        .notification-subtitle{
+        .ello-notification-subtitle{
             opacity: 0.9;
             font-size: 13px;
             font-weight: var(--ello-fw-500, 500);
         }
 
-        .notification-close{
+        .ello-notification-close{
             background: none;
             border: none;
             color: white;
@@ -636,7 +636,7 @@
             flex-shrink: 0;
         }
 
-        .notification-close:hover{
+        .ello-notification-close:hover{
             opacity: 1;
             background: rgba(255, 255, 255, 0.1);
         }
@@ -732,7 +732,7 @@
 
         /* Mobile responsive */
         @media (max-width: 768px) {
-            .custom-notification{
+            .ello-notification{
                 top: 10px;
                 right: 10px;
                 left: 10px;
@@ -742,14 +742,14 @@
             }
 
             /* Ensure notification is visible above modals on mobile */
-            .custom-notification.show{
+            .ello-notification.show{
                 z-index: 100000;
             }
 
             /* When modals are active, position notification to be clearly visible */
-            .wardrobe-modal.active~.custom-notification,
-            .clothing-browser-modal.active~.custom-notification,
-            .image-modal.active~.custom-notification{
+            .wardrobe-modal.active~.ello-notification,
+            .clothing-browser-modal.active~.ello-notification,
+            .image-modal.active~.ello-notification{
                 top: 80px !important;
                 z-index: 100000 !important;
                 position: fixed !important;
@@ -757,7 +757,7 @@
         }
 
         /* Progress bar for auto-dismiss */
-        .notification-progress{
+        .ello-notification-progress{
             position: absolute;
             bottom: 0;
             left: 0;
@@ -6509,14 +6509,14 @@
         }
 
         /* Add error notification style */
-        .custom-notification.error{
+        .ello-notification.error{
             background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
             color: white;
             box-shadow: 0 10px 40px rgba(239, 68, 68, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.2);
         }
 
-        .notification-icon{
+        .ello-notification-icon{
             color: white;
             font-size: 16px;
         }

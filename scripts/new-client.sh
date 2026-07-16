@@ -57,8 +57,16 @@ api_version = "2026-04"
   topics = [ "products/create", "products/delete", "products/update" ]
   uri = "/webhooks/products"
 
+  # Refunds feed Qualified Revenue "net of returns" (term-sheet item). Requires
+  # the read_orders scope below + Partner Dashboard protected-customer-data
+  # approval; without both, Shopify never delivers refunds and rev-share
+  # over-states revenue. Mirror of shopify.app.custom.toml.
+  [[webhooks.subscriptions]]
+  topics = [ "refunds/create" ]
+  uri = "/webhooks/refunds"
+
 [access_scopes]
-scopes = "read_products,unauthenticated_read_product_listings,unauthenticated_read_product_tags,read_customer_events,read_pixels,write_pixels,read_themes"
+scopes = "read_products,read_orders,unauthenticated_read_product_listings,unauthenticated_read_product_tags,read_customer_events,read_pixels,write_pixels,read_themes"
 
 [auth]
 redirect_urls = [ "${SERVICE_URL}/auth/callback" ]

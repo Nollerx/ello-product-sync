@@ -10,6 +10,8 @@ export interface AbExperiment {
   status: "running" | "completed";
   startedAt: string;
   endedAt: string | null;
+  /** True when the outfit (CTL) split rode along with this test's unified start. */
+  ctlAttached: boolean;
 }
 
 export interface AbVariantStats {
@@ -52,3 +54,53 @@ export const AB_MIN_TOTAL_CONVERTERS = 10;
 // Complete-the-Look holdout test: the causal AOV lift renders once each arm has
 // this many attributed orders (AOV needs orders, not sessions, to stabilize).
 export const CTL_MIN_ORDERS_PER_ARM = 10;
+
+// One-sided confidence a verdict must clear before the UI calls anything
+// "causal" — same bar for the conversion z-test and the AOV t-test.
+export const AB_VERDICT_CONFIDENCE = 0.95;
+
+/** Standard normal CDF via the Abramowitz–Stegun erf approximation (|ε| < 1.5e-7). */
+export function normalCdf(z: number): number {
+  const t = 1 / (1 + (0.3275911 * Math.abs(z)) / Math.SQRT2);
+  const erf =
+    1 -
+    (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
+      t *
+      Math.exp(-(z * z) / 2);
+  return z >= 0 ? 0.5 * (1 + erf) : 0.5 * (1 - erf);
+}
+
+/**
+ * One-sided Welch t-test on AOV: how confident are we that the treatment arm's
+ * average order value beats the holdout's? AOV is a high-variance mean, so the
+ * arms' order counts alone say nothing — this needs the per-arm spread the RPC
+ * now returns. Student-t CDF via the A&S 26.7.8 normal approximation (good to
+ * ~3 decimals for df ≥ 5; verdicts gate at CTL_MIN_ORDERS_PER_ARM anyway).
+ * Returns null when either arm lacks the data for a variance (n < 2 or no
+ * stddev — e.g. every order the same price).
+ */
+export function welchAovConfidence(
+  treatmentMean: number | null,
+  treatmentStddev: number | null,
+  treatmentN: number,
+  holdoutMean: number | null,
+  holdoutStddev: number | null,
+  holdoutN: number,
+): number | null {
+  if (treatmentMean == null || holdoutMean == null) return null;
+  if (treatmentStddev == null || holdoutStddev == null) return null;
+  if (treatmentN < 2 || holdoutN < 2) return null;
+  const v1 = (treatmentStddev * treatmentStddev) / treatmentN;
+  const v2 = (holdoutStddev * holdoutStddev) / holdoutN;
+  const se = Math.sqrt(v1 + v2);
+  if (!Number.isFinite(se) || se <= 0) return null;
+  const t = (treatmentMean - holdoutMean) / se;
+  // Welch–Satterthwaite degrees of freedom.
+  const df =
+    ((v1 + v2) * (v1 + v2)) /
+    ((v1 * v1) / (treatmentN - 1) + (v2 * v2) / (holdoutN - 1));
+  if (!Number.isFinite(df) || df <= 0) return null;
+  // Normal approximation to the t CDF (A&S 26.7.8).
+  const z = (t * (1 - 1 / (4 * df))) / Math.sqrt(1 + (t * t) / (2 * df));
+  return normalCdf(z);
+}

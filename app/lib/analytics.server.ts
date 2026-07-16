@@ -329,17 +329,27 @@ export interface CtlPerformance {
   hOrders: number;
   hRevenue: number;
   hAov: number | null;
+  /** Per-arm AOV spread — feeds the Welch t-test that gates the causal verdict. */
+  tAovStddev: number | null;
+  hAovStddev: number | null;
 }
 
 export async function getCtlPerformance(
   slug: string,
   from: Date,
   to: Date,
+  // Pinned-test parameters: freeze the arm classification to the test's own
+  // percent + active window so restarting a test can never rewrite a past
+  // readout. Omitted → live view from the store's current stamps.
+  test?: { pct: number; activeFrom: string; activeTo: string | null },
 ): Promise<CtlPerformance | null> {
   const { data, error } = await supabaseAdmin.rpc("get_ctl_performance", {
     p_store_slug: slug,
     p_from: from.toISOString(),
     p_to: to.toISOString(),
+    p_pct: test?.pct ?? null,
+    p_active_from: test?.activeFrom ?? null,
+    p_active_to: test?.activeTo ?? null,
   });
   if (error) {
     console.error("[analytics] CTL performance failed (non-fatal):", error.message);
@@ -369,6 +379,8 @@ export async function getCtlPerformance(
     hOrders: num(row.h_orders),
     hRevenue: num(row.h_revenue),
     hAov: numOrNull(row.h_aov),
+    tAovStddev: numOrNull(row.t_aov_stddev),
+    hAovStddev: numOrNull(row.h_aov_stddev),
   };
 }
 

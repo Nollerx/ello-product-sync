@@ -89,12 +89,6 @@
      state while the opened panel/hub still works — exactly what the dashboard's
      "floating widget off everywhere" toggle does on a real store. */
   #virtualTryonWidget.widget-minimized { display: none !important; }
-
-  /* LA Apparel is on the paid custom app, so the free-plan "Powered by Ello VTO"
-     badge (injected only for plan_code === "ello_free") won't render there.
-     Hide it here so the harness matches — and so the panel content (flex:1)
-     fills cleanly to the bottom instead of exposing the bubble-color backdrop. */
-  #ello-branding-footer { display: none !important; }
 </style>
 </head>
 <body>
@@ -225,6 +219,17 @@
     document.head.appendChild(ld);
     document.getElementById('pdp-title').textContent = HANDLE.replace(/-/g, ' ');
     document.getElementById('shop-readout').textContent = 'shop: ' + SHOP + ' · handle: ' + HANDLE;
+    // Rewrite the path to a real /products/<handle> URL (history-only, no reload)
+    // so the PDP image-swap gate fires exactly as on a live store — elloPdpSwapOn()
+    // reads getProductIdFromUrl(location.pathname), which only matches /products/.
+    // Query string is preserved so ?shop / ?handle still resolve. NOTE: reopen via
+    // the /dev-pdp.html?handle=… link (a hard reload of /products/… won't hit this
+    // static file). Skipped if we're somehow already on a /products/ path.
+    try {
+      if (!/^\/products\//.test(location.pathname)) {
+        history.replaceState(null, '', '/products/' + HANDLE + location.search);
+      }
+    } catch (e) {}
   }
 
   // ── 2) Mock the Shopify globals the widget reads on a real PDP ─────────────

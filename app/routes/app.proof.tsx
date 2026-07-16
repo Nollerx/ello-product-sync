@@ -52,7 +52,9 @@ import {
 } from "../lib/analytics.server";
 import {
   AB_MIN_SESSIONS_PER_ARM,
+  AB_VERDICT_CONFIDENCE,
   CTL_MIN_ORDERS_PER_ARM,
+  welchAovConfidence,
   type AbResults,
 } from "../lib/ab-shared";
 import {
@@ -103,6 +105,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ctlTestRunning: false,
       ctlTestSince: null as string | null,
       ctlTestPct: 50,
+      ctlWindowPct: 50,
       returns: null,
       rangeDays: RANGE_DAYS,
       windowLabel: null as string | null,
@@ -125,7 +128,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const [summary, receipts, ctl, returns, storeRow, results] = await Promise.all([
     getConversionSummary(slug, winFrom, winTo),
     getReceipts(slug, winFrom, winTo, 100),
-    getCtlPerformance(slug, winFrom, winTo),
+    // When the outfit split rode along with this test, freeze the arms to the
+    // test's own percent + window — a later restart with a different percent
+    // must never rewrite this readout. Tests without an attached outfit split
+    // fall back to the store's live stamps (now end-clamped by disabled_at).
+    getCtlPerformance(
+      slug,
+      winFrom,
+      winTo,
+      experiment?.ctlAttached
+        ? {
+            pct: experiment.holdoutPercent,
+            activeFrom: experiment.startedAt,
+            activeTo: experiment.endedAt,
+          }
+        : undefined,
+    ),
     getReturnRates(slug, winFrom, winTo),
     supabaseAdmin
       .from("vto_stores")
@@ -175,6 +193,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ctlTestRunning: storeRow?.ctl_holdout_enabled === true,
     ctlTestSince: (storeRow?.ctl_holdout_enabled_at as string | null) ?? null,
     ctlTestPct: Number(storeRow?.ctl_holdout_percent ?? 50),
+    // The percent the displayed arms were actually classified with — the
+    // pinned test's frozen value when attached, else the store's live value.
+    ctlWindowPct: experiment?.ctlAttached
+      ? experiment.holdoutPercent
+      : Number(storeRow?.ctl_holdout_percent ?? 50),
     returns,
     rangeDays: RANGE_DAYS,
     windowLabel,
@@ -201,7 +224,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         .maybeSingle();
       if (prior?.complete_the_look_enabled === true && prior?.ctl_holdout_enabled !== true) {
         // One holdout number for everything: the outfit split reuses the
-        // proof test's percentage instead of asking twice.
+        // proof test's percentage instead of asking twice. disabled_at is
+        // cleared so the previous test's end stamp can't clip this window.
         const ctlPct = Math.min(50, Math.max(1, Math.round(pct)));
         await supabaseAdmin
           .from("vto_stores")
@@ -209,8 +233,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             ctl_holdout_enabled: true,
             ctl_holdout_enabled_at: new Date().toISOString(),
             ctl_holdout_percent: ctlPct,
+            ctl_holdout_disabled_at: null,
           })
           .eq("shop_domain", session.shop);
+        // Record on the experiment itself that the outfit split rode along —
+        // past readouts freeze to THIS test's percent + window, so a later
+        // restart can never reclassify these arms.
+        if (res.experimentId) {
+          await supabaseAdmin
+            .from("vto_experiments")
+            .update({ ctl_attached: true })
+            .eq("id", res.experimentId);
+        }
       }
     }
     return res;
@@ -218,13 +252,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "stop") {
     const experimentId = String(form.get("experimentId") ?? "");
     if (!experimentId) return { ok: false, error: "Missing experiment id." };
+    const { data: priorStop } = await supabaseAdmin
+      .from("vto_stores")
+      .select("ctl_holdout_enabled")
+      .eq("shop_domain", session.shop)
+      .maybeSingle();
     const res = await stopExperiment(store.slug, experimentId);
     if (res.ok) {
-      // One test: stopping the test releases the outfit 50/50 too (flag only —
-      // the enabled_at stamp stays, so this window's arms remain readable).
+      // One test: stopping the test releases the outfit split too. The
+      // enabled_at stamp stays and disabled_at closes the window, so this
+      // test's arms stay readable while post-stop sessions (who all see the
+      // rail again) can never leak into a "holdout" arm.
       await supabaseAdmin
         .from("vto_stores")
-        .update({ ctl_holdout_enabled: false })
+        .update({
+          ctl_holdout_enabled: false,
+          ...(priorStop?.ctl_holdout_enabled === true
+            ? { ctl_holdout_disabled_at: new Date().toISOString() }
+            : {}),
+        })
         .eq("shop_domain", session.shop);
     }
     return res;
@@ -253,13 +299,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { ok: false, error: "Turn on Complete the Look in Widget Design first." };
     }
     const turningOn = wantOn && prior?.ctl_holdout_enabled !== true;
+    const turningOff = !wantOn && prior?.ctl_holdout_enabled === true;
     const { error } = await supabaseAdmin
       .from("vto_stores")
       .update({
         ctl_holdout_enabled: wantOn,
         ...(turningOn
-          ? { ctl_holdout_enabled_at: new Date().toISOString(), ctl_holdout_percent: pct }
+          ? {
+              ctl_holdout_enabled_at: new Date().toISOString(),
+              ctl_holdout_percent: pct,
+              ctl_holdout_disabled_at: null,
+            }
           : {}),
+        ...(turningOff ? { ctl_holdout_disabled_at: new Date().toISOString() } : {}),
       })
       .eq("shop_domain", session.shop);
     if (error) {
@@ -604,7 +656,7 @@ export default function ProofPage() {
     );
   }
 
-  const { summary, experiment, experiments, latestExperimentId, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, returns, rangeDays, freshView, windowLabel } = data;
+  const { summary, experiment, experiments, latestExperimentId, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, ctlWindowPct, returns, rangeDays, freshView, windowLabel } = data;
 
   const setFreshView = (on: boolean) => {
     const next = new URLSearchParams(searchParams);
@@ -663,8 +715,11 @@ export default function ProofPage() {
     results?.relativeLift != null ? `${results.relativeLift >= 0 ? "+" : ""}${(results.relativeLift * 100).toFixed(1)}%` : "—";
   const confidencePct = results?.confidence != null ? `${Math.min(99.9, results.confidence * 100).toFixed(1)}%` : "—";
 
-  // CTL test verdict: causal AOV lift, gated on orders per arm (AOV needs
-  // orders to stabilize, unlike the conversion test's session gate).
+  // CTL test verdict: the lift number renders once each arm has enough orders,
+  // but "causal" is only claimed when the Welch t-test on AOV clears the same
+  // confidence bar as the conversion test. AOV is a high-variance mean — a gap
+  // at 10 orders per arm is usually noise, and stamping it "causal" is exactly
+  // the overstatement a buyer's finance team would catch.
   const ctlReady =
     ctl != null &&
     ctl.tAov != null &&
@@ -675,6 +730,12 @@ export default function ProofPage() {
     ctlReady && ctl.hAov! > 0
       ? Math.round(((ctl.tAov! - ctl.hAov!) / ctl.hAov!) * 100)
       : null;
+  const ctlConfidence = ctlReady
+    ? welchAovConfidence(ctl.tAov, ctl.tAovStddev, ctl.tOrders, ctl.hAov, ctl.hAovStddev, ctl.hOrders)
+    : null;
+  const ctlSignificant = ctlConfidence != null && ctlConfidence >= AB_VERDICT_CONFIDENCE;
+  const ctlConfidencePct =
+    ctlConfidence != null ? `${Math.min(99.9, ctlConfidence * 100).toFixed(1)}%` : null;
 
   const receiptRows = receipts.slice(0, 50).map((r) => [
     r.orderId ? `#${r.orderId.replace(/^.*\//, "")}` : "—",
@@ -685,7 +746,10 @@ export default function ProofPage() {
 
   const downloadCsv = async () => {
     try {
-      const res = await fetch("/app/proof/export");
+      // Export the window on screen: the pinned test's range, not a fixed 30d.
+      const res = await fetch(
+        `/app/proof/export${experiment ? `?experiment=${encodeURIComponent(experiment.id)}` : ""}`,
+      );
       if (!res.ok) throw new Error(`Export failed (${res.status})`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -740,9 +804,9 @@ export default function ProofPage() {
 
         <HeadlineStrip eyebrow={windowLabel ? `This test: ${windowLabel}` : `Last ${rangeDays} days at a glance`}>
           <span style={{ fontSize: 15, color: brand.ink }}>
-            Shoppers who tried something on generated{" "}
-            <strong>{money(attributedRevenue, currency)}</strong> across{" "}
-            <strong>{purchaseSessions}</strong> purchases — every one traceable to a Shopify order id below.
+            Shoppers who tried something on bought{" "}
+            <strong>{money(attributedRevenue, currency)}</strong> of tried-on items across{" "}
+            <strong>{purchaseSessions}</strong> purchases — each traceable to its order below.
           </span>
         </HeadlineStrip>
 
@@ -750,7 +814,7 @@ export default function ProofPage() {
           <KpiTile
             label="Tracked sales"
             value={money(attributedRevenue, currency)}
-            hint="attributed order revenue, gross of returns"
+            hint="the tried-on items' revenue, gross of returns"
             icon={CashDollarIcon}
             iconTone="money"
             accent
@@ -972,14 +1036,14 @@ export default function ProofPage() {
                         {ctlTestSince
                           ? ` · started ${new Date(ctlTestSince).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
                           : ""}
-                        {" · stops together with the proof test · your preview link (?ello_ctl=1) always shows the offer"}
+                        {" · stops together with the proof test · the ?ello_ctl=1 preview is paused while the test runs so it can't skew the groups"}
                       </Text>
                     </>
                   ) : (
                     <>
                       <Badge tone="info">{viewingPast ? "Part of this test" : "Window results"}</Badge>
                       <Text as="span" variant="bodySm" tone="subdued">
-                        outfit 50/50 over {windowLabel ?? `the last ${rangeDays} days`}
+                        outfit test — {ctlWindowPct}% holdout — over {windowLabel ?? `the last ${rangeDays} days`}
                       </Text>
                     </>
                   )}
@@ -1012,10 +1076,19 @@ export default function ProofPage() {
                       <LiftHero
                         value={`${ctlLift >= 0 ? "+" : ""}${ctlLift}%`}
                         label="average order value lift from the outfit offer"
-                        subline="measured, not modeled — the only difference between the groups is the offer"
+                        subline={
+                          ctlSignificant
+                            ? `${ctlConfidencePct} confidence — measured, not modeled; the only difference between the groups is the offer`
+                            : `${ctlConfidencePct ?? "—"} confidence so far — an observed gap, not proof yet; order values swing, so this needs more orders to settle`
+                        }
                         pill={{
-                          label: ctlLift >= 0 ? "Causal AOV lift" : "No lift yet",
-                          tone: ctlLift >= 0 ? "good" : "watch",
+                          label:
+                            ctlLift >= 0
+                              ? ctlSignificant
+                                ? "Causal AOV lift"
+                                : "Early signal"
+                              : "No lift yet",
+                          tone: ctlLift >= 0 && ctlSignificant ? "good" : "watch",
                         }}
                       />
                     ) : (
@@ -1103,7 +1176,9 @@ export default function ProofPage() {
             <Text as="p" variant="bodySm" tone="subdued">
               Methodology: a sale is attributed when the same shopper session tried a product on and later
               purchased it (30-day window, order values gross of returns, order-deduplicated). Shopper = 7-day
-              sliding session. Lift comes only from the holdout test — never from attribution.
+              sliding session. The Order value column shows the whole order; the Tracked sales number above
+              counts only the tried-on lines within those orders, so the two won&apos;t match — by design.
+              Lift comes only from the holdout test — never from attribution.
             </Text>
           </BlockStack>
         </Card>

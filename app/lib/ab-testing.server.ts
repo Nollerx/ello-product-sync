@@ -15,6 +15,7 @@ import { supabaseAdmin } from "./supabase.server";
 import {
   AB_MIN_SESSIONS_PER_ARM,
   AB_MIN_TOTAL_CONVERTERS,
+  normalCdf,
   type AbExperiment,
   type AbResults,
   type AbVariantStats,
@@ -43,6 +44,7 @@ function mapExperiment(row: Record<string, unknown>): AbExperiment {
     status: (row.status as "running" | "completed") ?? "completed",
     startedAt: row.started_at as string,
     endedAt: (row.ended_at as string | null) ?? null,
+    ctlAttached: row.ctl_attached === true,
   };
 }
 
@@ -85,7 +87,7 @@ export async function listExperiments(slug: string): Promise<AbExperiment[]> {
 export async function startExperiment(
   slug: string,
   holdoutPercent: number,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; experimentId?: string }> {
   const pct = Math.round(holdoutPercent);
   if (!Number.isFinite(pct) || pct < 1 || pct > 50) {
     return { ok: false, error: "Holdout must be between 1% and 50%." };
@@ -117,7 +119,7 @@ export async function startExperiment(
     console.error("[ab] store flag update failed:", storeErr.message);
     return { ok: false, error: "Could not activate the experiment on the widget." };
   }
-  return { ok: true };
+  return { ok: true, experimentId: data.id as string };
 }
 
 /** Stop the running experiment: freeze the measurement window, release the widget. */
@@ -147,17 +149,6 @@ export async function stopExperiment(
 }
 
 // ─── Results + significance ────────────────────────────────────────────────
-
-/** Standard normal CDF via the Abramowitz–Stegun erf approximation (|ε| < 1.5e-7). */
-function normalCdf(z: number): number {
-  const t = 1 / (1 + 0.3275911 * Math.abs(z) / Math.SQRT2);
-  const erf =
-    1 -
-    (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
-      t *
-      Math.exp(-(z * z) / 2);
-  return z >= 0 ? 0.5 * (1 + erf) : 0.5 * (1 - erf);
-}
 
 /**
  * One-sided two-proportion z-test: how confident are we that the exposed group

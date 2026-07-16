@@ -262,7 +262,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.8.5';
+    const WIDGET_VERSION = '2.8.7';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -497,6 +497,18 @@
         return 'session_' + Math.random().toString(36).substring(2, 11);
     }
 
+    // Storage-blocked browsers used to mint a fresh id on EVERY pageview (the
+    // catch below regenerated unconditionally), inflating exposure denominators
+    // and flip-flopping the shopper between arms. The cookie mirror below is
+    // written even when localStorage throws, so read it back before minting.
+    function elloAbReadSessionCookie() {
+        try {
+            var m = document.cookie.match(/(?:^|;\s*)ello_session_id=([^;\s]+)/);
+            if (m && /^[A-Za-z0-9_-]{8,64}$/.test(m[1])) return m[1];
+            return null;
+        } catch (e) { return null; }
+    }
+
     // Mint or refresh the shopper session id — EXACT mirror of widget-main.js's
     // algorithm (same keys, same 7-day sliding window, same cookie mirror), so
     // whichever script runs first both use one id. widget-main.js reads the same
@@ -519,7 +531,7 @@
             }
             window.localStorage.setItem(tsKey, now.toString());
         } catch (e) {
-            sid = elloAbGenerateSessionId();
+            sid = elloAbReadSessionCookie() || elloAbGenerateSessionId();
         }
         try {
             document.cookie = 'ello_session_id=' + sid + '; path=/; max-age=' + maxAgeSec + '; SameSite=Lax';
@@ -570,6 +582,43 @@
         } catch (e) { /* exposure logging must never break the page */ }
     }
 
+    // Purchase attribution has two carriers: the ello_session_id cookie and the
+    // ello_session_id cart attribute (the pixel falls back to the attribute when
+    // the cookie is unreadable at checkout — 7-day expiry, cross-origin wallet
+    // checkout, consent tools purging cookies). widget-main.js writes the
+    // attribute after a try-on, but holdout shoppers never load widget-main, so
+    // their purchases had ONLY the cookie: every cookie-loss purchase was
+    // recovered in the exposed arm and silently dropped in the holdout arm,
+    // overstating measured lift. During an experiment the loader writes the
+    // SAME attribute for BOTH arms so recovery is symmetric. Once per session
+    // (marker stores the sid so a rotated session re-writes); best-effort and
+    // idempotent — writing to an empty cart is fine, Shopify carries the
+    // attribute forward once items land.
+    function elloAbWriteCartAttr(sid) {
+        try {
+            if (!sid || !window.Shopify) return;   // real storefronts only — dev harness mocks /cart
+            // Marker = sid + write time. Re-write when the session rotates OR
+            // hourly: checkout completes the cart and Shopify mints a fresh one
+            // WITHOUT the attribute, and only exposed shoppers get re-writes
+            // from widget-main — a permanent marker would quietly re-open the
+            // asymmetry for repeat purchasers. ≤1 POST/hour/shopper.
+            var marker = 'ello_cart_attr_' + storeSlug;
+            try {
+                var prev = (window.localStorage.getItem(marker) || '').split('|');
+                if (prev[0] === sid && Date.now() - parseInt(prev[1] || '0', 10) < 3600000) return;
+            } catch (e) { }
+            fetch('/cart/update.js', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ attributes: { ello_session_id: sid } })
+            }).then(function (res) {
+                if (res && res.ok) {
+                    try { window.localStorage.setItem(marker, sid + '|' + Date.now()); } catch (e) { }
+                }
+            }).catch(function () { /* retried next pageview */ });
+        } catch (e) { /* attribution write must never break the page */ }
+    }
+
     // Decide the shopper's variant and, for holdout, force every surface's kill
     // switch off IN the config object so the inline button, preview popup,
     // fitting-room hub and PDP swap all hide through their normal pathways.
@@ -600,6 +649,10 @@
         ELLO_AB.experimentId = cfg.abExperimentId;
         ELLO_AB.sessionId = sid;
         ELLO_AB.override = override || (isPreview ? 'preview' : null);
+
+        // Both arms, every path (including lateHoldout below): symmetric
+        // purchase-attribution carrier for the pixel's cart-attribute fallback.
+        elloAbWriteCartAttr(sid);
 
         // Late-arriving experiment config (cached config had no experiment, UI
         // already injected): don't half-hide the page and don't log a
@@ -1080,8 +1133,14 @@
             __elloTryFlush();
 
         } catch (error) {
+            // Fail invisibly: never paint our failure onto the merchant's live page.
+            // On any load/init error, log for us and hide the container so the
+            // shopper's PDP is left exactly as if the widget were not installed.
             console.error("Virtual Try-On Widget failed to load:", error);
-            container.innerHTML = '<p style="color: red;">Widget failed to load</p>';
+            try {
+                container.innerHTML = '';
+                container.style.display = 'none';
+            } catch (_) { /* container may not exist yet — nothing to clean up */ }
         }
     }
 

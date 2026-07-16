@@ -241,8 +241,48 @@
   // the add-to-cart form, and analytics meta. We publish the winner on
   // window.__ELLO_DEMO_VARIANT_ID__, which widget-main.js trusts in demo mode.
   var __demoPj = null;
+  // Headless Shopify (Hydrogen/Oxygen — e.g. spanx.com) 404s on the Liquid
+  // /products/<handle>.js route. Those stores instead ship a schema.org
+  // `ProductGroup` in JSON-LD carrying every color variant's image + Color/Size.
+  // Read variants from THAT so color resolution still works — and so the demo
+  // never fires a 404 that clutters the console mid-recording.
+  function demoLdProductJson(handle) {
+    try {
+      var nodes = document.querySelectorAll('script[type="application/ld+json"]');
+      for (var i = 0; i < nodes.length; i++) {
+        var d; try { d = JSON.parse(nodes[i].textContent || 'null'); } catch (e) { continue; }
+        if (!d) continue;
+        var list = Array.isArray(d) ? d : (Array.isArray(d['@graph']) ? d['@graph'] : [d]);
+        for (var k = 0; k < list.length; k++) {
+          var n = list[k]; if (!n || typeof n !== 'object') continue;
+          var ty = n['@type'];
+          var isGroup = ty === 'ProductGroup' || (Array.isArray(ty) && ty.indexOf('ProductGroup') !== -1);
+          var hv = n.hasVariant;
+          if (!isGroup || !Array.isArray(hv) || !hv.length) continue;
+          var variants = hv.map(function (v) {
+            var color = v.color || v.Color || null, size = v.size || v.Size || null;
+            var offer = v.offers; if (Array.isArray(offer)) offer = offer[0];
+            var img = v.image; if (Array.isArray(img)) img = img[0];
+            if (img && typeof img === 'object') img = img.url || img.contentUrl || null;
+            var avail = !offer || /InStock|LimitedAvailability|PreOrder|BackOrder/i.test(String((offer && offer.availability) || 'InStock'));
+            var id = v.sku || v.gtin || (offer && offer.sku) || ('ld:' + [color, size].filter(Boolean).join('/'));
+            return {
+              id: String(id),
+              options: [color, size].filter(function (x) { return x != null && String(x).trim(); }).map(String),
+              available: avail,
+              featured_image: (typeof img === 'string' && img) ? { src: img } : null
+            };
+          }).filter(function (v) { return v.options.length || v.featured_image; });
+          if (variants.length) return { __h: handle, __ld: true, variants: variants };
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
   function demoProductJson(handle) {
     if (__demoPj && __demoPj.__h === handle) return Promise.resolve(__demoPj);
+    var ld = demoLdProductJson(handle);
+    if (ld) { __demoPj = ld; return Promise.resolve(ld); }
     return fetch('/products/' + encodeURIComponent(handle) + '.js', { credentials: 'same-origin' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (j) { if (j) { j.__h = handle; __demoPj = j; } return j; })

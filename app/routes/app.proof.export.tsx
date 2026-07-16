@@ -6,7 +6,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import { getStoreContext } from "../lib/analytics.server";
-import { getReceipts } from "../lib/ab-testing.server";
+import { getReceipts, listExperiments } from "../lib/ab-testing.server";
 
 const RANGE_DAYS = 30;
 
@@ -24,8 +24,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!store.slug) {
     return new Response("Store not found", { status: 404 });
   }
-  const to = new Date();
-  const from = new Date(to.getTime() - RANGE_DAYS * 24 * 60 * 60 * 1000);
+  // Mirror the Proof page's window resolution exactly: ?experiment=<id> pins a
+  // past test, otherwise the latest test's window, otherwise the rolling 30
+  // days — so the CSV always reconciles with the table on screen.
+  const url = new URL(request.url);
+  const requestedExperimentId = url.searchParams.get("experiment");
+  const experiments = await listExperiments(store.slug);
+  const experiment =
+    (requestedExperimentId && experiments.find((e) => e.id === requestedExperimentId)) ||
+    experiments[0] ||
+    null;
+  const to = experiment?.endedAt ? new Date(experiment.endedAt) : new Date();
+  const from = experiment
+    ? new Date(experiment.startedAt)
+    : new Date(to.getTime() - RANGE_DAYS * 24 * 60 * 60 * 1000);
   const receipts = await getReceipts(store.slug, from, to, 500);
 
   const header = [

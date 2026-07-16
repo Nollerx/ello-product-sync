@@ -125,7 +125,7 @@
     data-ello-fitting-room="{{ block.id }}"
     aria-label="{{ block.settings.label | default: 'Fitting room' | escape }}"
     style="
-      display:inline-flex; align-items:center; gap:8px;
+      display:none; align-items:center; gap:8px;
       background:transparent; border:none; box-shadow:none; margin:0; padding:6px 8px;
       -webkit-appearance:none; appearance:none;
       font:inherit; {% if block.settings.font_size %}font-size:{{ block.settings.font_size }}px;{% endif %}
@@ -181,30 +181,48 @@
       });
     }
 
-    // ── Dashboard kill switch ──────────────────────────────────────────────
-    // The merchant can turn the whole Fitting Room hub off from the Widget
-    // Design page without removing this block from their theme. Hide the entry
-    // when it's disabled. Mirrors the inline button's enforcement.
+    // ── Dashboard kill switch + A/B holdout gate ───────────────────────────
+    // The button renders display:none and is REVEALED once we know it may be
+    // shown, never hidden after the fact — a holdout shopper (or a store with
+    // the hub disabled) must not see it flash on every pageview while config
+    // loads. Reveal restores inline-flex explicitly (removeProperty would drop
+    // the button's own layout display along with the 'none').
     function applyKillSwitch(enabled) {
       var btn = document.querySelector('[data-ello-fitting-room="' + BLOCK_ID + '"]');
       if (!btn) return;
       if (enabled === false) {
         btn.style.setProperty('display', 'none', 'important');
-      } else if (btn.style.getPropertyValue('display') === 'none') {
-        btn.style.removeProperty('display');
+      } else {
+        btn.style.setProperty('display', 'inline-flex');
       }
     }
-    // Synchronous fast-path from the loader's cached config row (snake_case keys),
-    // so a disabled hub never flashes in for repeat visitors.
+    // Synchronous fast-path from the loader's cached RAW config row (snake_case
+    // keys) — repeat visitors on stores with NO experiment running get the
+    // button before the loader boots. While an experiment is enabled the arm
+    // isn't knowable here (the cached row is pre-holdout by design), so the
+    // button stays hidden until the loader's post-holdout event below — unless
+    // the loader already ran on this page (SPA soft nav) and decided the arm.
     try {
-      var __frRaw = window.localStorage.getItem('ello_config_' + SHOP_DOMAIN);
-      if (__frRaw) {
-        var __frCfg = JSON.parse(__frRaw);
-        if (__frCfg && __frCfg.config) applyKillSwitch(__frCfg.config.fitting_room_enabled !== false);
+      var __frAb = window.__elloAbState;
+      if (__frAb && __frAb.active && __frAb.variant === 'holdout') {
+        // Holdout: stays hidden. (The loader's hub-hide sweep also covers us.)
+      } else {
+        var __frRaw = window.localStorage.getItem('ello_config_' + SHOP_DOMAIN);
+        if (__frRaw) {
+          var __frCfg = JSON.parse(__frRaw);
+          if (__frCfg && __frCfg.config) {
+            var __frExperiment = __frCfg.config.ab_experiment_enabled === true;
+            var __frDecidedExposed = __frAb && __frAb.active && __frAb.variant === 'exposed';
+            if (!__frExperiment || __frDecidedExposed) {
+              applyKillSwitch(__frCfg.config.fitting_room_enabled !== false);
+            }
+          }
+        }
       }
     } catch (e) { /* private mode — fall through to the event path below */ }
     // Authoritative: the loader fires ello:config-resolved once config lands
-    // (camelCase), and ELLO_STORE_CONFIG may already be set on a warm load.
+    // (camelCase, AFTER the holdout gate forced fittingRoomEnabled off for the
+    // holdout arm), and ELLO_STORE_CONFIG may already be set on a warm load.
     window.addEventListener('ello:config-resolved', function (ev) {
       if (ev && ev.detail) applyKillSwitch(ev.detail.fittingRoomEnabled !== false);
     });
