@@ -5980,6 +5980,13 @@ function elloProductBucket(item) {
 // Returns a ranked (curation-order) array of try-on-able, GID-resolvable,
 // in-stock items in sampleClothing shape. Async + non-blocking: callers prefetch
 // it during the first try-on's generation and must tolerate [].
+// Per-page-session memo for the curated lookup, keyed by product id + limit.
+// Values are PROMISES so concurrent callers share one in-flight request rather
+// than racing duplicates. A merchant flipping pairings mid-test can drop it
+// without a reload via window.__elloCtlResetCache().
+var __elloCtlSourceCache = Object.create(null);
+window.__elloCtlResetCache = function () { __elloCtlSourceCache = Object.create(null); };
+
 async function elloPickComplementary(garmentA, limit) {
     limit = limit || 10;
     var aId = garmentA && (garmentA.shopify_product_id || garmentA.shopify_product_gid || garmentA.id);
@@ -6014,11 +6021,34 @@ async function elloPickComplementary(garmentA, limit) {
         if (pinned.length) return pinned;
     }
 
-    // 1) Merchant-curated complementary (Search & Discovery). The only source on
-    //    a real install — a hand-picked pairing is on-brand and intended.
+    // 1) Merchant-curated complementary (Search & Discovery), resolved through
+    //    the source cascade below and memoized for the rest of the session.
+    var cacheKey = numericA + '|' + limit;
+    if (__elloCtlSourceCache[cacheKey]) return __elloCtlSourceCache[cacheKey];
+    var resolution = elloResolveComplementary(base, garmentA, numericA, limit);
+    __elloCtlSourceCache[cacheKey] = resolution;
+    return resolution;
+}
+
+// Source cascade behind elloPickComplementary's memo. Ordered most- to
+// least-authoritative; each step runs only when the one above came up empty.
+async function elloResolveComplementary(base, garmentA, numericA, limit) {
+    // 1) Storefront API — the merchant's curation with no derived index in the
+    //    path (see elloStorefrontComplementary for why that matters).
+    if (/^\d+$/.test(numericA)) {
+        var sf = await elloStorefrontComplementary(numericA, limit);
+        // Items found, or the product resolved and genuinely carries no
+        // curation — both are real answers. Only an unreachable source falls
+        // through to the endpoint below.
+        if (sf && (sf.items.length || sf.authoritative)) return sf.items;
+    }
+
+    // 2) AJAX recommendations (the Online Store's index). Still the right
+    //    fallback: it needs no token, so it covers a store whose storefront
+    //    token never got provisioned.
     var out = await elloFetchRecommendations(base, 'complementary', numericA, limit);
 
-    // 2) DEMO-ONLY graceful fallback. A prospect store has no curated pairings,
+    // 3) DEMO-ONLY graceful fallback. A prospect store has no curated pairings,
     //    so complementary returns [] and Complete the Look would never render in a
     //    demo. Instead of grabbing "related" items (which are almost always the SAME
     //    kind — a shirt next to another shirt, which never reads as an outfit), we
@@ -6070,6 +6100,178 @@ function elloFilterRecProducts(products, excludeNumericId) {
         out.push(item);
     }
     return out;
+}
+
+// ─── Complete the Look: Storefront API source (primary) ─────────────────────
+// Why this exists: /recommendations/products.json reads the Online Store's
+// DERIVED index. That index can lag the merchant's real curation by hours, and
+// for a freshly-created product may never have been built at all — so a
+// merchant sets a pairing in Search & Discovery, sees it in their own admin,
+// and the rail silently never renders. Observed on ello-dev-store: the AJAX
+// endpoint returned [] for a product whose complementary metafield was set
+// correctly, while the Storefront API returned the pairing for the same id.
+//
+// The Storefront API reads that curation without the index in the way, and is
+// the only source that works on headless hosts (Hydrogen / Ello Anywhere),
+// where the Online-Store JSON routes 404 outright.
+//
+// ONE round trip asks two questions:
+//   recs      — productRecommendations(COMPLEMENTARY): Shopify has already
+//               filtered these to published, buyable products. Preferred.
+//   metafield — the merchant's literal saved list, the source of truth BOTH
+//               recommendation indexes are derived from. Costs a second call
+//               to resolve into products, but only in the case that would
+//               otherwise render nothing at all.
+//
+// Returns null when the source is unreachable (no token, network/GraphQL
+// failure) so the caller falls back; { items, authoritative } otherwise.
+var ELLO_CTL_TIMEOUT_MS = 3500;
+var ELLO_CTL_MAX_METAFIELD_IDS = 25;
+
+var ELLO_CTL_PRODUCT_FRAGMENT =
+    'fragment CtlProduct on Product {' +
+    ' id handle title productType tags availableForSale' +
+    ' featuredImage { url }' +
+    ' variants(first: 100) { nodes { id title availableForSale price { amount } } }' +
+    '}';
+
+var ELLO_CTL_QUERY = ELLO_CTL_PRODUCT_FRAGMENT +
+    ' query ElloCtl($id: ID!) {' +
+    '  recs: productRecommendations(productId: $id, intent: COMPLEMENTARY) { ...CtlProduct }' +
+    '  product(id: $id) {' +
+    '    metafield(namespace: "shopify--discovery--product_recommendation", key: "complementary_products") { value }' +
+    '  }' +
+    '}';
+
+var ELLO_CTL_NODES_QUERY = ELLO_CTL_PRODUCT_FRAGMENT +
+    ' query ElloCtlNodes($ids: [ID!]!) { nodes(ids: $ids) { ... on Product { ...CtlProduct } } }';
+
+async function elloStorefrontComplementary(numericA, limit) {
+    var data = await elloCtlStorefrontQuery(ELLO_CTL_QUERY, { id: 'gid://shopify/Product/' + numericA });
+    if (!data) return null;
+
+    var items = elloCtlShapeAndFilter(data.recs, numericA, limit);
+    if (items.length) return { items: items, authoritative: true };
+
+    // The index had nothing. Resolve the merchant's saved list directly, so a
+    // stale index can no longer suppress a pairing they can see in their admin.
+    var ids = elloCtlParseMetafieldGids(data.product && data.product.metafield && data.product.metafield.value);
+    if (ids.length) {
+        var byId = await elloCtlStorefrontQuery(ELLO_CTL_NODES_QUERY, { ids: ids.slice(0, ELLO_CTL_MAX_METAFIELD_IDS) });
+        if (byId) {
+            var resolved = elloCtlShapeAndFilter(byId.nodes, numericA, limit);
+            if (resolved.length) return { items: resolved, authoritative: true };
+        }
+    }
+    // "No curation" is only a real answer when this source could actually see
+    // the product; a null product means it can't, and AJAX deserves its turn.
+    return { items: [], authoritative: !!data.product };
+}
+
+// Same normalization loadClothingFromShopify uses, so both Storefront callers
+// agree on the endpoint for a given store.
+function elloCtlStorefrontEndpoint() {
+    var c = window.ELLO_STORE_CONFIG || {};
+    var token = c.storefrontToken;
+    if (!token || typeof token !== 'string') return null;
+    var domain = c.shopDomain || c.storeName || '';
+    if (!domain || typeof domain !== 'string') return null;
+    if (domain.indexOf('.') === -1) domain = domain + '.myshopify.com';
+    else if (domain.indexOf('myshopify.com') === -1) domain = domain.replace(/\.(com|net|org)$/, '') + '.myshopify.com';
+    return { url: 'https://' + domain + '/api/2024-01/graphql.json', token: token };
+}
+
+// Aborts rather than hanging: the rail is best-effort and must never hold the
+// result view. Any failure returns null so the caller falls back to AJAX.
+async function elloCtlStorefrontQuery(query, variables) {
+    var ep = elloCtlStorefrontEndpoint();
+    if (!ep) return null;
+    var ctrl = null, timer = null;
+    try { ctrl = new AbortController(); } catch (e) { ctrl = null; }
+    if (ctrl) timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, ELLO_CTL_TIMEOUT_MS);
+    try {
+        var res = await fetch(ep.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Shopify-Storefront-Access-Token': ep.token },
+            body: JSON.stringify({ query: query, variables: variables || {} }),
+            signal: ctrl ? ctrl.signal : undefined
+        });
+        if (!res.ok) return null;
+        var json = await res.json();
+        return (json && json.data) || null;
+    } catch (e) {
+        return null;
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+function elloCtlShapeAndFilter(nodes, numericA, limit) {
+    if (!Array.isArray(nodes)) return [];
+    var shaped = [];
+    for (var i = 0; i < nodes.length; i++) {
+        var s = elloCtlNodeToAjaxShape(nodes[i]);
+        if (s) shaped.push(s);
+    }
+    // Reuses the curated path's gates verbatim — in stock, GID-resolvable,
+    // layer-able clothing, not the tried-on item — so both sources are held to
+    // exactly one standard.
+    return elloFilterRecProducts(shaped, numericA).slice(0, limit);
+}
+
+// Storefront GraphQL product → the AJAX products.json shape elloMapRecToItem
+// already understands. The one real difference: Storefront prices are dollar
+// STRINGS, AJAX prices are integer CENTS.
+function elloCtlNodeToAjaxShape(n) {
+    if (!n || !n.handle) return null;
+    var numericId = String(n.id || '').split('/').pop();
+    if (!/^\d+$/.test(numericId)) return null;
+    var raw = (n.variants && n.variants.nodes) || [];
+    var variants = [];
+    for (var i = 0; i < raw.length; i++) {
+        var v = raw[i];
+        if (!v) continue;
+        var vid = String(v.id || '').split('/').pop();
+        variants.push({
+            id: /^\d+$/.test(vid) ? Number(vid) : vid,
+            title: v.title,
+            price: elloCtlDollarsToCents(v.price && v.price.amount),
+            available: v.availableForSale !== false
+        });
+    }
+    var img = (n.featuredImage && n.featuredImage.url) || '';
+    // Server /tryon fetches the garment image, so a protocol-relative URL must
+    // carry a scheme (mirrors elloDemoPinnedComplementary).
+    if (img.indexOf('//') === 0) img = 'https:' + img;
+    return {
+        id: numericId,
+        handle: n.handle,
+        title: n.title,
+        type: n.productType || '',
+        tags: Array.isArray(n.tags) ? n.tags : [],
+        available: n.availableForSale !== false,
+        featured_image: img,
+        price: variants.length ? variants[0].price : 0,
+        variants: variants
+    };
+}
+
+function elloCtlDollarsToCents(amount) {
+    var f = parseFloat(amount);
+    return isNaN(f) ? 0 : Math.round(f * 100);
+}
+
+function elloCtlParseMetafieldGids(value) {
+    if (!value || typeof value !== 'string') return [];
+    try {
+        var arr = JSON.parse(value);
+        if (!Array.isArray(arr)) return [];
+        var out = [];
+        for (var i = 0; i < arr.length; i++) {
+            if (typeof arr[i] === 'string' && arr[i].indexOf('gid://shopify/Product/') === 0) out.push(arr[i]);
+        }
+        return out;
+    } catch (e) { return []; }
 }
 
 // DEMO-ONLY: resolve the current PDP product's numeric Shopify id from live page
