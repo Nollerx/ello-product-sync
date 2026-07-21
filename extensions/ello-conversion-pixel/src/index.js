@@ -22,6 +22,21 @@ register(({ analytics, browser, settings }) => {
     }
   }
 
+  // The widget loader mints the ello_session_id cookie the moment its script
+  // parses, but Shopify can deliver the first events of a brand-new session
+  // before that script has run. Dropping those events on a missing cookie
+  // silently erased the FIRST product view of every fresh session — the
+  // biggest single hole in the funnel data. Instead, wait briefly for the
+  // cookie to appear: checks at 0s / 0.5s / 1.5s / 3s, then give up.
+  async function getSessionIdWithRetry() {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const sid = await getSessionId();
+      if (sid) return sid;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+    return getSessionId();
+  }
+
   function send(payload) {
     browser.sendBeacon(BACKEND, JSON.stringify(payload));
   }
@@ -29,7 +44,7 @@ register(({ analytics, browser, settings }) => {
   // Track product page views — intent signal after a try-on.
   // Deduplicated server-side: only the first view per session+product is stored.
   analytics.subscribe("product_viewed", async (event) => {
-    const sessionId = await getSessionId();
+    const sessionId = await getSessionIdWithRetry();
     if (!sessionId || !storeSlug) return;
 
     const product = event.data?.productVariant;
@@ -44,7 +59,7 @@ register(({ analytics, browser, settings }) => {
 
   // Track any add-to-cart anywhere on the site (not just inside the widget).
   analytics.subscribe("product_added_to_cart", async (event) => {
-    const sessionId = await getSessionId();
+    const sessionId = await getSessionIdWithRetry();
     if (!sessionId || !storeSlug) return;
 
     const item = event.data?.cartLine;

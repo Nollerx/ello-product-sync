@@ -104,6 +104,10 @@ export async function action({ request }: ActionFunctionArgs) {
           p_variant: variant,
           p_bucket: bucket,
           p_page_type: (body.page_type as string) ?? null,
+          // Strict === true: saw_pdp only ever upgrades false→true on the
+          // exposure row, so a malformed value must coerce to false, never
+          // truthy-sneak a product-page stamp onto a session that had none.
+          p_saw_pdp: body.saw_pdp === true,
         },
       );
       if (abError) {

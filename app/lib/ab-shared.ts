@@ -20,6 +20,16 @@ export interface AbVariantStats {
   orders: number;
   revenue: number;
   conversionPct: number | null;
+  /**
+   * Product-page cut: same arm, restricted to sessions that viewed at least
+   * one product page (saw_pdp stamp). Diagnostic view only — the site-wide
+   * numbers above are the causal readout, because reaching a product page is
+   * itself behavior the widget can influence. Zero until the saw_pdp loader
+   * ships; sessions from before then are never counted here.
+   */
+  pdpSessions: number;
+  pdpPurchaseSessions: number;
+  pdpConversionPct: number | null;
 }
 
 export interface AbResults {
@@ -33,6 +43,8 @@ export interface AbResults {
   incrementalRevenue: number | null;
   /** True once both arms clear the minimum sample bar for showing verdicts. */
   hasMinimumSample: boolean;
+  /** Relative lift on the product-page cut (diagnostic — no verdict attached). */
+  pdpRelativeLift: number | null;
 }
 
 export interface ReceiptRow {

@@ -335,7 +335,10 @@
     window.ELLO_INLINE_CTX.variantId = String(v.id);
     var src = (v.featured_image && (v.featured_image.src || v.featured_image)) ||
               (v.featured_media && v.featured_media.preview_image && v.featured_media.preview_image.src) || null;
-    if (src) window.__ELLO_DEMO_VARIANT_IMG__ = src;
+    // Always overwrite — colors WITHOUT their own variant image (HAUS Smoke
+    // Green) must CLEAR a previous color's image, or the widget would show the
+    // stale color. null = "selected variant has no image of its own".
+    window.__ELLO_DEMO_VARIANT_IMG__ = src || null;
   }
   var __demoVarBusy = false;
   function syncDemoVariant() {

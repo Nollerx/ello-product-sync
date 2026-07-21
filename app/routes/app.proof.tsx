@@ -367,11 +367,20 @@ function ArmPanel({
 }: {
   label: string;
   hint: string;
-  stats: { sessions: number; purchaseSessions: number; revenue: number; conversionPct: number | null };
+  stats: {
+    sessions: number;
+    purchaseSessions: number;
+    revenue: number;
+    conversionPct: number | null;
+    pdpSessions?: number;
+    pdpPurchaseSessions?: number;
+    pdpConversionPct?: number | null;
+  };
   accent?: boolean;
   currency: string | null;
 }) {
   const cr = stats.conversionPct != null ? `${Number(stats.conversionPct).toFixed(1)}%` : "—";
+  const pdpSessions = stats.pdpSessions ?? 0;
   return (
     <div
       style={{
@@ -404,6 +413,14 @@ function ArmPanel({
           <strong style={{ color: brand.ink }}>{stats.purchaseSessions.toLocaleString()}</strong> bought ·{" "}
           <strong style={{ color: brand.ink }}>{money(stats.revenue, currency)}</strong> revenue
         </div>
+        {pdpSessions > 0 && (
+          <div style={{ fontSize: 13, color: brand.ink600 }}>
+            On product pages:{" "}
+            <strong style={{ color: brand.ink }}>{(stats.pdpPurchaseSessions ?? 0).toLocaleString()}</strong> of{" "}
+            <strong style={{ color: brand.ink }}>{pdpSessions.toLocaleString()}</strong> bought
+            {stats.pdpConversionPct != null ? ` (${Number(stats.pdpConversionPct).toFixed(1)}%)` : ""}
+          </div>
+        )}
         <Text as="span" variant="bodySm" tone="subdued">
           {hint}
         </Text>
@@ -984,6 +1001,14 @@ export default function ProofPage() {
                         accent
                       />
                     </InlineGrid>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      How to read this: both groups count every store visitor from their very first
+                      page — the same rule on both sides — so these percentages sit well below the
+                      product-page conversion rate in your Shopify analytics. That&apos;s expected, not a
+                      problem. The &ldquo;on product pages&rdquo; line inside each card compares only shoppers
+                      who opened a product page; the verdict below is always computed on the full
+                      randomized groups, so nothing is filtered out of the actual test.
+                    </Text>
                     {results.hasMinimumSample ? (
                       <LiftHero
                         value={liftPct}

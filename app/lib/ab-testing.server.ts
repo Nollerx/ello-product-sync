@@ -189,6 +189,9 @@ export async function getExperimentResults(
     orders: 0,
     revenue: 0,
     conversionPct: null,
+    pdpSessions: 0,
+    pdpPurchaseSessions: 0,
+    pdpConversionPct: null,
   };
   const byVariant: Record<string, AbVariantStats> = {};
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -199,6 +202,9 @@ export async function getExperimentResults(
       orders: Number(row.orders ?? 0),
       revenue: Number(row.revenue ?? 0),
       conversionPct: row.conversion_pct == null ? null : Number(row.conversion_pct),
+      pdpSessions: Number(row.pdp_sessions ?? 0),
+      pdpPurchaseSessions: Number(row.pdp_purchase_sessions ?? 0),
+      pdpConversionPct: row.pdp_conversion_pct == null ? null : Number(row.pdp_conversion_pct),
     };
   }
   const exposed = byVariant.exposed ?? empty;
@@ -225,7 +231,13 @@ export async function getExperimentResults(
     holdout.sessions >= AB_MIN_SESSIONS_PER_ARM &&
     exposed.purchaseSessions + holdout.purchaseSessions >= AB_MIN_TOTAL_CONVERTERS;
 
-  return { exposed, holdout, relativeLift, confidence, incrementalRevenue, hasMinimumSample };
+  // Product-page cut lift — diagnostic only (see AbVariantStats.pdpSessions).
+  const pdpCrE = exposed.pdpSessions > 0 ? exposed.pdpPurchaseSessions / exposed.pdpSessions : null;
+  const pdpCrH = holdout.pdpSessions > 0 ? holdout.pdpPurchaseSessions / holdout.pdpSessions : null;
+  const pdpRelativeLift =
+    pdpCrE != null && pdpCrH != null && pdpCrH > 0 ? (pdpCrE - pdpCrH) / pdpCrH : null;
+
+  return { exposed, holdout, relativeLift, confidence, incrementalRevenue, hasMinimumSample, pdpRelativeLift };
 }
 
 // ─── Receipts ledger ────────────────────────────────────────────────────────
