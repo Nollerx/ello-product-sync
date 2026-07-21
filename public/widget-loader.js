@@ -271,7 +271,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.8.8';
+    const WIDGET_VERSION = '2.8.9';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
