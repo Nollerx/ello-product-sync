@@ -1979,6 +1979,17 @@ function elloProductFromJsonLd(handle) {
 function detectCurrentProduct() {
     let product = null;
 
+    // Method 0: explicit handle from the opener (Ello Anywhere buttons, inline
+    // buttons on non-PDP surfaces). URL/DOM sniffing can't work on single-page
+    // or non-Shopify host sites, so a handle passed by the clicked control wins.
+    // Set only for the duration of an open (closeWidget clears ELLO_INLINE_CTX);
+    // on a Shopify PDP it resolves to the same product Method 1 would find.
+    const ctxHandle = window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.productHandle;
+    if (ctxHandle) {
+        const ctxHit = sampleClothing.find(item => item.id === ctxHandle || item.handle === ctxHandle);
+        if (ctxHit) return ctxHit;
+    }
+
     // Method 1: Check URL for product handle (most reliable)
     const urlPath = window.location.pathname;
     const productHandle = getProductIdFromUrl(urlPath);
@@ -4234,6 +4245,10 @@ async function populateFeaturedAndQuickPicks() {
     if (currentFeaturedItem) {
         selectFeaturedClothing();
     }
+
+    // Multi-color PDPs: repaint the previews with the SELECTED variant's image
+    // (the catalog/og:image is the featured color, not the one on screen).
+    elloColorCorrectPreviewCards();
 }
 
 // Helper function to get variety-based featured item
@@ -4318,6 +4333,10 @@ function selectFeaturedClothing() {
     updateSelectedClothingPreview(null);
 
     updateTryOnButton();
+
+    // Re-selecting the PDP product resets image_url to the catalog color above;
+    // repaint back to the SELECTED variant's image (cached, async, no-op otherwise).
+    elloColorCorrectPreviewCards();
 }
 
 function updateSelectedClothingPreview(clothingId) {
@@ -4404,6 +4423,10 @@ function selectClothing(clothingId) {
     updateSelectedClothingPreview(null);
 
     updateTryOnButton();
+
+    // If the picked item IS the current PDP product, keep its preview on the
+    // SELECTED variant's color (no-op for any other garment).
+    elloColorCorrectPreviewCards();
 }
 
 function resetSelection() {
@@ -6255,7 +6278,13 @@ async function elloDemoPinnedComplementary(base, garmentA) {
             if (hit && (hit.shopify_product_gid || hit.shopify_product_id)) return [hit];
         }
         var res = await fetch(base + 'products/' + encodeURIComponent(handle) + '.js', { headers: { 'Accept': 'application/json' } });
-        if (!res.ok) return [];
+        if (!res.ok) {
+            // Headless prospect (Cuts, Spanx): the Online-Store /products/<handle>.js
+            // route doesn't exist (404s) even though the PDP renders fine. Build the
+            // offer from the pinned product's own PDP HTML instead — same-origin
+            // fetch + its schema.org Product JSON-LD.
+            return await elloDemoPinnedFromPdpHtml(base, handle);
+        }
         var p = await res.json();
         if (!p || !p.handle) return [];
         var available = (p.available !== false) &&
@@ -6269,6 +6298,78 @@ async function elloDemoPinnedComplementary(base, garmentA) {
         if (item.image_url && item.image_url.indexOf('//') === 0) item.image_url = 'https:' + item.image_url;
         if (!(item.shopify_product_gid || item.shopify_product_id)) return [];
         return [item];
+    } catch (e) {
+        return []; // never break the try-on over a pin
+    }
+}
+
+// DEMO-ONLY: resolve a pinned pairing on a HEADLESS prospect store by parsing
+// the pinned product's PDP HTML for its schema.org Product/ProductGroup
+// JSON-LD (name, image, price, availability; variant ids live in the offer
+// URLs). Headless LD carries no numeric product id — that gate is attribution-
+// only, which is demo noise, so an LD-built offer deliberately skips it. Never
+// runs for a real shopper (only reachable from elloDemoPinnedComplementary).
+async function elloDemoPinnedFromPdpHtml(base, handle) {
+    try {
+        var res = await fetch(base + 'products/' + encodeURIComponent(handle), { headers: { 'Accept': 'text/html' } });
+        if (!res.ok) return [];
+        var doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+        var nodes = doc.querySelectorAll('script[type="application/ld+json"]');
+        var prod = null;
+        for (var i = 0; i < nodes.length && !prod; i++) {
+            var d; try { d = JSON.parse(nodes[i].textContent || 'null'); } catch (e) { continue; }
+            var list = Array.isArray(d) ? d : (d && Array.isArray(d['@graph']) ? d['@graph'] : [d]);
+            for (var k = 0; k < list.length; k++) {
+                var n = list[k]; if (!n || typeof n !== 'object') continue;
+                var ty = n['@type'];
+                var types = Array.isArray(ty) ? ty : [ty];
+                if (types.indexOf('Product') !== -1 || types.indexOf('ProductGroup') !== -1) { prod = n; break; }
+            }
+        }
+        if (!prod || !prod.name) return [];
+        var img = prod.image;
+        if (Array.isArray(img)) img = img[0];
+        if (img && typeof img === 'object') img = img.url || img.contentUrl || '';
+        if (!img || typeof img !== 'string') return [];
+        // Offers: Product.offers, or flattened from ProductGroup.hasVariant.
+        var offers = prod.offers ||
+            (Array.isArray(prod.hasVariant) ? prod.hasVariant.map(function (v) { return v && v.offers; }) : []);
+        offers = (Array.isArray(offers) ? offers : [offers]).reduce(function (out, o) {
+            return out.concat(Array.isArray(o) ? o : (o ? [o] : []));
+        }, []);
+        var price = 0, variants = [], anyStock = false, sawAvail = false;
+        offers.forEach(function (o) {
+            if (!o || typeof o !== 'object') return;
+            if (!price && o.price != null && !isNaN(Number(o.price))) price = Number(o.price);
+            var ok = !o.availability || /InStock|LimitedAvailability|PreOrder|BackOrder/i.test(String(o.availability));
+            if (o.availability) sawAvail = true;
+            if (ok) anyStock = true;
+            var m = String(o.url || '').match(/[?&]variant=(\d+)/);
+            if (m) variants.push({
+                id: m[1],
+                shopify_variant_gid: 'gid://shopify/ProductVariant/' + m[1],
+                title: String(o.sku || ''),
+                price: (Number(o.price) || price || 0).toFixed(2),
+                size: '',
+                available: ok
+            });
+        });
+        if (sawAvail && !anyStock) return []; // pinned an all-sold-out product
+        return [{
+            id: handle,
+            handle: handle,
+            name: String(prod.name),
+            price: price,
+            category: 'clothing',
+            tags: [],
+            color: '',
+            image_url: img.indexOf('//') === 0 ? 'https:' + img : img,
+            product_url: '/products/' + handle,
+            shopify_product_id: null,
+            shopify_product_gid: null,
+            data_source: 'demo_pdp_jsonld',
+            variants: variants
+        }];
     } catch (e) {
         return []; // never break the try-on over a pin
     }
@@ -6519,6 +6620,9 @@ var __elloCtlA = {
 // The "Try on" chip layers the item onto the current result (same re-base
 // mechanic as addToOutfit), then the rail morphs to "Add both to cart".
 async function elloRenderCompleteTheLook(garmentA) {
+    // Ello Anywhere embeds have no Shopify AJAX cart for the rail's multi-line
+    // adds — suppress the upsell rail entirely on non-Shopify host pages.
+    if (window.ELLO_NO_SHOPIFY_CART) return;
     try {
         if (!elloCompleteTheLookOn()) return;
         var resultSection = document.getElementById('resultSection');
@@ -8116,6 +8220,9 @@ function setupInlineModeProductPreview(currentProduct) {
 
     // Stash for the result-stage CTAs (Add-to-Cart button price label etc.)
     window.ELLO_INLINE_PRODUCT_NAME = productName;
+
+    // Multi-color PDPs: swap the preview to the SELECTED variant's image.
+    elloColorCorrectPreviewCards();
 }
 
 // ─── PDP image-swap (hub mode) ──────────────────────────────────────────────
@@ -8326,7 +8433,13 @@ async function elloApplyColorCorrectGarment() {
         var src = (v.featured_image && v.featured_image.src)
             || (v.featured_media && v.featured_media.preview_image && v.featured_media.preview_image.src)
             || null;
+        // Stash the pre-correction image so a variant WITHOUT its own image
+        // (HAUS Smoke Green) restores it instead of keeping a previously
+        // corrected color's image — the garment sent to the AI must never be a
+        // color the shopper switched AWAY from.
+        if (garment.__elloBaseImg == null) garment.__elloBaseImg = garment.image_url || null;
         if (src) garment.image_url = elloAbsImageUrl(src);
+        else if (garment.__elloBaseImg) garment.image_url = garment.__elloBaseImg;
     } catch (e) { /* keep the catalog image on any failure */ }
 }
 
@@ -8361,6 +8474,85 @@ function elloResolveSelectedVariantImage() {
         if (!src) return null;
         return { src: elloAbsImageUrl(src), color: variant.option1 || null, variantId: variant.id };
     }).catch(function () { return null; });
+}
+
+// ─── Selected-variant preview cards ─────────────────────────────────────────
+// The catalog/og:image carries the product's FEATURED color, so on a
+// multi-color PDP the widget's preview surfaces (featured "This Item" card,
+// inline workspace thumb, loading card) can show a different color than the
+// one on screen (HAUS 2026-07-18: Light Blue selected, green preview). The
+// RENDER was already color-correct — elloApplyColorCorrectGarment runs at
+// try-on start — this closes the trust gap by repainting the previews with the
+// SELECTED variant's image as soon as it resolves. Strict on purpose: only
+// repaints when an explicit selection signal maps to a known variant with its
+// own image — guessing (first-available) could repaint to a color the shopper
+// did NOT pick, which is worse than showing the featured color.
+function elloSelectedVariantPreviewSrc() {
+    var handle = (typeof getProductIdFromUrl === 'function') ? getProductIdFromUrl(window.location.pathname) : null;
+    if (!handle) return Promise.resolve(null);
+    return elloFetchProductJson(handle).then(function (json) {
+        var vid = null;
+        if (window.__ELLO_DEMO__ === true && window.__ELLO_DEMO_VARIANT_ID__) vid = String(window.__ELLO_DEMO_VARIANT_ID__);
+        if (!vid) { try { vid = new URLSearchParams(window.location.search).get('variant'); } catch (e) { /* no URL signal */ } }
+        if (!vid) {
+            try {
+                var vIn = document.querySelector('form[action*="/cart/add"] [name="id"]');
+                if (vIn && vIn.value && /^\d+$/.test(String(vIn.value))) vid = vIn.value;
+            } catch (e) { /* no form signal */ }
+        }
+        if (!vid) vid = window.ELLO_PRESELECTED_VARIANT_ID
+            || (window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.variantId) || null;
+        var v = null;
+        if (vid && json && Array.isArray(json.variants)) {
+            var want = String(vid).replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+            v = json.variants.find(function (x) { return String(x.id) === want; });
+        }
+        if (!v) {
+            // The demo engine resolves the on-screen color even when its id
+            // keying differs from ours (JSON-LD sku keys) — trust its image.
+            if (window.__ELLO_DEMO__ === true && window.__ELLO_DEMO_VARIANT_IMG__) {
+                return { src: elloAbsImageUrl(String(window.__ELLO_DEMO_VARIANT_IMG__)) };
+            }
+            return null; // no selection signal resolved — leave previews alone
+        }
+        var src = (v.featured_image && v.featured_image.src)
+            || (v.featured_media && v.featured_media.preview_image && v.featured_media.preview_image.src)
+            || null;
+        // {src:null} = variant matched but has NO image of its own (HAUS Smoke
+        // Green): the caller restores the product-level image, exactly like the
+        // theme's own gallery does for imageless variants.
+        return { src: src ? elloAbsImageUrl(src) : null };
+    }).catch(function () { return null; });
+}
+
+// Repaint the preview surfaces + the selected garment with the on-screen
+// variant's image. Safe to call from anywhere, any number of times: no-ops
+// unless the selected garment IS the current PDP product (same guard as
+// elloApplyColorCorrectGarment), the product json fetch is cached per handle,
+// and the guard re-checks after the async resolve in case the shopper picked a
+// different garment meanwhile. The loading overlay needs no repaint of its
+// own — it re-reads elloSelectedGarment.image_url on its 120ms tick.
+function elloColorCorrectPreviewCards() {
+    try {
+        var handle = (typeof getProductIdFromUrl === 'function') ? getProductIdFromUrl(window.location.pathname) : null;
+        var g = window.elloSelectedGarment;
+        if (!handle || !g || g.id !== handle) return;
+        // Stash the pre-correction image (catalog/og — may be a merchant
+        // override) so an imageless variant can restore it later.
+        if (g.__elloBaseImg == null) g.__elloBaseImg = g.image_url || null;
+        elloSelectedVariantPreviewSrc().then(function (r) {
+            var garment = window.elloSelectedGarment;
+            if (!r || !garment || garment.id !== handle) return;
+            var src = r.src || garment.__elloBaseImg;
+            if (!src) return;
+            if (elloImageBaseName(src) === elloImageBaseName(garment.image_url || '')) return;
+            garment.image_url = src;
+            var f = document.querySelector('#featuredItem .featured-image');
+            if (f && f.src !== src) f.src = src;
+            var p = document.getElementById('selectedClothingImage');
+            if (p && p.src !== src) p.src = src;
+        });
+    } catch (e) { /* previews keep the catalog image */ }
 }
 
 function elloEnsurePdpSwapStyles() {
@@ -8409,8 +8601,15 @@ function elloPdpAnchor(imgEl) {
     return wrap;
 }
 // Nearest overflow-hidden ancestor = the box the shopper sees (past any oversized
-// zoom-pan layer). Falls back to null so elloPdpAnchor keeps its old behavior.
+// zoom-pan layer) — but ONLY when that frame CLIPS the img (frame ≤ img box, the
+// Spanx zoom-pan case: img 200% inside a hidden frame). A grid/carousel wrapper
+// (HAUS: scroll-carousel 690x1379 w/ overflow-x hidden around 340x453 tiles) is
+// BIGGER than the img — anchoring there covered the whole gallery with one huge
+// overlay. Frame bigger than img → return null → anchor to the img's own parent.
 function elloPdpVisibleFrame(img) {
+    var ir;
+    try { ir = img.getBoundingClientRect(); } catch (e) { return null; }
+    if (!ir || ir.width < 40 || ir.height < 40) return null;
     var el = img && img.parentElement, hit = null;
     for (var i = 0; i < 6 && el && el !== document.body; i++) {
         try {
@@ -8419,7 +8618,13 @@ function elloPdpVisibleFrame(img) {
         } catch (e) {}
         el = el.parentElement;
     }
-    return hit;
+    if (!hit) return null;
+    try {
+        var fr = hit.getBoundingClientRect();
+        // Clipping frame: no bigger than the img in BOTH dimensions (5% slack).
+        if (fr.width <= ir.width * 1.05 + 2 && fr.height <= ir.height * 1.05 + 2) return hit;
+    } catch (e) {}
+    return null;
 }
 
 // Theme galleries fight our hero overlays two ways: (1) a full-cover zoom
@@ -10540,6 +10745,30 @@ async function addToCartFromTryOn() {
         // Normalize: strip GID prefix if present — /cart/add.js wants the number.
         const numericId = String(variantId).replace(/^gid:\/\/shopify\/ProductVariant\//, '');
 
+        // Host-page cart hook (Ello Anywhere): non-Shopify sites have no
+        // /cart/add.js, so the embedding page supplies its own add-to-cart via
+        // window.ELLO_CART_HOOK and we hand it the resolved variant. Analytics
+        // and the success state stay identical to the Shopify path.
+        if (typeof window.ELLO_CART_HOOK === 'function') {
+            const g = window.elloSelectedGarment || garment || null;
+            await window.ELLO_CART_HOOK({
+                variantId: numericId,
+                productId: (window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.productId) || (g && (g.shopify_product_gid || g.shopify_product_id)) || null,
+                productHandle: (window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.productHandle) || (g && g.id) || null,
+                title: (g && (g.name || g.title)) || null,
+                quantity: 1
+            });
+            try {
+                trackEvent && trackEvent('inline_add_to_cart', {
+                    variant_id: numericId,
+                    product_id: window.ELLO_INLINE_CTX && window.ELLO_INLINE_CTX.productId
+                });
+            } catch (e) { /* analytics is non-critical */ }
+            try { if (g) trackCartEvent(g, { id: numericId }, 1); } catch (e) { /* non-critical */ }
+            showCartSuccessState();
+            return;
+        }
+
         const res = await fetch('/cart/add.js', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -10590,6 +10819,13 @@ function showCartSuccessState() {
     const resultSection = document.getElementById('resultSection');
     if (!resultSection) return;
 
+    // On Anywhere host pages "/cart" is not Shopify's cart — the host page owns
+    // cart UX (its drawer opens via the ELLO_CART_HOOK), so skip the button.
+    const viewCartBtn = window.ELLO_NO_SHOPIFY_CART ? '' : `
+        <button class="ello-inline-btn ello-inline-btn-primary" id="ello-inline-view-cart-btn"
+                style="box-sizing:border-box;width:100%;padding:14px 20px;border:none;border-radius:6px;background:#000;color:#fff;font:inherit;font-weight:var(--ello-fw-600, 600);font-size:15px;cursor:pointer;">
+            View cart
+        </button>`;
     const success = document.createElement('div');
     success.id = 'ello-inline-cart-success';
     success.innerHTML = `
@@ -10597,18 +10833,15 @@ function showCartSuccessState() {
         <button class="ello-inline-btn ello-inline-btn-secondary" id="ello-inline-continue-btn"
                 style="box-sizing:border-box;width:100%;padding:14px 20px;border:1px solid #d1d5db;border-radius:6px;background:transparent;color:#000;font:inherit;font-weight:var(--ello-fw-600, 600);font-size:15px;cursor:pointer;">
             Continue shopping
-        </button>
-        <button class="ello-inline-btn ello-inline-btn-primary" id="ello-inline-view-cart-btn"
-                style="box-sizing:border-box;width:100%;padding:14px 20px;border:none;border-radius:6px;background:#000;color:#fff;font:inherit;font-weight:var(--ello-fw-600, 600);font-size:15px;cursor:pointer;">
-            View cart
-        </button>
+        </button>${viewCartBtn}
     `;
     resultSection.appendChild(success);
 
     document.getElementById('ello-inline-continue-btn').addEventListener('click', function () {
         closeWidget();
     });
-    document.getElementById('ello-inline-view-cart-btn').addEventListener('click', function () {
+    const vcBtn = document.getElementById('ello-inline-view-cart-btn');
+    if (vcBtn) vcBtn.addEventListener('click', function () {
         // Use top-level location so we escape any embedded iframe context.
         try { window.top.location.href = '/cart'; }
         catch (e) { window.location.href = '/cart'; }
@@ -11688,6 +11921,33 @@ async function handleBuyNow(clothingId, tryonResultUrl, tryOnId, buyBtnElement =
 
 // Handle Shopify purchases
 async function handleShopifyPurchase(clothing, variantToAdd, tryonResultUrl, tryOnId) {
+    // Host-page cart hook (Ello Anywhere): delegate the add to the embedding
+    // page's cart instead of Shopify's AJAX cart, then reuse the normal
+    // success notification + analytics.
+    if (typeof window.ELLO_CART_HOOK === 'function') {
+        try {
+            const numericVid = String(variantToAdd.shopify_variant_gid || variantToAdd.id || '')
+                .replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+            await window.ELLO_CART_HOOK({
+                variantId: numericVid || null,
+                productId: clothing.shopify_product_gid || clothing.shopify_product_id || null,
+                productHandle: clothing.handle || clothing.id || null,
+                title: clothing.name || clothing.title || null,
+                quantity: 1
+            });
+            const sizeText = variantToAdd.size || variantToAdd.title || '';
+            showSuccessNotification(
+                'Added to Cart!',
+                `${clothing.name} ${sizeText ? `• Size ${sizeText}` : ''}`
+            );
+            await sendAnalyticsTracking('shopify_add_to_cart', clothing, variantToAdd, tryonResultUrl, tryOnId, null);
+            trackCartEvent(clothing, variantToAdd, 1);
+            return true;
+        } catch (err) {
+            console.error('[Ello] host cart hook failed:', err);
+            return false;
+        }
+    }
     try {
         // Add to Shopify cart
         const cartResponse = await fetch('/cart/add.js', {

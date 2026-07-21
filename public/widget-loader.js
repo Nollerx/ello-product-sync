@@ -232,6 +232,12 @@
         ELLO_DEV_ORIGIN = localStorage.getItem('ello_dev_origin');
     } catch (e) { /* storage unavailable → dev mode simply stays off */ }
 
+    // Ello Anywhere (non-Shopify host pages): a dynamically-injected copy of
+    // this script has NO document.currentScript, so the embedding page may pass
+    // config through a global set before injection (ello-anywhere.js does this).
+    // Static script tags keep winning whenever their data-attributes exist.
+    const AW_CFG = (typeof window.ELLO_ANYWHERE_CONFIG === 'object' && window.ELLO_ANYWHERE_CONFIG) || {};
+
     // Derive WIDGET_BASE_URL from this script's own src — automatically matches
     // whichever Cloud Run (staging or production) served the file.
     let WIDGET_BASE_URL;
@@ -255,6 +261,9 @@
         } catch (e) {
             WIDGET_BASE_URL = "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app";
         }
+    } else if (AW_CFG.backend) {
+        // Anywhere dynamic injection: no currentScript, host page told us the origin.
+        WIDGET_BASE_URL = AW_CFG.backend;
     } else {
         WIDGET_BASE_URL = "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app";
     }
@@ -262,7 +271,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.8.7';
+    const WIDGET_VERSION = '2.8.8';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -280,7 +289,7 @@
     // Support both storeSlug (new) and storeId (legacy) for backward compatibility
 
     // PRIORITIZE shop domain as the default "slug" if no explicit slug provided
-    const storeSlug = currentScript?.dataset?.storeSlug || currentScript?.dataset?.storeId || shop || 'default_store';
+    const storeSlug = currentScript?.dataset?.storeSlug || currentScript?.dataset?.storeId || AW_CFG.storeSlug || shop || 'default_store';
     const storeName = currentScript?.dataset?.storeName || 'default-name';
     const shopDomain = currentScript?.dataset?.shopDomain || shop || null; // keep old field working + new shop
     const storefrontToken = currentScript?.dataset?.storefrontToken || null;
@@ -298,6 +307,19 @@
     window.ELLO_STORE_ID = storeSlug; // Keep for backward compatibility
     window.ELLO_STORE_NAME = storeName;
     window.ELLO_SHOP = shop; // NEW: Strict shop domain for bootstrap/tracking
+
+    // Mint the shopper session id + ello_session_id cookie NOW, at script parse
+    // time — before any config fetch. The web pixel identifies shoppers ONLY by
+    // this cookie, and Shopify hands it the current pageview's product_viewed
+    // whether or not our config has resolved. Minting used to happen after the
+    // config round-trip (inside elloAbApplyHoldout / widget-main), so on the
+    // FIRST pageview of every fresh session the pixel found no cookie and
+    // silently dropped the view — undercounting product views fleet-wide and
+    // starving the A/B readout's product-page join. elloAbEnsureSessionId is
+    // idempotent (reuses the existing 7-day id), so the later callers inside
+    // the A/B path and widget-main are unaffected. (Function declarations
+    // hoist, so calling it here, above its definition, is safe.)
+    try { elloAbEnsureSessionId(storeSlug); } catch (e) { /* never break the page */ }
 
     // Fetch Supabase config from the server (env-aware — staging vs production auto-resolved)
     elloLog("[Ello Loader] Fetching supabase config from:", WIDGET_BASE_URL + "/api/widget-config");
@@ -549,37 +571,79 @@
         } catch (e) { return null; }
     }
 
+    // Shared transport for the exposure beacons below — sendBeacon first
+    // (survives navigation), keepalive fetch as the fallback.
+    function elloAbSendBeacon(payload) {
+        var url = WIDGET_BASE_URL + '/api/cart-purchase-event';
+        var sent = false;
+        if (navigator.sendBeacon) {
+            try { sent = navigator.sendBeacon(url, new Blob([payload], { type: 'text/plain' })); } catch (e) { }
+        }
+        if (!sent) {
+            fetch(url, {
+                method: 'POST',
+                credentials: 'omit',
+                keepalive: true,
+                headers: { 'Content-Type': 'text/plain' },
+                body: payload
+            }).catch(function () { });
+        }
+    }
+
     function elloAbLogExposure(state, cfg) {
         try {
             // Once per (experiment, session): marker stores the session id so a
             // rotated session re-fires; the server also dedupes on conflict.
             var marker = 'ello_ab_seen_' + state.experimentId;
             try { if (window.localStorage.getItem(marker) === state.sessionId) return; } catch (e) { }
-            var payload = JSON.stringify({
+            var onPdp = window.location.pathname.indexOf('/products/') !== -1;
+            elloAbSendBeacon(JSON.stringify({
                 event_type: 'ab_exposure',
                 store_slug: cfg.storeSlug || storeSlug,
                 session_id: state.sessionId,
                 experiment_id: state.experimentId,
                 variant: state.variant,
                 bucket: state.bucket,
-                page_type: window.location.pathname.indexOf('/products/') !== -1 ? 'product' : 'other'
-            });
-            var url = WIDGET_BASE_URL + '/api/cart-purchase-event';
-            var sent = false;
-            if (navigator.sendBeacon) {
-                try { sent = navigator.sendBeacon(url, new Blob([payload], { type: 'text/plain' })); } catch (e) { }
-            }
-            if (!sent) {
-                fetch(url, {
-                    method: 'POST',
-                    credentials: 'omit',
-                    keepalive: true,
-                    headers: { 'Content-Type': 'text/plain' },
-                    body: payload
-                }).catch(function () { });
-            }
-            try { window.localStorage.setItem(marker, state.sessionId); } catch (e) { }
+                page_type: onPdp ? 'product' : 'other',
+                // page_type freezes at the session's FIRST pageview (usually
+                // home/collections), so by itself it can't answer "did this
+                // shopper ever reach a product page?". saw_pdp starts true for
+                // product-page landings and is upgraded later for everyone
+                // else by elloAbMarkPdpSeen below.
+                saw_pdp: onPdp
+            }));
+            try {
+                window.localStorage.setItem(marker, state.sessionId);
+                if (onPdp) window.localStorage.setItem('ello_ab_pdp_' + state.experimentId, state.sessionId);
+            } catch (e) { }
         } catch (e) { /* exposure logging must never break the page */ }
+    }
+
+    // Stamp saw_pdp=true on this session's exposure row the first time the
+    // shopper reaches ANY product page. Without this second stamp the only
+    // available test denominator is "every visitor session" (homepage bounces
+    // included), whose conversion rate reads several times lower than the
+    // merchant's own product-page rate and invites the wrong conclusion about
+    // the widget. Fires for BOTH arms so the product-page comparison stays
+    // symmetric; once per (experiment, session); the server upsert is
+    // idempotent, so storage-blocked repeats are harmless.
+    function elloAbMarkPdpSeen(state, cfg) {
+        try {
+            if (window.location.pathname.indexOf('/products/') === -1) return;
+            var marker = 'ello_ab_pdp_' + state.experimentId;
+            try { if (window.localStorage.getItem(marker) === state.sessionId) return; } catch (e) { /* storage blocked — server dedupes */ }
+            elloAbSendBeacon(JSON.stringify({
+                event_type: 'ab_exposure',
+                store_slug: cfg.storeSlug || storeSlug,
+                session_id: state.sessionId,
+                experiment_id: state.experimentId,
+                variant: state.variant,
+                bucket: state.bucket,
+                page_type: 'product',
+                saw_pdp: true
+            }));
+            try { window.localStorage.setItem(marker, state.sessionId); } catch (e) { /* storage blocked — server dedupes */ }
+        } catch (e) { /* pdp stamp must never break the page */ }
     }
 
     // Purchase attribution has two carriers: the ello_session_id cookie and the
@@ -663,7 +727,10 @@
         }
 
         // Overridden/preview sessions are excluded from the data entirely.
-        if (!ELLO_AB.override) elloAbLogExposure(ELLO_AB, cfg);
+        if (!ELLO_AB.override) {
+            elloAbLogExposure(ELLO_AB, cfg);
+            elloAbMarkPdpSeen(ELLO_AB, cfg);
+        }
 
         if (variant === 'holdout') {
             // Hub triggers bound before the config resolved are already
