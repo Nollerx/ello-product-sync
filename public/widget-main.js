@@ -6188,7 +6188,9 @@ async function elloCtlStorefrontQuery(query, variables) {
     if (!ep) return null;
     var ctrl = null, timer = null;
     try { ctrl = new AbortController(); } catch (e) { ctrl = null; }
-    if (ctrl) timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, ELLO_CTL_TIMEOUT_MS);
+    if (ctrl) timer = setTimeout(function () {
+        try { ctrl.abort(); } catch (e) { /* already settled — nothing to abort */ }
+    }, ELLO_CTL_TIMEOUT_MS);
     try {
         var res = await fetch(ep.url, {
             method: 'POST',
