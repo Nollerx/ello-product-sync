@@ -138,6 +138,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
+  // Custom-distribution apps (SKIP_BILLING) are billed off-platform via
+  // Stripe/invoice — the self-serve plan grid must never be their final
+  // onboarding screen. Finish onboarding here and land on the dashboard.
+  // eslint-disable-next-line no-undef
+  if (process.env.SKIP_BILLING === "true") {
+    await setOnboardingStep(session.shop, "complete");
+    return redirect(`/app${preserveShopifyQuery(url)}`);
+  }
+
   await setOnboardingStep(session.shop, "billing");
   // Flag the billing page so it shows the "here's what you set up" recap —
   // only during onboarding, not when an existing merchant changes plans.

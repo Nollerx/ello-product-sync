@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
-import { useLoaderData, useFetcher, useNavigate } from "react-router";
+import { redirect, useLoaderData, useFetcher, useNavigate } from "react-router";
 import { Page, Banner } from "@shopify/polaris";
 import { motion } from "motion/react";
 import NumberFlow from "@number-flow/react";
@@ -98,6 +98,21 @@ function getBillingPlan(planKey: string, isTest: boolean): { lineItems: BillingL
 export async function loader({ request }: LoaderFunctionArgs) {
   const { session } = await authenticate.admin(request);
   const url = new URL(request.url);
+
+  // Custom-distribution apps (SKIP_BILLING) never bill through Shopify — the
+  // self-serve plan grid must be unreachable, even by direct URL. Keep the
+  // Shopify embed params so the redirect stays inside the admin iframe.
+  // eslint-disable-next-line no-undef
+  if (process.env.SKIP_BILLING === "true") {
+    const params = new URLSearchParams();
+    for (const key of ["shop", "host", "embedded", "id_token"]) {
+      const val = url.searchParams.get(key);
+      if (val) params.set(key, val);
+    }
+    const qs = params.toString();
+    throw redirect(`/app${qs ? `?${qs}` : ""}`);
+  }
+
   const billingError = url.searchParams.get("billingError") ?? null;
 
   // Enterprise-tagged stores ($1M+/yr answer in onboarding, or Shopify Plus)
