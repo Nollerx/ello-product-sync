@@ -248,7 +248,7 @@ let isPreviewVisible = false;
 // Falls back to production values if loader hasn't set them (e.g. direct HTML load).
 const _sbCfg = window.ELLO_SUPABASE_CONFIG || {};
 const SUPABASE_URL = _sbCfg.supabaseUrl || 'https://rwmvgwnebnsqcyhhurti.supabase.co';
-const SUPABASE_ANON_KEY = _sbCfg.supabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3bXZnd25lYm5zcWN5aGh1cnRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDg0MDc1MTgsImV4cCI6MjA2Mzk4MzUxOH0.OYTXiUBDN5IBlFYDHN3MyCwFUkSb8sgUOewBeSY01NY';
+const SUPABASE_ANON_KEY = _sbCfg.supabaseAnonKey || 'sb_publishable_JB8Gi0jDPOzInlaP_YaMRg_9crJr87T';
 elloLog("[Ello Widget] SUPABASE_URL:", SUPABASE_URL);
 elloLog("[Ello Widget] Config source:", _sbCfg.supabaseUrl ? "server (widget-config)" : "fallback (hardcoded)");
 
@@ -797,7 +797,7 @@ async function loadClothingData() {
 
         // Show user-friendly error message
         if (typeof showSuccessNotification === 'function') {
-            showSuccessNotification('Connection Error', 'Unable to load products. Please check your configuration.', 5000);
+            showSuccessNotification('Connection Error', 'Unable to load products. Please check your configuration.', 5000, true);
         }
 
         // Leave empty - no fallback to mock data
@@ -1617,6 +1617,15 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
 // Helper function to extract product ID from URL
 function getProductIdFromUrl(url) {
     if (!url) return null;
+    // Platform adapters (ello-sfcc.js and future non-Shopify kits) register a
+    // parser for their own PDP URL shapes — SFCC has no /products/<handle>.
+    // Absent on Shopify installs, so this is a no-op there.
+    if (typeof window.ELLO_PLATFORM_URL_HANDLE === 'function') {
+        try {
+            var ph = window.ELLO_PLATFORM_URL_HANDLE(url);
+            if (ph) return ph;
+        } catch (e) { /* fall through to the Shopify pattern */ }
+    }
     try {
         const matches = url.match(/\/products\/([^\/\?]+)/);
         return matches ? matches[1] : null;
@@ -1988,6 +1997,18 @@ function detectCurrentProduct() {
     if (ctxHandle) {
         const ctxHit = sampleClothing.find(item => item.id === ctxHandle || item.handle === ctxHandle);
         if (ctxHit) return ctxHit;
+    }
+
+    // Method 0.5: platform adapter product. ello-sfcc.js (and future non-Shopify
+    // kits) reads the host page's own product data — SFRA DOM + Product-Variation,
+    // JSON-LD on non-/products/ URLs, microdata — and serves a ready widget-shaped
+    // object here. Synchronous by contract (the adapter pre-builds and caches).
+    // Never registered on Shopify installs, so this is a no-op there.
+    if (typeof window.ELLO_PLATFORM_PRODUCT === 'function') {
+        try {
+            const platformProduct = window.ELLO_PLATFORM_PRODUCT();
+            if (platformProduct && platformProduct.image_url) return applyImageOverride(platformProduct);
+        } catch (e) { /* fall through to the Shopify methods */ }
     }
 
     // Method 1: Check URL for product handle (most reliable)
@@ -2579,9 +2600,14 @@ let isTryOnProcessing = false; // Track if try-on is currently processing
 let isRateLimited = false; // Track if user has hit rate limit
 let browserCurrentPage = 1; // Current page in browser
 let browserCategoryFilter = 'all'; // active category-chip filter in the collection browser
+let browserSortMode = 'featured'; // 'featured' | 'price-asc' | 'price-desc'
+// Set by applyBrowserFilters, read by updateBrowserDisplay: what the shopper
+// searched and how it resolved ('fuzzy' = closest-match pass, 'none' = dead
+// end → popular-picks recovery). Null when no query is active.
+let __epcSearchState = null;
 
 // --- Analytics State & Context ---
-const WIDGET_VERSION = '2.8.7';
+const WIDGET_VERSION = '2.13.0';
 let widgetViewId = null;
 let introViewId = null;
 let introShownAt = null;
@@ -2780,8 +2806,17 @@ function detectDevice() {
     const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
     const isFinePointer = window.matchMedia('(pointer: fine)').matches;
 
+    // Measure the SHORT side, not innerWidth. detectDevice() re-runs on every
+    // resize/orientationchange, and an iPhone in landscape is 844-956px wide —
+    // so an innerWidth test flipped isMobile to false mid-session the moment a
+    // shopper rotated their phone, killing the scroll lock and every other
+    // mobile branch for the rest of the visit. A phone's short side is <= 768
+    // in BOTH orientations, so this verdict is orientation-stable. Desktop is
+    // still excluded by the UA test above.
+    const shortSide = Math.min(window.innerWidth, window.innerHeight) || viewport;
+
     // Enhanced mobile detection: treat touch devices without fine pointers as mobile/tablet
-    isMobile = (mobileUserAgents && !ipadUserAgent) && isTouchDevice && viewport <= 768;
+    isMobile = (mobileUserAgents && !ipadUserAgent) && isTouchDevice && shortSide <= 768;
     isTablet = (ipadUserAgent || (/android/i.test(userAgent) && viewport > 768)) && isTouchDevice;
 
     // Override isMobile for preview logic purposes if pointer is coarse
@@ -2824,7 +2859,7 @@ function generateTryOnId() {
 
 function takePicture() {
     if (!isMobile) {
-        alert('Camera is only available on mobile devices');
+        showSuccessNotification('Camera unavailable', 'Camera capture is only available on a phone or tablet.', 4000, true);
         return;
     }
 
@@ -2871,7 +2906,7 @@ function proceedWithTakePicture() {
 
     } catch (error) {
         console.error('Error taking picture:', error);
-        alert('Unable to access camera. Please try selecting from gallery instead.');
+        showSuccessNotification('Camera unavailable', 'Pick a photo from your gallery instead.', 4000, true);
     }
 }
 
@@ -2921,7 +2956,7 @@ function proceedWithChooseFromGallery() {
 
     } catch (error) {
         console.error('Error choosing from gallery:', error);
-        alert('Unable to access photo gallery. Please try again.');
+        showSuccessNotification('Could not open photos', 'Please try again.', 4000, true);
     }
 }
 
@@ -3183,7 +3218,12 @@ function lockBodyScroll() {
  * Unlock body scroll on mobile and restore scroll position
  */
 function unlockBodyScroll() {
-    if (!isMobile) return;
+    // NOTE: deliberately NOT gated on isMobile. detectDevice() re-runs on every
+    // resize/orientationchange, and a phone rotated to landscape reports
+    // innerWidth > 768 — so isMobile flips to false while the page is still
+    // locked. Gating the unlock on it left <body> position:fixed forever and
+    // froze the merchant's whole page (only a reload recovered). The lock flag
+    // is the only thing that matters here.
     if (!bodyScrollLocked) return;
     bodyScrollLocked = false;
 
@@ -3880,7 +3920,7 @@ async function selectModel(modelId) {
         elloLog("✅ Model prepared (embedded base64)");
     } else {
         console.error("❌ Model missing base64 data");
-        alert("Unable to load model. Please try another.");
+        showSuccessNotification('Could not load that model', 'Please try another one.', 4000, true);
     }
 }
 
@@ -4608,7 +4648,7 @@ async function sendMessage() {
     }
 
     if (message.length > 1000) {
-        showSuccessNotification('Message Too Long', 'Please keep messages under 1000 characters.', 3000);
+        showSuccessNotification('Message Too Long', 'Please keep messages under 1000 characters.', 3000, true);
         return;
     }
 
@@ -4871,7 +4911,7 @@ async function handlePhotoUpload(event) {
             if (dedupeWindow('photo_upload_fail_unknown', 2000)) {
                 trackEvent('photo_upload_fail', { reason: 'unknown', error: error.message });
             }
-            showSuccessNotification('Upload Error', 'Failed to process the image. Please try again.', 4000);
+            showSuccessNotification('Upload Error', 'Failed to process the image. Please try again.', 4000, true);
         } finally {
             // Hide loader
             const activeLoader = document.getElementById('activePhotoLoader');
@@ -4893,7 +4933,7 @@ async function handlePhotoUpload(event) {
         if (dedupeWindow('photo_upload_fail_reader', 2000)) {
             trackEvent('photo_upload_fail', { reason: 'read_error' });
         }
-        showSuccessNotification('File Error', 'Error reading the image file. Please try again.', 4000);
+        showSuccessNotification('File Error', 'Error reading the image file. Please try again.', 4000, true);
         if (uploadArea) {
             uploadArea.classList.remove('uploading');
         }
@@ -5805,6 +5845,11 @@ function openClothingBrowser() {
     const modal = document.getElementById('clothingBrowserModal');
     const backdrop = document.getElementById('modalBackdrop');
 
+    // A plain open never carries the layer-mode bar; elloOpenBrowserWearing
+    // re-adds it right after this call when a re-base is in play.
+    const staleBar = document.getElementById('ello-browse-basebar');
+    if (staleBar) staleBar.remove();
+
     modal.classList.add('active');
     // In the Fitting Room hub, match the Wardrobe surface — no dark page
     // blackout behind the panel. Standalone (non-hub) use keeps the dimmer.
@@ -5820,13 +5865,61 @@ function openClothingBrowser() {
     browserCategoryFilter = 'all';
     filteredClothing = [...sampleClothing];
 
+    // Every open is a fresh browse: the chips reset above, and the search box,
+    // sort, and scroll position reset with them — a leftover query from a
+    // previous visit silently shortening the collection reads as "missing
+    // products", not as "my old search is still applied".
+    browserSortMode = 'featured';
+    __epcSearchState = null;
+    const searchInput = document.getElementById('browserSearch');
+    if (searchInput) {
+        searchInput.value = '';
+        // The descriptive placeholder truncates mid-word beside the sort pill
+        // on phones — swap in a short one there.
+        if (window.innerWidth <= 480) searchInput.placeholder = 'Search products';
+    }
+    const sortSel = document.getElementById('browserSort');
+    if (sortSel) sortSel.value = 'featured';
+    __epcWireBrowserChrome();
+    const scrollBody = document.querySelector('#clothingBrowserModal .browser-body');
+    if (scrollBody) scrollBody.scrollTop = 0;
+
     elloLog('Opening clothing browser, sampleClothing length:', sampleClothing.length);
     renderBrowserGrid();
+}
+
+// One-time wiring for the browse chrome: the back-to-top pill and the sticky
+// controls' scroll shadow. Idempotent — called on every open.
+let __epcChromeWired = false;
+function __epcWireBrowserChrome() {
+    if (__epcChromeWired) return;
+    const body = document.querySelector('#clothingBrowserModal .browser-body');
+    if (!body) return;
+    __epcChromeWired = true;
+    const topBtn = document.getElementById('epcTopBtn');
+    const controls = document.querySelector('#clothingBrowserModal .epc-controls');
+    if (topBtn) {
+        topBtn.addEventListener('click', function () {
+            if (body.scrollTo) body.scrollTo({ top: 0, behavior: 'smooth' });
+            else body.scrollTop = 0;
+        });
+    }
+    body.addEventListener('scroll', function () {
+        const y = body.scrollTop;
+        if (topBtn) topBtn.classList.toggle('visible', y > 900);
+        if (controls) controls.classList.toggle('is-stuck', y > 6);
+    }, { passive: true });
 }
 
 function closeClothingBrowser() {
     const modal = document.getElementById('clothingBrowserModal');
     const backdrop = document.getElementById('modalBackdrop');
+
+    const baseBar = document.getElementById('ello-browse-basebar');
+    if (baseBar) baseBar.remove();
+    // Closing without picking abandons pick mode — the next plain browse
+    // must never trigger a surprise render.
+    window.__elloPickMode = null;
 
     modal.classList.remove('active');
     backdrop.classList.remove('active');
@@ -5842,6 +5935,20 @@ function closeClothingBrowser() {
     if (window.ELLO_HUB_MODE && !window.__elloHubKeepOpen) {
         closeWidget();
     }
+}
+
+// Skeleton grid while the catalog fetch is in flight. The shimmer overlay on
+// .epc-media animates until .epc-ready lands, so bare media boxes shimmer for
+// free — no extra animation code.
+function __epcRenderSkeletons(grid) {
+    grid.style.display = 'grid';
+    const one = '<div class="epc-card epc-skel" aria-hidden="true"><div class="epc-media"></div>' +
+        '<div class="epc-info"><span class="epc-skel-line"></span><span class="epc-skel-line epc-skel-line--short"></span></div></div>';
+    grid.innerHTML = new Array(8).fill(one).join('');
+    const noResults = document.getElementById('noResultsMessage');
+    if (noResults) noResults.style.display = 'none';
+    const resultsCount = document.getElementById('searchResultsCount');
+    if (resultsCount) resultsCount.textContent = '';
 }
 
 function renderBrowserGrid() {
@@ -5862,7 +5969,7 @@ function renderBrowserGrid() {
     // fired in openWidget — this just blocks on the in-flight promise.
     if (!_elloFullCatalogLoaded && _elloFullCatalogPromise) {
         elloLog('Browse view waiting on full catalog…');
-        grid.innerHTML = '<div style="text-align: center; padding: 40px; color: #666;">Loading products…</div>';
+        __epcRenderSkeletons(grid);
         _elloFullCatalogPromise.then(() => {
             filteredClothing = [...sampleClothing];
             renderBrowserGrid();
@@ -5873,7 +5980,7 @@ function renderBrowserGrid() {
     // Check if clothing data is loaded
     if (!sampleClothing || sampleClothing.length === 0) {
         elloLog('No clothing data available, loading...');
-        grid.innerHTML = '<div style="text-align: center; padding: 40px; color: #666;">Loading products...</div>';
+        __epcRenderSkeletons(grid);
         // Fall back to a full load if neither page-load preview nor widget-open
         // lazy load populated anything (e.g. both fetches failed).
         loadFullCatalogIfNeeded(window.ELLO_STORE_CONFIG || {}).then(() => {
@@ -5903,6 +6010,20 @@ function selectClothingFromBrowser(clothingId) {
             ...clothing,
             selectedVariantId: selectedVariantId
         };
+    }
+
+    // Pick mode (outfit editing v2): the shopper came from "pick a different
+    // piece" or the wardrobe swap pill — the tap on a card IS the try-on
+    // intent. Render immediately on the surface they came from; never park the
+    // pick in the widget workspace behind a second click (Andrew 2026-08-05).
+    const __pickOrigin = window.__elloPickMode;
+    if (__pickOrigin && clothing) {
+        window.__elloPickMode = null;
+        window.__elloHubKeepOpen = true;
+        closeClothingBrowser();
+        window.__elloHubKeepOpen = false;
+        elloStartPickedRender(__pickOrigin, window.elloSelectedGarment);
+        return;
     }
 
     document.querySelectorAll('.epc-card').forEach(card => {
@@ -5944,6 +6065,25 @@ function __epcRunSearch() {
     applyBrowserFilters();
 }
 
+// Enter commits the query instantly (and drops the phone keyboard); Escape
+// clears the query but keeps the browser open — it must not fall through to
+// the modal's own Escape-to-close handling while the box still has text.
+function epcSearchKeydown(e) {
+    if (!e) return;
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        clearTimeout(__epcSearchTimer);
+        __epcRunSearch();
+        if (e.target && e.target.blur) e.target.blur();
+    } else if (e.key === 'Escape' && e.target && e.target.value) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.target.value = '';
+        clearTimeout(__epcSearchTimer);
+        __epcRunSearch();
+    }
+}
+
 // ── Category filter chips ───────────────────────────────────────────────────
 // Map each product into a clean shopping bucket from its type / tags / name so a
 // thousands-product catalog is browsable by category instead of one endless wall.
@@ -5969,6 +6109,225 @@ function elloProductBucket(item) {
         }
     }
     return 'other';
+}
+
+// ── Collection search engine ────────────────────────────────────────────────
+// The old matcher required the query to appear as ONE contiguous substring of
+// name+category+color+tags, so "black hoodie" (word order), "hoodies"
+// (plural), and "hodie" (typo) all returned zero results for products the
+// store carries. This engine fixes that class entirely, client-side — the
+// full catalog is already in memory, so no search service is involved:
+//   1. tokenized AND matching — every query word must land, any order
+//   2. plural/singular folding via stem-candidate intersection
+//   3. a curated synonym map (true same-garment words only — category
+//      cousins like polo/hoodie stay separate so results never feel random)
+//   4. relevance ranking: name beats category/color beats tags; whole-phrase
+//      name hits float to the top; ties keep the merchant's catalog order
+//   5. an edit-distance-1 pass that ONLY runs when the strict pass found
+//      nothing — "hodie" recovers, but "shirt" can never bleed into "shorts"
+//      while real results exist
+
+function __epcNormText(s) {
+    s = String(s || '').toLowerCase();
+    // Fold accents so "café" matches "cafe" — merchant catalogs love diacritics.
+    try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch (e) { /* pre-NFD engines: match un-folded */ }
+    // Compound spellings → one token, BEFORE punctuation strips the hyphen
+    // ("t-shirt" must not become the near-useless tokens "t" + "shirt").
+    s = s.replace(/\bt[\s-]+shirt/g, 'tshirt').replace(/\bv[\s-]+neck/g, 'vneck');
+    return s.replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function __epcTokens(s) {
+    const n = __epcNormText(s);
+    return n ? n.split(' ') : [];
+}
+
+// Singular/plural candidates for one token. Two tokens match when their
+// candidate sets intersect — handles hoodie/hoodies, dress/dresses,
+// baby/babies without shipping a stemmer.
+function __epcStems(t) {
+    const out = [t];
+    const L = t.length;
+    if (L > 3 && t.charAt(L - 1) === 's' && t.charAt(L - 2) !== 's') out.push(t.slice(0, -1));
+    if (L > 4 && t.slice(-2) === 'es') out.push(t.slice(0, -2));
+    if (L > 4 && t.slice(-3) === 'ies') out.push(t.slice(0, -3) + 'y');
+    return out;
+}
+
+// True apparel synonyms only — words shoppers use interchangeably for the
+// SAME garment. Keep this list conservative: folding category cousins
+// together (polo→hoodie) makes search feel broken in the other direction.
+const __EPC_SYN_GROUPS = [
+    ['hoodie', 'hoody', 'sweatshirt'],
+    ['sweater', 'jumper', 'pullover'],
+    ['tshirt', 'tee'],
+    ['pants', 'trousers', 'slacks'],
+    ['joggers', 'sweatpants'],
+    ['leggings', 'tights'],
+    ['jeans', 'denim'],
+    ['jacket', 'coat'],
+    ['windbreaker', 'anorak'],
+    ['vest', 'gilet'],
+    ['cardigan', 'cardi'],
+    ['dress', 'gown', 'frock'],
+    ['romper', 'playsuit'],
+    ['sneakers', 'trainers', 'kicks'],
+    ['cap', 'hat'],
+    ['beanie', 'toque'],
+    ['purse', 'handbag'],
+    ['swimsuit', 'swimwear']
+];
+// token (and each of its stems) → group index, built once.
+const __EPC_SYN_INDEX = (function () {
+    const idx = {};
+    __EPC_SYN_GROUPS.forEach(function (group, gi) {
+        group.forEach(function (word) {
+            __epcStems(word).forEach(function (st) { idx[st] = gi; });
+            idx[word] = gi;
+        });
+    });
+    return idx;
+})();
+
+function __epcSynGroup(tok) {
+    const stems = __epcStems(tok);
+    for (let i = 0; i < stems.length; i++) {
+        if (Object.prototype.hasOwnProperty.call(__EPC_SYN_INDEX, stems[i])) return __EPC_SYN_INDEX[stems[i]];
+    }
+    return -1;
+}
+
+// Damerau-Levenshtein distance ≤ 1 (one substitution, insertion, deletion, or
+// adjacent transposition). Bounded + early-exit so the fallback pass stays
+// cheap even on 2,500-product catalogs.
+function __epcEditDist1(a, b) {
+    if (a === b) return true;
+    const la = a.length, lb = b.length;
+    if (Math.abs(la - lb) > 1) return false;
+    let i = 0;
+    const min = Math.min(la, lb);
+    while (i < min && a.charAt(i) === b.charAt(i)) i++;
+    if (la === lb) {
+        if (a.slice(i + 1) === b.slice(i + 1)) return true; // substitution
+        return i + 1 < la &&
+            a.charAt(i) === b.charAt(i + 1) && a.charAt(i + 1) === b.charAt(i) &&
+            a.slice(i + 2) === b.slice(i + 2); // adjacent transposition
+    }
+    if (la > lb) return a.slice(i + 1) === b.slice(i); // deletion
+    return b.slice(i + 1) === a.slice(i); // insertion
+}
+
+// How well does one query token match one catalog token? 3 = exact/prefix/
+// plural, 2 = contains/synonym, 1 = typo (fuzzy pass only), 0 = no match.
+function __epcTokenMatch(qTok, hayTok, fuzzy) {
+    if (hayTok.indexOf(qTok) === 0) return 3; // exact or prefix ("hoo" → "hoodie")
+    const qs = __epcStems(qTok), hs = __epcStems(hayTok);
+    for (let i = 0; i < qs.length; i++) {
+        if (hs.indexOf(qs[i]) !== -1) return 3; // plural/singular fold
+    }
+    // Contains keeps today's substring reach ("shirt" still finds "t-shirt"
+    // and "sweatshirt") — gated to ≥4 chars so "top" can't hide inside words.
+    if (qTok.length >= 4 && hayTok.indexOf(qTok) !== -1) return 2;
+    const g = __epcSynGroup(qTok);
+    if (g !== -1 && g === __epcSynGroup(hayTok)) return 2;
+    if (fuzzy && qTok.length >= 4 && hayTok.length >= 3) {
+        for (let a = 0; a < qs.length; a++) {
+            for (let b = 0; b < hs.length; b++) {
+                if (__epcEditDist1(qs[a], hs[b])) return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// Tokenized fields, built lazily and cached on the item. Items are rebuilt
+// wholesale on every catalog load, so the cache can never go stale.
+function __epcItemIndex(item) {
+    if (item.__epcIdx) return item.__epcIdx;
+    item.__epcIdx = {
+        name: __epcTokens(item.name),
+        meta: __epcTokens((item.category || '') + ' ' + (item.color || '')),
+        tags: __epcTokens((item.tags || []).join(' ')),
+        nameStr: __epcNormText(item.name)
+    };
+    return item.__epcIdx;
+}
+
+// Score one item against the query. -1 = not a match (some token landed
+// nowhere). Field weights: a name hit should always outrank a tag-only hit.
+const __EPC_FIELD_WEIGHTS = [10, 5, 2]; // name, category+color, tags
+function __epcScoreItem(item, qTokens, qStr, fuzzy) {
+    const idx = __epcItemIndex(item);
+    const fields = [idx.name, idx.meta, idx.tags];
+    let score = 0;
+    for (let qi = 0; qi < qTokens.length; qi++) {
+        let best = 0;
+        for (let f = 0; f < 3; f++) {
+            const toks = fields[f];
+            for (let h = 0; h < toks.length; h++) {
+                const m = __epcTokenMatch(qTokens[qi], toks[h], fuzzy);
+                const weighted = m * __EPC_FIELD_WEIGHTS[f];
+                if (weighted > best) best = weighted;
+            }
+            if (best === 3 * __EPC_FIELD_WEIGHTS[0]) break; // can't beat a full name hit
+        }
+        if (!best) return -1; // AND semantics — every query word must match
+        score += best;
+    }
+    if (qStr && idx.nameStr.indexOf(qStr) !== -1) score += 40; // whole phrase in name
+    else if (qTokens.length && idx.nameStr.indexOf(qTokens[0]) === 0) score += 8; // name starts with query
+    return score;
+}
+
+// Rank `list` against the query. Stable: equal scores keep catalog order.
+function __epcSearchRank(list, qTokens, qStr, fuzzy) {
+    const scored = [];
+    for (let i = 0; i < list.length; i++) {
+        const s = __epcScoreItem(list[i], qTokens, qStr, fuzzy);
+        if (s >= 0) scored.push({ item: list[i], s: s, i: i });
+    }
+    scored.sort(function (a, b) { return b.s - a.s || a.i - b.i; });
+    return scored.map(function (x) { return x.item; });
+}
+
+// Price can live on the item or its first variant, as a number or a string
+// ("$38.00"). One normalizer shared by the card renderer and the price sort.
+function __epcItemPrice(item) {
+    let raw = item ? item.price : null;
+    if ((raw == null || Number(raw) <= 0) && item && item.variants && item.variants[0]) {
+        raw = item.variants[0].price;
+    }
+    const n = Number(String(raw == null ? '' : raw).replace(/[^0-9.]/g, ''));
+    return (isFinite(n) && n > 0) ? n : 0;
+}
+
+// Sold out = the product has variants and ALL of them explicitly say
+// unavailable. Catalog paths that don't carry availability (available is
+// undefined) never flag — a wrong "Sold out" is worse than a missing one.
+function __epcIsSoldOut(item) {
+    const vs = (item && item.variants) || [];
+    if (!vs.length) return false;
+    for (let i = 0; i < vs.length; i++) {
+        if (!vs[i] || vs[i].available !== false) return false;
+    }
+    return true;
+}
+
+function __epcApplySort(list) {
+    if (browserSortMode !== 'price-asc' && browserSortMode !== 'price-desc') return list;
+    const dir = browserSortMode === 'price-asc' ? 1 : -1;
+    return list.slice().sort(function (a, b) {
+        const pa = __epcItemPrice(a), pb = __epcItemPrice(b);
+        if (!pa && !pb) return 0;
+        if (!pa) return 1;  // unpriced items sink to the end either direction
+        if (!pb) return -1;
+        return (pa - pb) * dir;
+    });
+}
+
+function handleBrowserSortChange(mode) {
+    browserSortMode = (mode === 'price-asc' || mode === 'price-desc') ? mode : 'featured';
+    applyBrowserFilters();
 }
 
 // ─── Complete the Look: complementary recommender (Increment 1) ──────────────
@@ -6620,7 +6979,48 @@ function elloEnsureCtlStyles() {
         '#ello-ctl-rail .ello-ctl-add:disabled{opacity:.6;cursor:wait;}' +
         '#ello-ctl-rail .ello-ctl-msg{margin-top:8px;font:500 12px/1.4 ' + fontStack + ';text-align:center;display:none;}' +
         '#ello-ctl-rail .ello-ctl-msg.err{color:#b91c1c;display:block;}' +
-        '#ello-ctl-rail .ello-ctl-link{display:block;width:100%;margin-top:8px;text-align:center;font:600 13px/1 ' + fontStack + ';color:#111;background:transparent;border:1px solid #d8d8d8;border-radius:10px;padding:11px;cursor:pointer;}';
+        '#ello-ctl-rail .ello-ctl-link{display:block;width:100%;margin-top:8px;text-align:center;font:600 13px/1 ' + fontStack + ';color:#111;background:transparent;border:1px solid #d8d8d8;border-radius:10px;padding:11px;cursor:pointer;}' +
+        // ─── "Your look" N-piece row (in-widget rail flavor) ─────────────────
+        '#ello-ctl-rail .ello-ctl-picks{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}' +
+        '#ello-ctl-rail .ectl-pick{position:relative;flex:0 0 auto;border:none;background:none;padding:0;cursor:pointer;-webkit-appearance:none;appearance:none;}' +
+        '#ello-ctl-rail .ectl-pick img,#ello-ctl-rail .ectl-pick .ectl-pick-ph{width:44px;height:58px;border-radius:7px;object-fit:contain;background:#f4f4f4;display:block;border:2px solid ' + primary + ';box-sizing:border-box;transition:opacity .15s,border-color .15s;}' +
+        '#ello-ctl-rail .ectl-pick .ectl-pick-ph{display:flex;align-items:center;justify-content:center;font:600 16px/1 ' + fontStack + ';color:#9a9a9a;}' +
+        '#ello-ctl-rail .ectl-pick .ectl-tick{position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:' + primary + ';color:' + primaryText + ';display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.25);}' +
+        '#ello-ctl-rail .ectl-pick .ectl-tick svg{width:9px;height:9px;}' +
+        '#ello-ctl-rail .ectl-pick:not(.is-on) img,#ello-ctl-rail .ectl-pick:not(.is-on) .ectl-pick-ph{opacity:.4;border-color:#d8d8d8;}' +
+        '#ello-ctl-rail .ectl-pick:not(.is-on) .ectl-tick{display:none;}' +
+        // Pick-your-own line (outfit editing v2): one quiet path inside the
+        // SAME module — "still completing the look, just not with the
+        // recommended item" (Andrew 2026-08-04).
+        '#ello-ctl-rail .ello-ctl-alt{display:block;width:100%;background:none;border:none;cursor:pointer;-webkit-appearance:none;appearance:none;text-align:center;font:600 12px/1.35 ' + fontStack + ';color:#6b7280;padding:10px 0 2px;margin:0;}' +
+        '#ello-ctl-rail .ello-ctl-alt b{color:#111;font-weight:650;}' +
+        '#ello-ctl-rail .ello-ctl-alt:hover b{text-decoration:underline;}' +
+        '#ello-ctl-rail .ello-ctl-alt .ello-ctl-alt-arrow{color:' + accent + ';font-weight:700;}' +
+        // Inline flavor: rides the card's price line, zero added height.
+        '#ello-ctl-rail .ello-ctl-price{display:flex;flex-wrap:wrap;align-items:baseline;gap:1px 6px;}' +
+        '#ello-ctl-rail .ello-ctl-pickline{background:none;border:none;padding:0;margin:0;cursor:pointer;-webkit-appearance:none;appearance:none;font:600 11.5px/1.3 ' + fontStack + ';color:#8a8a8a;white-space:nowrap;}' +
+        '#ello-ctl-rail .ello-ctl-pickline b{color:#111;font-weight:650;}' +
+        '#ello-ctl-rail .ello-ctl-pickline:hover b{text-decoration:underline;}' +
+        '#ello-ctl-rail .ello-ctl-pickline .ello-ctl-alt-arrow{color:' + accent + ';font-weight:700;}' +
+        // Wardrobe-viewer flavor of the same chips (#elloViewerFooter): saved
+        // outfit cards are editable in place, so the peel UI must read as the
+        // one feature it is across the rail, the hero panel, and the wardrobe.
+        '#elloViewerFooter .ewv-pieces{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1 1 100%;}' +
+        '#elloViewerFooter .ectl-pick{position:relative;flex:0 0 auto;border:none;background:none;padding:0;cursor:pointer;-webkit-appearance:none;appearance:none;}' +
+        '#elloViewerFooter .ectl-pick img,#elloViewerFooter .ectl-pick .ectl-pick-ph{width:48px;height:64px;border-radius:7px;object-fit:contain;background:#f4f4f4;display:block;border:2px solid ' + primary + ';box-sizing:border-box;transition:opacity .15s,border-color .15s;}' +
+        '#elloViewerFooter .ectl-pick .ectl-pick-ph{display:flex;align-items:center;justify-content:center;font:600 16px/1 ' + fontStack + ';color:#9a9a9a;}' +
+        '#elloViewerFooter .ectl-pick .ectl-tick{position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:' + primary + ';color:' + primaryText + ';display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.25);}' +
+        '#elloViewerFooter .ectl-pick .ectl-tick svg{width:9px;height:9px;}' +
+        '#elloViewerFooter .ectl-pick:not(.is-on) img,#elloViewerFooter .ectl-pick:not(.is-on) .ectl-pick-ph{opacity:.4;border-color:#d8d8d8;}' +
+        '#elloViewerFooter .ectl-pick:not(.is-on) .ectl-tick{display:none;}' +
+        '#elloViewerFooter .ewv-pieces-hint{flex:1 1 100%;font:500 11px/1.3 ' + fontStack + ';color:#9a9a9a;}' +
+        // Swap pill (outfit editing v2): appears only when the removed pieces
+        // form a clean top of the chain — the moment "what else would go
+        // there?" exists. Category-aware copy set at refresh time.
+        '#elloViewerFooter .ewv-swap{display:inline-flex;align-items:center;gap:6px;margin-top:10px;font:650 12px/1 ' + fontStack + ';color:#111;background:#fff;border:1px solid #d8d8d8;border-radius:999px;padding:9px 14px;cursor:pointer;-webkit-appearance:none;appearance:none;transition:border-color .15s;}' +
+        '#elloViewerFooter .ewv-swap:hover{border-color:#111;}' +
+        '#elloViewerFooter .ewv-swap[hidden]{display:none;}' +
+        '#elloViewerFooter .ewv-swap .ewv-swap-ic{color:' + accent + ';display:flex;}';
     document.head.appendChild(s);
 }
 
@@ -6833,36 +7233,54 @@ async function elloRenderCompleteTheLook(garmentA) {
         if (!resultSection) return;
 
         var items = await elloPickComplementary(garmentA, 10);
-        if (!items || !items.length) return;   // no curation → no rail (intended)
+        var v2 = elloOutfitV2On();
+        // Legacy: no curation → no rail. v2 (Andrew 2026-08-04): the module
+        // keeps its header + pick-your-own line instead of vanishing, so the
+        // door into outfit building exists on every result.
+        if ((!items || !items.length) && !v2) return;
 
         elloEnsureCtlStyles();
         elloTeardownCompleteTheLook();          // idempotent re-render
 
-        var item = items[0];                    // cap=1 for V1
-        var price = Number(item.price);
+        var item = items && items.length ? items[0] : null;   // cap=1 for V1
+        var price = item ? Number(item.price) : NaN;
         var priceStr = isNaN(price) ? '' : '$' + price.toFixed(2);
         var sparkle = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18"></path></svg>';
         var plus = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>';
 
         var rail = document.createElement('div');
         rail.id = 'ello-ctl-rail';
+        // Pick-your-own (v2): one module, two paths. With a card it rides the
+        // PRICE LINE (zero added height — Andrew 2026-08-05); only the
+        // no-curation module keeps a standalone line (nothing to attach to).
+        var altLine = (v2 && !item)
+            ? '<button type="button" class="ello-ctl-alt" id="ello-ctl-alt"><b>pick a piece to complete your look</b> <span class="ello-ctl-alt-arrow">&rarr;</span></button>'
+            : '';
+        var pickLine = (v2 && item)
+            ? '<button type="button" class="ello-ctl-pickline" id="ello-ctl-alt">&middot; <b>pick a different piece</b> <span class="ello-ctl-alt-arrow">&rarr;</span></button>'
+            : '';
         rail.innerHTML =
             '<div class="ello-ctl-head">' +
                 '<span class="ello-ctl-title">' + sparkle + 'Complete the look</span>' +
-                '<span class="ello-ctl-sub">styled to go with this</span>' +
+                (item ? '<span class="ello-ctl-sub">styled to go with this</span>' : '') +
             '</div>' +
-            '<div class="ello-ctl-card">' +
-                '<img class="ello-ctl-thumb" src="' + elloCtlImgUrl(item.image_url || '', 240) + '" alt="" loading="lazy" decoding="async">' +
-                '<div class="ello-ctl-info">' +
-                    '<div class="ello-ctl-name"></div>' +
-                    '<div class="ello-ctl-price"></div>' +
-                '</div>' +
-                '<button type="button" class="ello-ctl-try" id="ello-ctl-try-btn">' + plus + '<span>Try on</span></button>' +
-            '</div>';
-        // Set name/price as text (never innerHTML) so merchant product names can't inject markup.
-        rail.querySelector('.ello-ctl-name').textContent = item.name || 'Complementary item';
-        rail.querySelector('.ello-ctl-price').textContent = priceStr;
-        elloCtlAttachPeek(rail.querySelector('.ello-ctl-thumb'), item);
+            (item
+                ? '<div class="ello-ctl-card">' +
+                    '<img class="ello-ctl-thumb" src="' + elloCtlImgUrl(item.image_url || '', 240) + '" alt="" loading="lazy" decoding="async">' +
+                    '<div class="ello-ctl-info">' +
+                        '<div class="ello-ctl-name"></div>' +
+                        '<div class="ello-ctl-price"><span class="ello-ctl-price-val"></span>' + pickLine + '</div>' +
+                    '</div>' +
+                    '<button type="button" class="ello-ctl-try" id="ello-ctl-try-btn">' + plus + '<span>Try on</span></button>' +
+                  '</div>'
+                : '') +
+            altLine;
+        if (item) {
+            // Set name/price as text (never innerHTML) so merchant product names can't inject markup.
+            rail.querySelector('.ello-ctl-name').textContent = item.name || 'Complementary item';
+            rail.querySelector('.ello-ctl-price-val').textContent = priceStr;
+            elloCtlAttachPeek(rail.querySelector('.ello-ctl-thumb'), item);
+        }
 
         // Sit the rail ABOVE the Add-to-Cart CTAs (offer seen before the final buy).
         var ctas = document.getElementById('ello-inline-result-ctas');
@@ -6881,10 +7299,12 @@ async function elloRenderCompleteTheLook(garmentA) {
             elloResolveCtlPriceA(__elloCtlA.garmentA, __elloCtlA.triedOnVariantA, garmentA && garmentA.id)
                 .then(function (p) { if (p > 0) __elloCtlA.priceA = p; });
         }
-        __elloCtlA.itemB = item;
+        __elloCtlA.itemB = item;               // null in pick-your-own-only mode
         __elloCtlA.layered = false;
         var tryBtn = rail.querySelector('#ello-ctl-try-btn');
         if (tryBtn) tryBtn.addEventListener('click', elloCtlLayerInWidget);
+        var altBtn = rail.querySelector('#ello-ctl-alt');
+        if (altBtn) altBtn.addEventListener('click', elloCtlPickYourOwn);
     } catch (e) {
         // Never let the upsell break the result the shopper is looking at.
         try { elloTeardownCompleteTheLook(); } catch (e2) {}
@@ -6913,6 +7333,12 @@ function elloCtlLayerInWidget() {
         window.ELLO_PENDING_ENTRY_SOURCE = 'complete_the_look';
         // Beat the 1.5s duplicate-click debounce — this layer tap is intentional.
         window._lastTryOnTimestamp = 0;
+        // What the current render ALREADY wears — the whole chain when A itself
+        // was layered on an outfit base (wardrobe re-base), not just A. Must be
+        // read BEFORE the re-base mints a new photo id, which invalidates the
+        // key-guarded chain record.
+        var wearsA = __elloCtlA.garmentA
+            ? (elloComposeOutfitItems(__elloCtlA.garmentA) || [__elloCtlA.garmentA]) : null;
         // Re-base on the previous result (person already wearing A).
         userPhoto = base;
         window.elloUserImageUrl = base;
@@ -6920,8 +7346,8 @@ function elloCtlLayerInWidget() {
         activePhotoValidationId = userPhotoFileId;
         activePhotoValidationStatus = 'valid';
         lastRejectedPhotoValidationId = null;
-        // The base render wears garment A — the layered save is an A+B outfit.
-        if (__elloCtlA.garmentA) elloSetOutfitBase([__elloCtlA.garmentA]);
+        // The base render wears that chain — the layered save extends it by B.
+        if (wearsA) elloSetOutfitBase(wearsA);
         // Layer garment B on top.
         window.elloSelectedGarment = __elloCtlA.itemB;
 
@@ -6930,6 +7356,115 @@ function elloCtlLayerInWidget() {
         window.__elloCtlLayeringInWidget = false;
         try { if (__elloCtlA.garmentA) elloRenderCompleteTheLook(__elloCtlA.garmentA); } catch (e2) {}
     }
+}
+
+// Pick-your-own path (outfit editing v2): same re-base as the "Try on" chip,
+// but instead of rendering a preset item it opens Browse Collection — the
+// shopper chooses, and the next try-on layers their pick over this result.
+function elloCtlPickYourOwn() {
+    try {
+        if (isTryOnProcessing) return;
+        var base = __elloCtlA.lastResultB64;
+        if (!base) return;
+        // What the current render already wears — whole chain, read BEFORE the
+        // re-base mints a new photo id (same rule as elloCtlLayerInWidget).
+        var wears = __elloCtlA.garmentA
+            ? (elloComposeOutfitItems(__elloCtlA.garmentA) || [__elloCtlA.garmentA]) : null;
+        userPhoto = base;
+        window.elloUserImageUrl = base;
+        userPhotoFileId = 'ctlp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        activePhotoValidationId = userPhotoFileId;
+        activePhotoValidationStatus = 'valid';
+        lastRejectedPhotoValidationId = null;
+        if (wears) elloSetOutfitBase(wears);
+        // Keep every photo surface honest about the new base (same trio the
+        // addToOutfit path repaints).
+        updatePhotoPreview(userPhoto);
+        if (typeof elloSetupFocusedExtras === 'function') elloSetupFocusedExtras();
+        if (typeof updatePreviewUserPhoto === 'function') updatePreviewUserPhoto(userPhoto);
+        window.ELLO_PENDING_ENTRY_SOURCE = 'complete_the_look_pick';
+        elloOpenBrowserWearing(wears ? wears.map(function (d) { return d.clothingName || d.name || ''; }) : null, 'widget');
+    } catch (e) { /* the result view stays untouched on any failure */ }
+}
+
+// Pick-mode dispatch: the tap on a browser card IS the try-on intent — start
+// the render immediately, routed to the surface the shopper came from.
+function elloStartPickedRender(origin, garment) {
+    try {
+        if (isTryOnProcessing || !garment) return;
+        window._lastTryOnTimestamp = 0;            // intentional tap — beat the debounce
+        if (origin === 'hero') {
+            // Route the pass to the hero swap and morph the panel with the
+            // shopper's pick, exactly like "Try it on too" does with ours.
+            __elloCtlB.itemB = garment;
+            window.__elloCtlLayeringInB = true;
+            // The card follows the pick INSTANTLY (Andrew 2026-08-05): thumb,
+            // name, and price flip to the chosen piece while it styles — the
+            // old recommendation never lingers under a render of the new one.
+            var panel = __elloCtlB.panelEl;
+            if (panel) {
+                var th = panel.querySelector('.ectl-thumb');
+                if (th && garment.image_url) th.src = elloCtlImgUrl(garment.image_url, 240);
+                var nm = panel.querySelector('.ectl-name');
+                if (nm) nm.textContent = garment.name || 'Your pick';
+                var pv = panel.querySelector('.ectl-price-val');
+                if (pv) pv.textContent = elloCtlNum(garment.price) > 0 ? elloCtlMoney(garment.price) : '';
+                var btn = panel.querySelector('#ectl-try-btn');
+                if (btn) { btn.disabled = true; btn.innerHTML = ELLO_CTL_PLUS + '<span>Styling…</span>'; }
+            }
+        } else if (origin === 'widget') {
+            __elloCtlA.itemB = garment;
+            window.__elloCtlLayeringInWidget = true;
+            var rail = document.getElementById('ello-ctl-rail');
+            if (rail) {
+                var th2 = rail.querySelector('.ello-ctl-thumb');
+                if (th2 && garment.image_url) th2.src = elloCtlImgUrl(garment.image_url, 240);
+                var nm2 = rail.querySelector('.ello-ctl-name');
+                if (nm2) nm2.textContent = garment.name || 'Your pick';
+                var pv2 = rail.querySelector('.ello-ctl-price-val');
+                if (pv2) pv2.textContent = elloCtlNum(garment.price) > 0 ? elloCtlMoney(garment.price) : '';
+                var sub2 = rail.querySelector('.ello-ctl-sub');
+                if (sub2) sub2.textContent = 'your pick';
+                var tb = rail.querySelector('#ello-ctl-try-btn');
+                if (tb) { tb.disabled = true; tb.innerHTML = '<span>Styling…</span>'; }
+            }
+        }
+        // 'swap' needs no routing flags — the re-base already happened and the
+        // result lands wherever this surface normally shows results.
+        startTryOn();
+    } catch (e) {
+        window.__elloCtlLayeringInB = false;
+        window.__elloCtlLayeringInWidget = false;
+    }
+}
+
+// Open Browse Collection carrying the "Completing your look" bar — the trust
+// signal that the next render includes what the shopper is already wearing.
+// Shared by the CTL pick-your-own line and the wardrobe swap pill. `origin`
+// ('hero' | 'widget' | 'swap') arms pick mode: the shopper's item tap renders
+// IMMEDIATELY on the right surface — no widget popup, no second click
+// (Andrew 2026-08-05).
+function elloOpenBrowserWearing(names, origin) {
+    window.__elloPickMode = origin || 'widget';
+    openClothingBrowser();
+    try {
+        var body = document.querySelector('#clothingBrowserModal .browser-body');
+        if (!body) return;
+        var bar = document.createElement('div');
+        bar.id = 'ello-browse-basebar';
+        bar.innerHTML = '<span class="ebb-ic">' + ELLO_SWAP_ARROWS + '</span>' +
+            '<span class="ebb-txt"><b>Completing your look</b><span class="ebb-names"></span></span>';
+        var clean = (names || []).filter(Boolean);
+        // textContent — merchant product names must never parse as markup.
+        bar.querySelector('.ebb-names').textContent = clean.length
+            ? ' · wearing ' + clean.join(' + ')
+            : ' · building from your photo';
+        // The controls block is sticky — parking the bar inside it keeps
+        // "Completing your look" visible while the shopper scrolls the grid.
+        var wrap = body.querySelector('.epc-controls');
+        if (wrap) wrap.insertBefore(bar, wrap.firstChild);
+        else body.insertBefore(bar, body.firstChild);
+    } catch (e) { /* bar is decoration — the browser itself already opened */ }
 }
 
 // Both state: "Your look · 2 pieces" + two thumbs + "Add both to cart · $total".
@@ -7068,19 +7603,33 @@ window.elloRenderCompleteTheLook = elloRenderCompleteTheLook;
 window.elloCtlAttachPeek = elloCtlAttachPeek;
 window.elloCtlOpenPeekLightbox = elloCtlOpenPeekLightbox;
 
-// Apply the active category chip + the search box together, then re-render.
+// Apply the active category chip + the search box + the sort together, then
+// re-render. Strict search first; the fuzzy (typo) pass only runs when strict
+// found nothing, so approximate matches can never dilute real results.
 function applyBrowserFilters() {
     const input = document.getElementById('browserSearch');
-    const q = (input ? input.value : '').toLowerCase().trim();
+    const rawQ = (input ? input.value : '').trim();
+    const qTokens = __epcTokens(rawQ);
+    const qStr = __epcNormText(rawQ);
     const cat = browserCategoryFilter || 'all';
-    filteredClothing = (sampleClothing || []).filter(item => {
-        if (cat !== 'all' && elloProductBucket(item) !== cat) return false;
-        if (q) {
-            const hay = ((item.name || '') + ' ' + (item.category || '') + ' ' + (item.color || '') + ' ' + ((item.tags || []).join(' '))).toLowerCase();
-            if (hay.indexOf(q) === -1) return false;
+
+    const base = (sampleClothing || []).filter(item =>
+        cat === 'all' || elloProductBucket(item) === cat);
+
+    let out;
+    let meta = null;
+    if (qTokens.length) {
+        out = __epcSearchRank(base, qTokens, qStr, false);
+        if (!out.length) {
+            out = __epcSearchRank(base, qTokens, qStr, true);
+            meta = out.length ? 'fuzzy' : 'none';
         }
-        return true;
-    });
+    } else {
+        out = base.slice();
+    }
+
+    __epcSearchState = rawQ ? { q: rawQ, meta: meta } : null;
+    filteredClothing = __epcApplySort(out);
     browserCurrentPage = 1;
     updateBrowserDisplay();
 }
@@ -7139,21 +7688,34 @@ function __epcBuildCard(item) {
     card.setAttribute('tabindex', '0');
     card.dataset.id = item.id;
     card.onclick = () => selectClothingFromBrowser(item.id);
+    // The cards are buttons for keyboard users too — Enter/Space activates.
+    card.onkeydown = (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            selectClothingFromBrowser(item.id);
+        }
+    };
 
-    const safeName = (item.name || '').replace(/"/g, '&quot;');
-    // Price can arrive as a number or a string ("$38.00"), on the item or its
-    // first variant — normalize all of those to a clean number.
-    let rawPrice = item.price;
-    if ((rawPrice == null || Number(rawPrice) <= 0) && item.variants && item.variants[0]) {
-        rawPrice = item.variants[0].price;
-    }
-    const priceNum = Number(String(rawPrice == null ? '' : rawPrice).replace(/[^0-9.]/g, ''));
-    const priceHtml = (isFinite(priceNum) && priceNum > 0)
-        ? `<div class="epc-price">$${priceNum.toFixed(2)}</div>` : '';
+    // Product names are merchant data headed into innerHTML — escape every
+    // HTML-active character, not just quotes.
+    const safeName = (item.name || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const priceNum = __epcItemPrice(item);
+    const priceHtml = priceNum > 0 ? `<div class="epc-price">$${priceNum.toFixed(2)}</div>` : '';
+
+    const soldOut = __epcIsSoldOut(item);
+    if (soldOut) card.classList.add('is-soldout');
+    const badgeHtml = soldOut ? '<span class="epc-badge-soldout">Sold out</span>' : '';
+    card.setAttribute('aria-label',
+        (item.name || 'Product') +
+        (priceNum > 0 ? ', $' + priceNum.toFixed(2) : '') +
+        (soldOut ? ', sold out' : ''));
+
     const fallback = "this.onerror=null;this.style.opacity=1;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22300%22 height=%22400%22%3E%3Crect width=%22300%22 height=%22400%22 fill=%22%23eceef0%22/%3E%3C/svg%3E';this.parentNode.classList.add('epc-ready')";
 
     card.innerHTML =
-        '<div class="epc-media">' +
+        '<div class="epc-media">' + badgeHtml +
             `<img class="epc-img" src="${item.image_url}" alt="${safeName}" loading="lazy" decoding="async" ` +
             `onload="this.classList.add('is-loaded');this.parentNode.classList.add('epc-ready')" ` +
             `onerror="${fallback}">` +
@@ -7211,6 +7773,65 @@ function __epcEnsureObserver() {
     __epcObserver.observe(sentinel);
 }
 
+function __epcHasImage(item) {
+    return item && item.image_url && item.image_url.trim() !== '' &&
+        !item.image_url.includes('placeholder') &&
+        !item.image_url.includes('data:image/svg');
+}
+
+// The dead-end recovery panel: "No matches for X" + one obvious way out +
+// popular picks below, instead of an empty wall. Built via DOM APIs —
+// merchant/shopper text must never parse as markup.
+function __epcRenderEmptyPanel(noResults, state, hasPicks) {
+    noResults.innerHTML = '';
+
+    const title = document.createElement('div');
+    title.className = 'epc-empty-title';
+    const sub = document.createElement('div');
+    sub.className = 'epc-empty-sub';
+
+    if (state && state.q) {
+        title.appendChild(document.createTextNode('No matches for “'));
+        const qSpan = document.createElement('span');
+        qSpan.textContent = state.q;
+        title.appendChild(qSpan);
+        title.appendChild(document.createTextNode('”'));
+        sub.textContent = 'Check the spelling or try a broader word.';
+    } else {
+        title.textContent = 'Nothing here yet';
+        sub.textContent = 'This category has no items right now.';
+    }
+    noResults.appendChild(title);
+    noResults.appendChild(sub);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'epc-empty-clear';
+    if (state && state.q) {
+        btn.textContent = 'Clear search';
+        btn.addEventListener('click', function () {
+            const input = document.getElementById('browserSearch');
+            if (input) input.value = '';
+            applyBrowserFilters();
+        });
+        noResults.appendChild(btn);
+    } else if (browserCategoryFilter && browserCategoryFilter !== 'all') {
+        btn.textContent = 'Show all categories';
+        btn.addEventListener('click', function () {
+            browserCategoryFilter = 'all';
+            renderBrowserGrid();
+        });
+        noResults.appendChild(btn);
+    }
+
+    if (hasPicks) {
+        const label = document.createElement('div');
+        label.className = 'epc-empty-picks-label';
+        label.textContent = 'Popular picks';
+        noResults.appendChild(label);
+    }
+}
+
 function updateBrowserDisplay() {
     const grid = document.getElementById('browserGrid');
     const noResults = document.getElementById('noResultsMessage');
@@ -7225,24 +7846,50 @@ function updateBrowserDisplay() {
     __epcIndex = 0;
     grid.innerHTML = '';
 
-    // Only show items that actually have a usable image.
-    __epcItems = (filteredClothing || []).filter(item =>
-        item && item.image_url && item.image_url.trim() !== '' &&
-        !item.image_url.includes('placeholder') &&
-        !item.image_url.includes('data:image/svg'));
+    // New result set → start reading from the top.
+    const scrollRoot = __epcScrollRoot();
+    if (scrollRoot) scrollRoot.scrollTop = 0;
 
+    const st = __epcSearchState;
+
+    // Only show items that actually have a usable image.
+    __epcItems = (filteredClothing || []).filter(__epcHasImage);
+
+    // Dead end (typo pass included) → recover with popular picks from the
+    // full catalog rather than stranding the shopper on an empty wall.
+    let recovering = false;
     if (__epcItems.length === 0) {
-        grid.style.display = 'none';
-        if (noResults) noResults.style.display = 'block';
+        recovering = true;
+        __epcItems = (sampleClothing || []).filter(__epcHasImage).slice(0, 8);
+    }
+
+    if (recovering) {
         if (resultsCount) resultsCount.textContent = '';
-        return;
+        if (noResults) {
+            __epcRenderEmptyPanel(noResults, st, __epcItems.length > 0);
+            noResults.style.display = 'block';
+        }
+        if (__epcItems.length === 0) { // catalog itself is empty
+            grid.style.display = 'none';
+            return;
+        }
+    } else {
+        if (noResults) noResults.style.display = 'none';
+        if (resultsCount) {
+            const n = __epcItems.length;
+            if (st && st.meta === 'fuzzy') {
+                resultsCount.textContent = 'Showing ' + n + ' close match' + (n === 1 ? '' : 'es') +
+                    ' for “' + st.q + '”';
+            } else if (st && st.q) {
+                resultsCount.textContent = n + ' result' + (n === 1 ? '' : 's') +
+                    ' for “' + st.q + '”';
+            } else {
+                resultsCount.textContent = n + (n === 1 ? ' item' : ' items');
+            }
+        }
     }
 
     grid.style.display = 'grid';
-    if (noResults) noResults.style.display = 'none';
-    if (resultsCount) resultsCount.textContent =
-        __epcItems.length + (__epcItems.length === 1 ? ' item' : ' items');
-
     __epcAppendChunk();      // first chunk
     __epcEnsureObserver();   // wire up infinite scroll
     __epcFillIfNeeded();     // top up if the first screen isn't full
@@ -7959,6 +8606,19 @@ function elloCompleteTheLookOn() {
     return true;
 }
 
+// Outfit editing v2 (Andrew 2026-08-04): badge glyph, outfit-save toast, coach
+// mark, CTL pick-your-own line, wardrobe swap-a-piece. Per-store gate — OFF
+// everywhere until a store's config carries style_overrides.outfit_editing_v2
+// (one SQL to enable), so an accidental production deploy of this bundle
+// changes nothing for live merchants. The window override exists for local
+// harnesses and demo pages only.
+function elloOutfitV2On() {
+    if (window.__ELLO_OUTFIT_V2__ === true) return true;
+    var c = window.ELLO_STORE_CONFIG || {};
+    var so = c.styleOverrides;
+    return !!(so && so.outfit_editing_v2 === true);
+}
+
 // Returning shopper on a no-widget store, viewing a try-on-able product → the
 // HYBRID focused view. True only when: bubble off everywhere + a saved photo
 // exists + the current product resolves. (Andrew 2026-06-28.)
@@ -8038,7 +8698,11 @@ function ensureFocusedStyles() {
         '.ello-focus-img{position:relative;width:100%;aspect-ratio:3/4;border-radius:14px;background:#f1f1f1 center/cover no-repeat;box-shadow:0 1px 3px rgba(0,0,0,.05),0 6px 16px rgba(0,0,0,.07);}' +
         '.ello-focus-plus{align-self:center;text-align:center;color:#c4c4c4;font-size:20px;line-height:1;}' +
         '.ello-focus-cap{text-align:center;font-size:12px;font-weight:var(--ello-fw-600, 600);color:#555;margin-top:8px;line-height:1.3;}' +
-        '.ello-focus-change{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(17,17,17,.78);color:#fff;border:none;border-radius:999px;font:inherit;font-size:11px;font-weight:var(--ello-fw-500, 500);padding:5px 12px;cursor:pointer;white-space:nowrap;}' +
+        '.ello-focus-change{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(17,17,17,.78);color:#fff;border:none;border-radius:999px;font:inherit;font-size:11px;font-weight:var(--ello-fw-500, 500);padding:5px 12px;cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent;}' +
+        // "Change photo" is the shopper's only route back to re-uploading, and at
+        // the desktop padding it renders 25px tall — a thumb-sized miss on the
+        // phone-first surface. Grow it (and the label) on touch widths.
+        '@media (max-width:768px){.ello-focus-change{min-height:36px;padding:8px 14px;font-size:12px;bottom:10px;}}' +
         '.ello-focus-head{text-align:center;font-size:14px;font-weight:var(--ello-fw-600, 600);color:#2f2f2f;letter-spacing:-.01em;line-height:1.4;padding:28px 22px 4px;}' +
         // Browse / Wardrobe stacked as full-width rows. We reuse the opened hub's
         // own .browse-all-btn / .wardrobe-btn card styling (icon + label + sub),
@@ -8063,7 +8727,39 @@ function ensureFocusedStyles() {
             '.virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-head{padding:14px 22px 2px;font-size:13px;line-height:1.35;}' +
             '.virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-cap{margin-top:6px;}' +
             '.virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-doors{padding:4px 20px 10px;}' +
-        '}';
+        '}' +
+        // Mobile gets the same no-scroll guarantee the desktop block above
+        // earned: the panel caps at ~90svh but the focused stack ran
+        // ~640-700px, so the doors fell under the sticky footer and the view
+        // scrolled (Andrew 2026-08-02, mobile demo). Compress every section
+        // and size the tiles off the viewport (clamp) so head + stage + both
+        // doors + footer always share one screen. ID-prefixed because the
+        // template's mobile !important tiers outrank class-only rules.
+        '@media (max-width:768px){' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-head{padding:10px 20px 2px;font-size:13px;line-height:1.35;}' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-stage{padding:8px 16px 2px;gap:8px;}' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-img{aspect-ratio:auto;height:clamp(116px,26svh,180px);}' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-cap{margin-top:5px;font-size:11px;}' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-doors{padding:2px 16px 4px;}' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-doors .browse-all-btn,' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-doors .wardrobe-btn{padding:9px 12px;margin-top:8px;}' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-doors .rb-ico{width:34px;height:34px;border-radius:9px;}' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .ello-focus-brand{padding:0 20px 8px;}' +
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .action-buttons{padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));gap:10px;}' +
+            // "Try on live" (dev-store flag) is width:100% in the base sheet,
+            // wrapping the footer to two rows (~143px) — share one row here.
+            '#virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub:not(.inline-mode-result-ready) .action-buttons .btn-live{width:auto;flex:1;padding:12px 10px;font-size:13px;}' +
+        '}' +
+        // "You" tile empty state — the tile was a bare gray rectangle before a
+        // photo exists (Andrew 2026-08-02: say the photo isn't uploaded, keep
+        // it premium/minimal). Quiet silhouette + two short lines; hidden the
+        // moment a photo lands. pointer-events:none keeps the whole-card
+        // tap-to-upload handler as the touch target.
+        '.ello-focus-img.is-empty{background:#f7f7f6;box-shadow:inset 0 0 0 1.5px #e7e7e4;}' +
+        '.ello-focus-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;padding:14px 12px 40px;text-align:center;pointer-events:none;}' +
+        '.ello-focus-empty svg{width:30px;height:30px;color:#c9c8c4;}' +
+        '.ello-focus-empty-t{font-size:11.5px;font-weight:var(--ello-fw-600, 600);color:#6d6d6a;line-height:1.3;}' +
+        '.ello-focus-empty-s{font-size:10.5px;font-weight:var(--ello-fw-500, 500);color:#a3a29e;line-height:1.35;}';
     document.head.appendChild(s);
 }
 
@@ -8096,8 +8792,15 @@ function elloSetupFocusedExtras() {
     if (!stage) {
         stage = document.createElement('div');
         stage.className = 'ello-focus-stage';
+        var EMPTY_PERSON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.4"></circle><path d="M5.5 20c.8-3.4 3.4-5.2 6.5-5.2s5.7 1.8 6.5 5.2"></path></svg>';
         stage.innerHTML =
-            '<div class="ello-focus-cell"><div class="ello-focus-img" data-img="photo"><button type="button" class="ello-focus-change">Change photo</button></div><div class="ello-focus-cap">You</div></div>' +
+            '<div class="ello-focus-cell"><div class="ello-focus-img" data-img="photo">' +
+                '<div class="ello-focus-empty" aria-hidden="true">' + EMPTY_PERSON +
+                    '<div class="ello-focus-empty-t">Your photo isn’t uploaded</div>' +
+                    '<div class="ello-focus-empty-s">Tap to add one</div>' +
+                '</div>' +
+                '<button type="button" class="ello-focus-change">Change photo</button>' +
+            '</div><div class="ello-focus-cap">You</div></div>' +
             '<div class="ello-focus-plus">+</div>' +
             '<div class="ello-focus-cell"><div class="ello-focus-img" data-img="product"></div><div class="ello-focus-cap" data-cap="product">This item</div></div>';
         host.insertBefore(stage, host.firstChild);
@@ -8121,6 +8824,11 @@ function elloSetupFocusedExtras() {
     // copy flips the moment an upload lands.
     var chip = stage.querySelector('.ello-focus-change');
     if (chip) chip.textContent = photoSrc ? 'Change photo' : 'Add photo';
+    // Empty-state overlay tracks the same signal (idempotent — this runs on
+    // every refresh call, including the 260/750ms retries).
+    var emptyEl = stage.querySelector('.ello-focus-empty');
+    if (emptyEl) emptyEl.style.display = photoSrc ? 'none' : '';
+    if (pImg) pImg.classList.toggle('is-empty', !photoSrc);
 
     // Short header line above the stage.
     var head = widget.querySelector('.ello-focus-head');
@@ -8132,6 +8840,19 @@ function elloSetupFocusedExtras() {
         head.textContent = photoSrc
             ? 'Hey — want to use this photo again? Just hit Try On below.'
             : 'Add one photo to see it on you.';
+    }
+    // Outfit-building state (wardrobe "Add to outfit"): the tile shows a try-on
+    // RESULT, not their plain photo — say so, or the swap reads as a glitch.
+    // Key-guarded to the current photo id, so any photo change reverts the copy.
+    var youCap = stage.querySelector('.ello-focus-cap');
+    var outfitOn = photoSrc && typeof __elloOutfitBase !== 'undefined' && __elloOutfitBase &&
+        __elloOutfitBase.key === userPhotoFileId && __elloOutfitBase.items.length;
+    if (outfitOn) {
+        var pieceCount = __elloOutfitBase.items.length;
+        if (head) head.textContent = 'Outfit in progress — Try On layers this item over it.';
+        if (youCap) youCap.textContent = 'You · ' + pieceCount + (pieceCount === 1 ? ' piece on' : ' pieces on');
+    } else if (youCap && youCap.textContent !== 'You') {
+        youCap.textContent = 'You';
     }
 
     // Browse / Wardrobe stacked rich cards, injected right after the stage. These
@@ -8188,7 +8909,15 @@ window.elloOpenTryOnFromInline = function (ctx) {
     // goes straight to the picker in focused mode, and the stage's empty photo
     // card is the fallback upload affordance. The full panel home remains
     // reachable via the Fitting Room header/nav entries, just not this button.
-    if (elloIsNoWidgetStore()) {
+    if (elloIsNoWidgetStore() || window.ELLO_NO_SHOPIFY_CART) {
+        // Anywhere/platform host pages (ELLO_NO_SHOPIFY_CART — atlasapparel.shop,
+        // SFCC kits, …) ALWAYS get the focused confirm view, never the auto-fire.
+        // Two reasons (Andrew 2026-07-24): (1) the shopper must consciously hit
+        // Try On — "want to use this photo again?" + Browse/Wardrobe first; (2)
+        // elloIsNoWidgetStore() reads ELLO_STORE_CONFIG, which may not have
+        // resolved yet when a shopper clicks right after page load — that race
+        // sent early clicks down the auto-fire branch and started a render on
+        // the first tap.
         window.elloOpenFocusedReturning(ctx);
         return;
     }
@@ -8254,8 +8983,12 @@ function elloEnsureHubSwitchStyles() {
     style.id = 'ello-hub-switch-styles';
     style.textContent =
         '.ello-hub-switch{display:inline-flex;gap:2px;background:rgba(0,0,0,0.06);border-radius:999px;padding:3px;}' +
-        '.ello-hub-switch button{border:none;background:transparent;cursor:pointer;font:inherit;font-size:13px;font-weight:var(--ello-fw-500, 500);padding:6px 14px;border-radius:999px;color:#555;line-height:1;transition:background .15s,color .15s;}' +
-        '.ello-hub-switch button.active{background:#fff;color:#111;box-shadow:0 1px 2px rgba(0,0,0,0.12);}';
+        '.ello-hub-switch button{border:none;background:transparent;cursor:pointer;font:inherit;font-size:13px;font-weight:var(--ello-fw-500, 500);padding:6px 14px;border-radius:999px;color:#555;line-height:1;transition:background .15s,color .15s;-webkit-tap-highlight-color:transparent;}' +
+        '.ello-hub-switch button.active{background:#fff;color:#111;box-shadow:0 1px 2px rgba(0,0,0,0.12);}' +
+        // These two pills ARE the hub's navigation. At the desktop padding they
+        // render 25px tall — roughly half the 44px minimum — which is a miss-prone
+        // target for a thumb, and the hub is a phone-first surface.
+        '@media (max-width:768px){.ello-hub-switch button{min-height:38px;padding:6px 18px;font-size:14px;}}';
     document.head.appendChild(style);
 }
 
@@ -8463,6 +9196,27 @@ function elloImageBaseName(url) {
     } catch (e) { return ''; }
 }
 
+// Product-code stem of an image filename ("2dl9890_set.jpg" → "2dl9890").
+// Headless storefronts behind an image CDN (Boston Proper: Amplience at
+// media.bostonproper.com/i/…) rewrite Shopify's filename ("2DL9890_SET.jpg" →
+// "2DL9890_1", extensionless), so exact-basename matching misses every gallery
+// tile even though both URLs carry the product code. Stem = basename minus
+// extension minus ONE short trailing _suffix; only trusted when it still looks
+// like a code (≥5 chars AND contains a digit) so generic names ("black_1" →
+// "black") can never cross-match.
+function elloImageStem(url) {
+    var b = elloImageBaseName(url);
+    if (!b) return '';
+    b = b.replace(/\.[a-z0-9]+$/i, '');
+    b = b.replace(/_[a-z0-9]{1,4}$/i, '');
+    return (b.length >= 5 && /\d/.test(b)) ? b : '';
+}
+function elloStemMatches(basename, stem) {
+    if (!basename || !stem) return false;
+    var b = String(basename).replace(/\.[a-z0-9]+$/i, '');
+    return b === stem || b.indexOf(stem + '_') === 0 || b.indexOf(stem + '-') === 0;
+}
+
 // Resolve the product's main-media container so the swap targets the HERO image,
 // not a thumbnail, a zoom/lightbox clone, a swatch, or a related/recently-viewed
 // image elsewhere on the page. Returns null if none resolves (caller then scans
@@ -8483,6 +9237,23 @@ function elloPdpScopeRoot() {
 function elloPdpImgExcluded(el) {
     try {
         if (el.closest('.thumbnail-list, .product__media-toggle, .product__thumbnail, .product-single__thumbnails, [data-thumbnail], .product__media--zoom, .zoomImg, .drift-zoom-pane, .swatch, [data-swatch], .product-recommendations, .related-products, [data-recently-viewed], .recently-viewed')) return true;
+        // Never target our own UI (widget panel, demo chrome, swap cards) or a
+        // third-party outfit/recommendation widget (Boston Proper ships
+        // Stylitics "Complete the look" tiles of the SAME product right under
+        // the gallery — a stem match there would swap a rail tile).
+        if (el.closest('#virtualTryonWidget, [id^="ello-"], .ello-pdp-card, [class*="stylitics"]')) return true;
+        // Custom themes that name their thumbnail rail but match none of the
+        // Shopify-stock classes above — Gym King ships <thumbnail-carousel> with
+        // .thumbs_slide children. The tag is unambiguous enough to test on any
+        // ancestor; the class-substring test is deliberately capped at the img
+        // and its immediate parent, because plenty of themes name the WHOLE
+        // gallery for its rail (.gallery--with-thumbnails) and an ancestor-wide
+        // match there would veto the very hero we're looking for.
+        if (el.closest('thumbnail-carousel')) return true;
+        var thumbish = /(^|[^a-z])(thumbnail|thumbs)/i;
+        if (thumbish.test(el.className || '')) return true;
+        var p = el.parentElement;
+        if (p && thumbish.test(p.className || '')) return true;
         // [data-zoom] marks a zoom CLONE only on a container/ancestor. Many
         // themes (LA Apparel's Dawn) put data-zoom on the hero <img> ITSELF as
         // its hi-res source — that img is exactly the one we want, so a
@@ -8492,25 +9263,86 @@ function elloPdpImgExcluded(el) {
     } catch (e) { return false; }
 }
 
+// Rendered area of a candidate <img>, or 0 when it fails any gate — excluded,
+// hidden, not an <img>, or smaller than minPx on either side. Ranking by this
+// is what separates a hero from its own thumbnails: they are the same file at
+// different widths, so nothing in the URL tells them apart, but the hero is
+// always the biggest copy of the product photo on the page.
+function elloPdpImgArea(el, minPx) {
+    if (!el || el.tagName !== 'IMG') return 0;
+    if (elloPdpImgExcluded(el)) return 0;
+    var r; try { r = el.getBoundingClientRect(); } catch (e) { return 0; }
+    if (!r || r.width < minPx || r.height < minPx) return 0;
+    if (el.offsetParent === null) return 0;
+    return r.width * r.height;
+}
+
 // Find the PDP hero <img> within `root`. If preferSrc is supplied (the selected
 // color's featured_image), match the on-page <img> with the same base filename —
-// theme-agnostic AND color-correct. Otherwise fall back to the first reasonably
-// large, on-screen product image from the selector cascade. Skips excluded nodes.
+// theme-agnostic AND color-correct. Otherwise fall back to the largest reasonably
+// sized, on-screen product image from the selector cascade. Skips excluded nodes.
+//
+// Both passes take the LARGEST qualifying image, never the first in DOM order.
+// A thumbnail rail we don't recognise sits ahead of the hero in the DOM, so
+// first-wins handed it the swap on position alone — that is how Gym King's
+// try-on landed in a 146x202 thumbnail instead of the 699x968 hero. Ties keep
+// the earlier node, which is the one painted on top when a theme stacks a hero
+// over its carousel slide.
+// ─── Carousel guard: is this image HORIZONTALLY inside the viewport? ────────
+// A mobile PDP gallery is usually a horizontal carousel: every slide is rendered
+// at full viewport width, so all of them TIE on area, and the old "largest wins"
+// (strict >) silently kept the FIRST in DOM order — a slide sitting at x=-390,
+// scrolled off the left edge. The swap then fired perfectly onto an image the
+// shopper cannot see: no loading badge, no visible result, the render only
+// discoverable in the wardrobe. Desktop never showed it because the same gallery
+// lays out as a stacked grid where every candidate is on screen.
+// HORIZONTAL ONLY on purpose — a gallery scrolled above/below the fold is
+// completely normal and must NOT be disqualified.
+function elloImgInViewX(img) {
+    try {
+        var r = img.getBoundingClientRect();
+        if (!r || !r.width) return false;
+        var vw = window.innerWidth || document.documentElement.clientWidth || 0;
+        return r.right > 0 && r.left < vw;
+    } catch (e) { return false; }
+}
+
 function elloFindPdpImageIn(root, preferSrc) {
     if (!root) return null;
+    var best, bestArea, area;
+    // Two winners per pass: the best candidate that is actually on screen, and
+    // the best overall. Returning inView || any means this can only ever improve
+    // on the old pick — when nothing is in view (hidden gallery, zero-width
+    // rects) it falls back to exactly the previous behaviour.
+    var bestIn, bestInArea;
     if (preferSrc) {
         var want = elloImageBaseName(preferSrc);
+        var wantStem = elloImageStem(preferSrc);
         if (want) {
             var imgs = root.querySelectorAll('img');
+            best = null; bestArea = 0; bestIn = null; bestInArea = 0;
+            // Second-tier winners: same product CODE but a rewritten filename
+            // (proxied image CDNs — see elloImageStem). Exact matches always
+            // outrank stem matches.
+            var stBest = null, stBestArea = 0, stBestIn = null, stBestInArea = 0;
             for (var k = 0; k < imgs.length; k++) {
                 var im = imgs[k];
-                if (elloPdpImgExcluded(im)) continue;
                 var s = im.currentSrc || im.getAttribute('src') || '';
-                if (s && elloImageBaseName(s) === want) {
-                    var rr; try { rr = im.getBoundingClientRect(); } catch (e) { rr = null; }
-                    if (rr && rr.width >= 100 && rr.height >= 100 && im.offsetParent !== null) return im;
+                if (!s) continue;
+                var have = elloImageBaseName(s);
+                var exact = have === want;
+                if (!exact && !(wantStem && elloStemMatches(have, wantStem))) continue;
+                area = elloPdpImgArea(im, 100);
+                if (exact) {
+                    if (area > bestArea) { bestArea = area; best = im; }
+                    if (area > bestInArea && elloImgInViewX(im)) { bestInArea = area; bestIn = im; }
+                } else {
+                    if (area > stBestArea) { stBestArea = area; stBest = im; }
+                    if (area > stBestInArea && elloImgInViewX(im)) { stBestInArea = area; stBestIn = im; }
                 }
             }
+            if (bestIn || best) return bestIn || best;
+            if (stBestIn || stBest) return stBestIn || stBest;
         }
     }
     var selectors = [
@@ -8521,19 +9353,18 @@ function elloFindPdpImageIn(root, preferSrc) {
         '[data-product-single-media-wrapper] img', '[data-media-type="image"] img',
         '.product__media-list img', '.product-image-main img', '.product__photo img'
     ];
+    // Tier order still decides WHICH family of selectors answers; area only picks
+    // the winner inside the first tier that answers at all.
     for (var i = 0; i < selectors.length; i++) {
         var nodes;
         try { nodes = root.querySelectorAll(selectors[i]); } catch (e) { continue; }
+        best = null; bestArea = 0; bestIn = null; bestInArea = 0;
         for (var j = 0; j < nodes.length; j++) {
-            var el = nodes[j];
-            if (!el || el.tagName !== 'IMG') continue;
-            if (elloPdpImgExcluded(el)) continue;
-            var r;
-            try { r = el.getBoundingClientRect(); } catch (e) { r = null; }
-            if (r && r.width >= 140 && r.height >= 140 && el.offsetParent !== null) {
-                return el;
-            }
+            area = elloPdpImgArea(nodes[j], 140);
+            if (area > bestArea) { bestArea = area; best = nodes[j]; }
+            if (area > bestInArea && elloImgInViewX(nodes[j])) { bestInArea = area; bestIn = nodes[j]; }
         }
+        if (bestIn || best) return bestIn || best;
     }
     return null;
 }
@@ -8559,15 +9390,45 @@ function elloMerchantPdpImage() {
     return null;
 }
 
-// Three-pass: the merchant's explicit selector wins when it verifies, then the
+// Last-resort generic hero (headless/React storefronts — Boston Proper,
+// 2026-07-25): no Liquid selector matches there and the image CDN rewrites
+// filenames, so neither pass above resolves anything and the swap silently
+// died in-panel. Take the LARGEST on-screen, near-fold <img> that isn't page
+// chrome and isn't excluded (thumbnails, zoom clones, rec rails, our own UI).
+// On a tiled gallery every tile ties on area — the earliest wins, which is the
+// top-of-gallery shot a shopper reads as "the" product photo.
+function elloFindPdpGenericHero() {
+    var vh = window.innerHeight || document.documentElement.clientHeight || 800;
+    var best = null, bestArea = 0;
+    var imgs = document.images || [];
+    for (var i = 0; i < imgs.length; i++) {
+        var im = imgs[i];
+        try {
+            if (im.closest('header, footer, nav, aside, [role="banner"], [role="navigation"], [role="contentinfo"]')) continue;
+        } catch (e) { continue; }
+        var area = elloPdpImgArea(im, 200);
+        if (!area || area <= bestArea) continue;
+        if (!elloImgInViewX(im)) continue;
+        var r; try { r = im.getBoundingClientRect(); } catch (e) { continue; }
+        if (r.top > vh * 2.5) continue;   // far-below-fold grids/rails are never the hero
+        bestArea = area; best = im;
+    }
+    return best;
+}
+
+// Four-pass: the merchant's explicit selector wins when it verifies, then the
 // scoped product container (so we can't grab a thumbnail, zoom clone, or a
 // related-products image), then a document-wide scan that STILL applies the
 // exclusions — so coverage is never worse than the old unscoped search, but
-// mis-targeting is far less likely.
+// mis-targeting is far less likely. The generic largest-image pass runs dead
+// last: it only ever fires on themes where every selector- and filename-based
+// pass came up empty (headless storefronts), where the old behavior was a
+// guaranteed silent fallback to the in-panel result.
 function elloFindPdpImage(preferSrc) {
     return elloMerchantPdpImage()
         || elloFindPdpImageIn(elloPdpScopeRoot(), preferSrc)
-        || elloFindPdpImageIn(document, preferSrc);
+        || elloFindPdpImageIn(document, preferSrc)
+        || elloFindPdpGenericHero();
 }
 
 // ─── Color-correct garment (multi-variant PDPs) ─────────────────────────────
@@ -8590,6 +9451,20 @@ function elloFetchProductJson(handle) {
             if (!j || !Array.isArray(j.variants) || !j.variants.length) {
                 var ld = elloProductFromJsonLd(handle);
                 if (ld && Array.isArray(ld.variants) && ld.variants.length) j = ld;
+            }
+            // Platform adapter fallback (ello-sfcc.js): serves a /products/.js-shaped
+            // object (options + variants with option1/option2) built from the host
+            // platform's own product APIs. Only registered off Shopify.
+            if ((!j || !Array.isArray(j.variants) || !j.variants.length) &&
+                typeof window.ELLO_PLATFORM_PRODUCT_JSON === 'function') {
+                return Promise.resolve()
+                    .then(function () { return window.ELLO_PLATFORM_PRODUCT_JSON(handle); })
+                    .catch(function () { return null; })
+                    .then(function (pj) {
+                        if (pj && Array.isArray(pj.variants) && pj.variants.length) j = pj;
+                        if (j) __elloProductJsonCache[handle] = j;
+                        return j;
+                    });
             }
             if (j) __elloProductJsonCache[handle] = j;
             return j;
@@ -8771,7 +9646,11 @@ function elloEnsurePdpSwapStyles() {
         // card into a hero-covering white box on Atlas Apparel (2026-07-04).
         // That selector's specificity beats any single class, so only !important
         // keeps the card card-sized there.
-        '.ello-pdp-card{position:absolute !important;top:12px !important;right:12px !important;left:auto !important;bottom:auto !important;width:78px !important;height:auto !important;max-width:78px !important;margin:0 !important;transform:none !important;z-index:7;border:none;padding:0;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 4px 16px rgba(0,0,0,.28);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
+        '.ello-pdp-card{position:absolute !important;top:12px !important;right:12px !important;left:auto !important;bottom:auto !important;width:78px !important;height:auto !important;max-width:78px !important;margin:0 !important;transform:none !important;z-index:7;border:none !important;padding:0 !important;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 4px 16px rgba(0,0,0,.28) !important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;letter-spacing:normal !important;text-transform:none !important;text-indent:0 !important;}' +
+        // Same host-CSS shield the CTL panel carries: this card also lives in
+        // the merchant/prospect page's own media wrapper, so global button
+        // pseudo-elements/rings can deface it (lime-ring repro, 2026-08-03).
+        '.ello-pdp-card::before,.ello-pdp-card::after,.ello-pdp-card *::before,.ello-pdp-card *::after{content:none !important;}' +
         // object-fit needs !important too: theme media rules (e.g. `.media img
         // {object-fit:contain}`) otherwise win and letterbox the thumb with
         // white bars from the card background (Andrew 2026-07-13).
@@ -8785,7 +9664,7 @@ function elloEnsurePdpSwapStyles() {
         'button.ello-pdp-card:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,0,0,.32);}' +
         'button.ello-pdp-card:active{transform:scale(.97);}' +
         '.ello-pdp-swapbadge{position:absolute;bottom:6px;right:6px;width:22px;height:22px;border-radius:50%;background:rgba(17,17,17,.82);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.35);pointer-events:none;}' +
-        '.ello-pdp-swapbadge svg{width:13px;height:13px;}';
+        '.ello-pdp-swapbadge svg{width:13px !important;height:13px !important;}';
     document.head.appendChild(s);
 }
 
@@ -8798,10 +9677,37 @@ function elloEnsurePdpSwapStyles() {
 // what the shopper actually sees — anchor everything there.
 function elloPdpAnchor(imgEl) {
     var wrap = (elloPdpUseOverlay && elloPdpUseOverlay() && elloPdpVisibleFrame(imgEl)) || imgEl.parentElement || imgEl;
+    // Collapse guard (Boston Proper, 2026-07-25): Tailwind-style heroes are
+    // `absolute inset-0 h-full`, sized against their nearest POSITIONED
+    // ancestor. When `wrap` is a closer, auto-height, static div (BP's
+    // .focus-outline), forcing position:relative onto it re-parents that
+    // h-full onto a zero-height box — the hero collapses to 0 and the gallery
+    // tile goes blank white. Layout is synchronous: measure the img before and
+    // after the mutation; on collapse, revert and anchor to the img's
+    // offsetParent — the positioned box the theme itself sizes the hero
+    // against (already positioned, so anchoring there mutates nothing).
+    var before = 0;
+    try { before = imgEl.getBoundingClientRect().height; } catch (e) {}
+    var mutated = false;
     try {
         var pos = window.getComputedStyle(wrap).position;
-        if (pos === 'static' || !pos) wrap.style.position = 'relative';
+        if (pos === 'static' || !pos) { wrap.style.position = 'relative'; mutated = true; }
     } catch (e) {}
+    if (mutated && before > 20) {
+        try {
+            if (imgEl.getBoundingClientRect().height < before * 0.5) {
+                wrap.style.position = '';
+                var op = imgEl.offsetParent;
+                if (op && op !== document.body && op !== document.documentElement &&
+                    op.getBoundingClientRect().height >= 40) {
+                    return op;
+                }
+                // No usable positioned ancestor: keep the old behavior (a
+                // positioned wrap) over an unpredictable anchor for our card.
+                wrap.style.position = 'relative';
+            }
+        } catch (e) {}
+    }
     return wrap;
 }
 // Nearest overflow-hidden ancestor = the box the shopper sees (past any oversized
@@ -8843,12 +9749,31 @@ function elloPdpVisibleFrame(img) {
 // bounds, and drives our UI directly via each button's __elloTap handler.
 // Events targeting our own higher surfaces (size picker, widget, modals) or
 // an OPEN dialog pass through untouched.
+// True while one of Ello's own full-screen sheets owns the input — wardrobe,
+// collection/model browser, look viewer, size picker, result lightbox, or an
+// active backdrop. The tap shield below is GEOMETRIC (it tests coordinates
+// against the hero/panel rects and can't see stacking), so with a sheet open
+// on top, a tap on e.g. the wardrobe's "Add to outfit" button that happens to
+// sit over the swapped hero was swallowed and popped the result lightbox
+// instead (Andrew 2026-08-03, bookmarklet demo). While any sheet is up, the
+// shield stands down completely and native event flow does the right thing.
+function elloPdpShieldStandsDown() {
+    var active = ['wardrobeModal', 'clothingBrowserModal', 'modelBrowserModal', 'imageModal', 'modalBackdrop'];
+    for (var i = 0; i < active.length; i++) {
+        var el = document.getElementById(active[i]);
+        if (el && el.classList.contains('active')) return true;
+    }
+    // Presence-marked overlays (created on open, removed on close).
+    return !!(document.getElementById('ello-sz-overlay') || document.getElementById('ello-result-lightbox'));
+}
+
 var __elloPdpShieldOn = false;
 function elloInstallPdpTapShield() {
     if (__elloPdpShieldOn) return;
     __elloPdpShieldOn = true;
     ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'click'].forEach(function (type) {
         window.addEventListener(type, function (ev) {
+            if (elloPdpShieldStandsDown()) return;   // an Ello sheet owns the screen
             var pt = (ev.changedTouches && ev.changedTouches[0]) || ev;
             var x = pt.clientX, y = pt.clientY;
             if (typeof x !== 'number' || (x === 0 && y === 0)) return;   // keyboard activation
@@ -8861,6 +9786,29 @@ function elloInstallPdpTapShield() {
             }
             var region = hit(thumb) ? thumb : (hit(loading) ? loading : (hit(panel) ? panel : null));
             if (!region) {
+                // Hero showing the RESULT: a click there must open the try-on,
+                // not the store's lightbox (whose hi-res chain — parent <a href>,
+                // React gallery state — we never rewrote, so it shows the
+                // original model photo). Click ONLY: swipes/scrolls never emit
+                // one, so carousels and page scroll are untouched; flipped back
+                // to the product photo, taps pass through to the native zoom.
+                var hero = (__elloPdpSwap.swapped && __elloPdpSwap.showingResult !== false && __elloPdpSwap.resultUrl)
+                    ? ((__elloPdpSwap.overlayEl && __elloPdpSwap.overlayEl.isConnected) ? __elloPdpSwap.overlayEl : __elloPdpSwap.imgEl)
+                    : null;
+                if (type === 'click' && hero && hit(hero)) {
+                    var ht = ev.target;
+                    if (!(ht instanceof Node && ht.nodeType === 1 && ht.closest &&
+                          ht.closest('#virtualTryonWidget, #ello-sz-overlay, #ello-ctl-lightbox, #ello-result-lightbox, .clothing-browser-modal, .wardrobe-modal, .image-modal, .ello-notification, .modal-backdrop, dialog[open], [aria-modal="true"]'))) {
+                        ev.stopImmediatePropagation();
+                        ev.preventDefault();
+                        elloOpenResultLightbox();
+                        // A touchend/pointerup-wired theme zoom may have opened
+                        // anyway — repaint its clone as a backstop.
+                        setTimeout(elloSyncZoomDialogs, 150);
+                        setTimeout(elloSyncZoomDialogs, 500);
+                        return;
+                    }
+                }
                 // A tap elsewhere on a swapped hero is (likely) the theme zoom
                 // opening — after it mounts, repaint its hi-res clone with the
                 // shopper's result so zooming "them" shows THEM.
@@ -8874,7 +9822,7 @@ function elloInstallPdpTapShield() {
             var t = ev.target;
             if (t instanceof Node && t.nodeType === 1) {
                 try {
-                    if (t.closest('#virtualTryonWidget, #ello-sz-overlay, #ello-ctl-lightbox, .clothing-browser-modal, .modal-backdrop, dialog[open], [aria-modal="true"]')) return;
+                    if (t.closest('#virtualTryonWidget, #ello-sz-overlay, #ello-ctl-lightbox, #ello-result-lightbox, .clothing-browser-modal, .wardrobe-modal, .image-modal, .ello-notification, .modal-backdrop, dialog[open], [aria-modal="true"]')) return;
                 } catch (e) {}
             }
             // The tap is ours alone — the theme never sees ANY event of it.
@@ -8937,9 +9885,18 @@ function elloBeginPdpSwapLoading() {
     var wrap = elloPdpAnchor(img);
     if (__elloPdpSwap.loadingEl) { try { __elloPdpSwap.loadingEl.remove(); } catch (e) {} }
     if (__elloPdpSwap.thumbEl) { try { __elloPdpSwap.thumbEl.remove(); } catch (e) {} __elloPdpSwap.thumbEl = null; }
-    // Reset any overlay from a prior swap before this render begins.
-    if (__elloPdpSwap.overlayEl) { try { __elloPdpSwap.overlayEl.remove(); } catch (e) {} __elloPdpSwap.overlayEl = null; }
-    if (__elloPdpSwap.overlayObs) { try { __elloPdpSwap.overlayObs.disconnect(); } catch (e) {} __elloPdpSwap.overlayObs = null; }
+    // Reset any overlay from a prior swap before this render begins — EXCEPT on
+    // a CTL layering pass. In overlay mode (demos / React storefronts) the
+    // overlay IS the hero showing item A on the shopper; tearing it down here
+    // exposed the store's original product photo for the whole second render
+    // (Andrew 2026-07-25: "it goes back to the original product image"). Keep A
+    // on screen — elloFinishPdpSwap reuses the same overlay node and repaints it
+    // with the A+B outfit when it lands. The src-swap path never had this bug
+    // (nothing below touches img.src), so only the overlay teardown is gated.
+    if (!window.__elloCtlLayeringInB) {
+        if (__elloPdpSwap.overlayEl) { try { __elloPdpSwap.overlayEl.remove(); } catch (e) {} __elloPdpSwap.overlayEl = null; }
+        if (__elloPdpSwap.overlayObs) { try { __elloPdpSwap.overlayObs.disconnect(); } catch (e) {} __elloPdpSwap.overlayObs = null; }
+    }
 
     var myPhoto = window.elloUserImageUrl || (typeof userPhoto !== 'undefined' && userPhoto) || '';
     var card = document.createElement('div');
@@ -9240,6 +10197,27 @@ function elloFinishPdpSwap(resultUrl, opts) {
         if (__elloPdpSwap.loadingEl) { try { __elloPdpSwap.loadingEl.remove(); } catch (e) {} __elloPdpSwap.loadingEl = null; }
         __elloPdpSwap.swapped = true;
         var wrap = elloPdpAnchor(img);
+        // The fades below ride rAF + CSS transitions, which only advance while
+        // the tab produces rendering frames. A hidden/occluded tab (Chrome
+        // throttling — reproduced on Boston Proper, 2026-07-25) never fires the
+        // rAF and freezes a started transition mid-fade, pinning the result at
+        // ~0 opacity: the render "completes" but the image reads as blank.
+        // Timers DO still run there, so guarantee the end state out-of-band; in
+        // the normal visible flow the fade (350ms) finishes first and this
+        // no-ops. The transition is restored after the force so the flip-thumb
+        // toggle keeps its smooth fade.
+        var settleVisible = function (el) {
+            if (!el) return;
+            setTimeout(function () {
+                try {
+                    if (parseFloat(getComputedStyle(el).opacity) > 0.95) return;
+                    var t = el.style.transition;
+                    el.style.transition = 'none';
+                    el.style.opacity = '1';
+                    setTimeout(function () { el.style.transition = t || ''; }, 150);
+                } catch (e) { try { el.style.transition = 'none'; el.style.opacity = '1'; } catch (e2) {} }
+            }, 600);
+        };
         // OVERLAY MODE (headless/React demo): the result is an <img> laid OVER the
         // hero. Crucially we do NOT touch the store's own <img>.src — that img
         // lives inside a 2x zoom-pan layer, so pointing it at the result showed a
@@ -9249,12 +10227,15 @@ function elloFinishPdpSwap(resultUrl, opts) {
         if (elloPdpUseOverlay()) {
             var ovEl = elloPdpEnsureResultOverlay(img, wrap, heroUrl);
             if (ovEl && !instant) { ovEl.style.opacity = '0'; requestAnimationFrame(function () { ovEl.style.opacity = '1'; }); }
+            settleVisible(ovEl);
         } else if (instant) {
             img.src = heroUrl; img.style.opacity = '1';
+            settleVisible(img);
         } else {
             img.style.transition = 'opacity .35s ease';
             img.style.opacity = '0';
             setTimeout(function () { img.src = heroUrl; img.style.opacity = '1'; }, 120);
+            settleVisible(img);
         }
         if (__elloPdpSwap.thumbEl) { try { __elloPdpSwap.thumbEl.remove(); } catch (e) {} }
         var thumb = document.createElement('button');
@@ -9468,14 +10449,21 @@ function elloSyncZoomDialogs() {
         if (!s.swapped || s.showingResult === false || !s.resultUrl) return;
         var want = elloImageBaseName(s.originalDisplaySrc || s.originalSrc || '');
         if (!want) return;
+        // Stem fallback: image-CDN hosts (Amplience, Scene7) rewrite the
+        // filename between the hero and its hi-res clone — exact-basename
+        // matching misses those even though both carry the product code.
+        var wantStem = elloImageStem(s.originalDisplaySrc || s.originalSrc || '');
         var roots;
-        try { roots = document.querySelectorAll('dialog[open], [aria-modal="true"], .product-media-modal[open], product-modal[open]'); } catch (e) { return; }
+        // Dawn/Horizon modals first, then the common generic lightbox roots
+        // (PhotoSwipe, role=dialog) non-Shopify hosts use. Matching stays
+        // filename-gated, so a broader root list can't repaint a wrong image.
+        try { roots = document.querySelectorAll('dialog[open], [aria-modal="true"], .product-media-modal[open], product-modal[open], [role="dialog"], .pswp'); } catch (e) { return; }
         for (var r = 0; r < roots.length; r++) {
             var imgs = roots[r].querySelectorAll('img');
             for (var k = 0; k < imgs.length; k++) {
                 var im = imgs[k];
                 var src = im.currentSrc || im.getAttribute('src') || '';
-                if (src && elloImageBaseName(src) === want) {
+                if (src && (elloImageBaseName(src) === want || elloStemMatches(elloImageBaseName(src), wantStem))) {
                     s.zoomSwaps.push({ el: im, src: im.getAttribute('src'), srcset: im.getAttribute('srcset') });
                     im.removeAttribute('srcset'); im.removeAttribute('sizes');
                     // Zoom modals size to the image freely — give them the RAW
@@ -9485,6 +10473,80 @@ function elloSyncZoomDialogs() {
             }
         }
     } catch (e) { /* best-effort — worst case the zoom shows the product photo */ }
+}
+
+// ── Ello-owned result viewer ─────────────────────────────────────────────────
+// Tapping the swapped hero used to fall through to the STORE's lightbox, which
+// resolves its image from URLs we never rewrote (parent <a href>, React gallery
+// state, data-zoom attrs) — so zooming "you" showed the original model photo
+// (Andrew 2026-08-02, mobile UO demo). elloSyncZoomDialogs only patches
+// Shopify-shaped modals after the fact. Owning the tap is deterministic on
+// every stack: while the hero shows the RESULT, a click opens this viewer with
+// the raw render; flipped back to the product photo, taps pass through and the
+// theme zoom behaves natively. Only `click` is intercepted — a swipe or scroll
+// never emits one, so gallery carousels and page scrolling keep working.
+function elloEnsureResultLightboxStyles() {
+    if (document.getElementById('ello-result-lightbox-styles')) return;
+    var f = '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+    var s = document.createElement('style');
+    s.id = 'ello-result-lightbox-styles';
+    s.textContent =
+        '#ello-result-lightbox{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(17,17,17,.62);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);opacity:0;transition:opacity .22s ease;cursor:zoom-out;}' +
+        '#ello-result-lightbox.on{opacity:1;}' +
+        '#ello-result-lightbox .erl-img{display:block;max-width:min(560px,94vw);max-height:82vh;max-height:82svh;width:auto;height:auto;object-fit:contain;border-radius:14px;box-shadow:0 30px 90px rgba(0,0,0,.45);background:#f7f7f5;transform:translateY(10px) scale(.97);transition:transform .22s cubic-bezier(.2,.8,.2,1);}' +
+        '#ello-result-lightbox.on .erl-img{transform:none;}' +
+        '#ello-result-lightbox .erl-cap{position:absolute;left:50%;transform:translateX(-50%);bottom:max(18px,env(safe-area-inset-bottom));font:600 11px/1 ' + f + ';letter-spacing:.09em;text-transform:uppercase;color:rgba(255,255,255,.85);pointer-events:none;}' +
+        '#ello-result-lightbox .erl-x{position:absolute;top:max(14px,env(safe-area-inset-top));right:max(14px,env(safe-area-inset-right));width:34px;height:34px;border:none;border-radius:50%;background:rgba(255,255,255,.92);color:#111;box-shadow:0 4px 14px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;}';
+    document.head.appendChild(s);
+}
+
+var __elloResultLightbox = { box: null, esc: null, prevOverflow: '' };
+function elloCloseResultLightbox(instant) {
+    if (__elloResultLightbox.esc) { document.removeEventListener('keydown', __elloResultLightbox.esc); __elloResultLightbox.esc = null; }
+    var box = __elloResultLightbox.box;
+    if (!box) return;
+    __elloResultLightbox.box = null;
+    document.body.style.overflow = __elloResultLightbox.prevOverflow || '';
+    if (instant) { try { box.remove(); } catch (e) {} return; }
+    box.classList.remove('on');
+    setTimeout(function () { try { box.remove(); } catch (e) {} }, 240);
+}
+function elloOpenResultLightbox() {
+    try {
+        var src = __elloPdpSwap.resultRawUrl || __elloPdpSwap.resultUrl;
+        if (!src) return;
+        elloEnsureResultLightboxStyles();
+        elloCloseResultLightbox(true);
+        var xIcon = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"></path></svg>';
+        var box = document.createElement('div');
+        box.id = 'ello-result-lightbox';
+        box.innerHTML =
+            '<button type="button" class="erl-x" aria-label="Close">' + xIcon + '</button>' +
+            '<img class="erl-img" alt="Your try-on" decoding="async">' +
+            '<div class="erl-cap">Your try-on</div>';
+        box.querySelector('.erl-img').src = src;
+        box.addEventListener('click', function () { elloCloseResultLightbox(); });
+        document.body.appendChild(box);
+        __elloResultLightbox.box = box;
+        __elloResultLightbox.prevOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        var esc = function (e) { if (e.key === 'Escape') elloCloseResultLightbox(); };
+        __elloResultLightbox.esc = esc;
+        document.addEventListener('keydown', esc);
+        requestAnimationFrame(function () { box.classList.add('on'); });
+        // Same guarantee as the hero reveal's settleVisible: a throttled/
+        // occluded tab freezes CSS transitions mid-fade, pinning the scrim at
+        // opacity 0 — force the end state out-of-band (no-ops when the normal
+        // 220ms fade already finished).
+        setTimeout(function () {
+            try {
+                if (__elloResultLightbox.box !== box) return;
+                if (parseFloat(getComputedStyle(box).opacity) > 0.95) return;
+                box.style.transition = 'none';
+                box.style.opacity = '1';
+            } catch (e) { try { box.style.opacity = '1'; } catch (e2) {} }
+        }, 400);
+    } catch (e) {}
 }
 
 // Restore the original image + re-show the panel. Used on try-on error/abort so
@@ -9532,11 +10594,11 @@ async function elloMaybeRestorePdpSwap() {
         // ?ello_pdp_swap session override directly here.
         var handle = null;
         try { handle = getProductIdFromUrl(window.location.pathname); } catch (e) {}
-        if (!handle) return;
+        if (!handle) { elloLog('[Ello swap-restore] bail: no handle'); return; }
         var enabled = (window.ELLO_STORE_CONFIG || {}).pdpImageSwapEnabled === true;
         if (!enabled) enabled = elloPdpSwapOverrideOn();
-        if (!enabled) return;
-        if (__elloPdpSwap.swapped) return;   // a live try-on already swapped the hero this pageview
+        if (!enabled) { elloLog('[Ello swap-restore] bail: swap not enabled'); return; }
+        if (__elloPdpSwap.swapped) { elloLog('[Ello swap-restore] bail: already swapped'); return; }   // a live try-on already swapped the hero this pageview
 
         // Gate 2: the saved result for THIS product. Prefer the FULL-RES cache
         // (crisp at hero size); fall back to the wardrobe's compressed copy only
@@ -9549,6 +10611,7 @@ async function elloMaybeRestorePdpSwap() {
         var hasOutfit = !!(full && typeof full.outfit === 'string' &&
             full.outfit.indexOf('data:image') === 0 && full.itemB);
         var resultUrl = hasOutfit ? full.outfit : (full && full.result);
+        var wardrobeGarmentSrc = null;
         if (!resultUrl) {
             var wardrobe = getWardrobe();
             if (Array.isArray(wardrobe) && wardrobe.length) {
@@ -9561,13 +10624,23 @@ async function elloMaybeRestorePdpSwap() {
                         if (!match || new Date(w.timestamp || 0) > new Date(match.timestamp || 0)) match = w;
                     }
                 }
-                if (match) resultUrl = match.resultImageUrl;
+                if (match) {
+                    resultUrl = match.resultImageUrl;
+                    wardrobeGarmentSrc = match.clothingImageUrl || null;
+                }
             }
         }
-        if (!resultUrl) return;
+        if (!resultUrl) { elloLog('[Ello swap-restore] bail: no saved result for', handle); return; }
 
-        var img = elloFindPdpImage();
-        if (!img) return;
+        // Hand the saved garment's image to the resolver. It's the same file the
+        // hero renders, so the filename match lands on the hero directly — and
+        // on themes whose gallery matches none of the stock selectors (Gym King's
+        // <pdp-carousel>) it is the ONLY pass that resolves anything at all, so
+        // without it a returning shopper's saved look silently fails to restore.
+        var garmentSrc = (full && full.garment && full.garment.image_url) || wardrobeGarmentSrc || null;
+        var img = elloFindPdpImage(garmentSrc);
+        if (!img) { elloLog('[Ello swap-restore] bail: no PDP image resolved'); return; }
+        elloLog('[Ello swap-restore] repainting saved look for', handle);
         elloEnsurePdpSwapStyles();
         __elloPdpSwap.imgEl = img;
         __elloPdpSwap.lastResultB64 = resultUrl;   // lets CTL "Try it on too" rebase on it
@@ -9580,7 +10653,19 @@ async function elloMaybeRestorePdpSwap() {
         // back to the in-memory current product. Best-effort — a miss just
         // restores the photo alone, exactly as before.
         try {
-            if (elloCompleteTheLookOn()) {
+            // Outfit chain on the record (wardrobe re-base / deep CTL chain):
+            // rebuild the N-piece "Your look" row exactly as they left it. Not
+            // gated on the CTL flag — the row is their own look, not an upsell
+            // (the renderer itself drops the cart button on Anywhere hosts).
+            var lookItemsR = (full && Array.isArray(full.lookItems) && full.lookItems.length >= 2)
+                ? full.lookItems : null;
+            if (lookItemsR) {
+                elloRenderLookPanelB(lookItemsR, resultUrl);
+            }
+            // Anywhere/platform hosts: CTL's cart path is Shopify-only until the
+            // Phase-C wiring, so a restored offer card would render a broken
+            // "Add both" there. Photo restore above still runs — just no upsell.
+            else if (elloCompleteTheLookOn() && !window.ELLO_NO_SHOPIFY_CART) {
                 var garmentA = (full && full.garment) ||
                     (Array.isArray(sampleClothing) ? sampleClothing.find(function (c) { return c && c.id === handle; }) : null);
                 if (garmentA) {
@@ -9601,6 +10686,23 @@ async function elloMaybeRestorePdpSwap() {
         } catch (e) { /* upsell restore is best-effort; the photo is already back */ }
     } catch (e) { /* best-effort — a failure just leaves the product photo untouched */ }
 }
+
+// Re-entry for Anywhere/platform adapters (overlay-style host pages, e.g.
+// atlasapparel.shop): their product view is a JS overlay, not a page load —
+// closing and reopening it re-creates the hero <img>, which wipes both the
+// applied swap and the page-load restore Shopify PDPs get. Adapters call this
+// whenever the product view (re)appears; stale swap state on a disconnected
+// node is cleared so the guard in elloMaybeRestorePdpSwap doesn't early-out.
+window.elloPdpRestoreForHost = function () {
+    try {
+        if (window.__elloPdpSwapActive) return;   // render in flight — never stomp the loading card
+        if (__elloPdpSwap.swapped && __elloPdpSwap.imgEl && !__elloPdpSwap.imgEl.isConnected) {
+            __elloPdpSwap.swapped = false;
+            __elloPdpSwap.imgEl = null;
+        }
+        elloMaybeRestorePdpSwap();
+    } catch (e) { /* best-effort */ }
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Complete the Look — Scenario B (hero-swap stores): the result lives on the
@@ -9705,11 +10807,35 @@ function elloEnsureCtlPdpStyles() {
         // (0-1-0-0) outranks the theme's `.media > *` even when both are
         // !important, so top:auto/height:auto/width:auto win and the card
         // collapses back to a content-sized bottom sheet.
-        '#ello-ctl-pdp-panel{box-sizing:border-box !important;position:absolute !important;left:0 !important;right:0 !important;bottom:0 !important;top:auto !important;width:auto !important;height:auto !important;z-index:8;max-width:520px;margin:0 auto;padding:12px 13px;border:1px solid rgba(0,0,0,.06);border-bottom:none;border-radius:14px 14px 0 0;background:rgba(255,255,255,.96);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);box-shadow:0 6px 24px rgba(0,0,0,.16);font-family:' + f + ';animation:elloCtlBIn .3s ease both;text-align:left;}' +
+        // HOST-CSS RESET. The panel mounts in the merchant/prospect page's own
+        // media wrapper — outside the widget container — so global typography
+        // rules reach it (urbanoutfitters.com's uppercase + letter-spacing
+        // button styles widened "+ Styling…" past its pill on mobile, Andrew
+        // 2026-08-02). Neutralize every inherited/typographic property a host
+        // can bleed in; intentional exceptions below re-assert with their own
+        // !important (id+class outranks id+universal).
+        '#ello-ctl-pdp-panel,#ello-ctl-pdp-panel *{box-sizing:border-box !important;letter-spacing:normal !important;word-spacing:normal !important;text-transform:none !important;text-indent:0 !important;text-shadow:none !important;float:none !important;}' +
+        // Host ripple/arrow/badge pseudo-elements (the "stray pink sliver"
+        // class of glitch) — our panel renders zero pseudo-content by design.
+        '#ello-ctl-pdp-panel *::before,#ello-ctl-pdp-panel *::after{content:none !important;}' +
+        // z-index: 99 beats theme gallery chrome (zoom covers, expand arrows —
+        // typically <100) without leapfrogging store sticky headers the way a
+        // max-int value would. Demo/overlay pages get .ectl-demo below.
+        '#ello-ctl-pdp-panel{box-sizing:border-box !important;position:absolute !important;left:0 !important;right:0 !important;bottom:0 !important;top:auto !important;width:auto !important;height:auto !important;z-index:99 !important;max-width:520px;margin:0 auto;padding:12px 13px;border:1px solid rgba(0,0,0,.06);border-bottom:none;border-radius:14px 14px 0 0;background:rgba(255,255,255,.96);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);box-shadow:0 6px 24px rgba(0,0,0,.16);font-family:' + f + ';animation:elloCtlBIn .3s ease both;text-align:left;pointer-events:auto !important;}' +
+        // Injected demos (non-Shopify prospect pages) are throwaway canvases
+        // with unknowable gallery chrome — go as high as the stacking context
+        // allows there.
+        '#ello-ctl-pdp-panel.ectl-demo{z-index:2147481000 !important;}' +
         '@keyframes elloCtlBIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}' +
-        '#ello-ctl-pdp-panel .ectl-head{display:flex;align-items:center;gap:6px;margin:0 0 9px;font:600 13px/1 ' + f + ';color:#111;}' +
+        '#ello-ctl-pdp-panel .ectl-head{display:flex !important;align-items:center;gap:6px;margin:0 0 9px;font:600 13px/1 ' + f + ' !important;color:#111 !important;}' +
         '#ello-ctl-pdp-panel .ectl-head svg{color:' + accent + ';flex:0 0 auto;}' +
-        '#ello-ctl-pdp-panel .ectl-row{display:flex;gap:11px;align-items:center;}' +
+        '#ello-ctl-pdp-panel .ectl-row{display:flex !important;flex-wrap:nowrap !important;gap:11px;align-items:center;min-width:0;}' +
+        // SVG armor, same defense the imgs get below: hosts blanket-size svgs
+        // (`svg{width:100%}` inflates the pink sparkle into a giant sliver).
+        // Attribute sizing loses to any CSS, so pin every icon in CSS; the
+        // per-icon rules that need other sizes re-assert with !important.
+        '#ello-ctl-pdp-panel svg{width:13px !important;height:13px !important;min-width:0 !important;max-width:none !important;flex:0 0 auto !important;position:static !important;display:inline-block !important;margin:0 !important;padding:0 !important;transform:none !important;}' +
+        '#ello-ctl-pdp-panel .ectl-head svg{width:14px !important;height:14px !important;}' +
         // Geometry hardened with !important, same defense as .ello-pdp-card img:
         // this card lives INSIDE the theme's media wrapper, and themes blanket-
         // style every img in it. Hylete base.css (`.image-wrapper img{position:
@@ -9718,43 +10844,139 @@ function elloEnsureCtlPdpStyles() {
         '#ello-ctl-pdp-panel img{position:static !important;inset:auto !important;margin:0 !important;transform:none !important;}' +
         '#ello-ctl-pdp-panel .ectl-thumb{width:46px !important;height:60px !important;border-radius:7px;object-fit:contain !important;background:#f1efe9;flex:0 0 auto;display:block;}' +
         '#ello-ctl-pdp-panel .ectl-info{flex:1 1 auto;min-width:0;}' +
-        '#ello-ctl-pdp-panel .ectl-name{font:600 12px/1.3 ' + f + ';color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
-        '#ello-ctl-pdp-panel .ectl-price{font:500 12px/1.3 ' + f + ';color:#666;margin-top:1px;}' +
-        '#ello-ctl-pdp-panel .ectl-btn{flex:0 0 auto;border:none;border-radius:999px;padding:9px 15px;font:600 12px/1 ' + f + ';cursor:pointer;background:' + primary + ';color:' + primaryText + ';display:flex;align-items:center;gap:5px;transition:opacity .15s;}' +
+        '#ello-ctl-pdp-panel .ectl-name{font:600 12px/1.3 ' + f + ' !important;color:#111 !important;white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;}' +
+        '#ello-ctl-pdp-panel .ectl-price{font:500 12px/1.3 ' + f + ' !important;color:#666 !important;margin-top:1px;display:flex;flex-wrap:wrap;align-items:baseline;gap:1px 5px;}' +
+        // Inline pick-your-own (v2): rides the price line so the sheet gains
+        // ZERO height over the product photo (Andrew 2026-08-05: the panel
+        // must never grow downward and hide the feet).
+        '#ello-ctl-pdp-panel .ectl-pickline{background:none;border:none;padding:0;margin:0;cursor:pointer;-webkit-appearance:none;appearance:none;font:600 11.5px/1.3 ' + f + ';color:#8a8a8a;white-space:nowrap;}' +
+        '#ello-ctl-pdp-panel .ectl-pickline b{color:#111;font-weight:650;}' +
+        '#ello-ctl-pdp-panel .ectl-pickline:hover b{text-decoration:underline;}' +
+        '#ello-ctl-pdp-panel .ectl-pickline .ectl-alt-arrow{color:' + accent + ';font-weight:700;}' +
+        // Pill armor: every property a host button reset can attack is pinned,
+        // and the pill SHRINKS (flex:0 1 auto + span ellipsis) instead of
+        // overflowing into the anchor's overflow:hidden clip — a squeezed
+        // state degrades to "+ Styli…" rather than a raw mid-glyph cut.
+        '#ello-ctl-pdp-panel .ectl-btn{flex:0 1 auto !important;min-width:0 !important;max-width:60% !important;width:auto !important;height:auto !important;min-height:0 !important;margin:0 !important;overflow:hidden !important;position:relative !important;-webkit-appearance:none !important;appearance:none !important;white-space:nowrap !important;border:none !important;outline:none;border-radius:999px;padding:9px 15px !important;font:600 12px/1 ' + f + ' !important;cursor:pointer;background:' + primary + ' !important;color:' + primaryText + ' !important;display:inline-flex !important;align-items:center !important;justify-content:center !important;gap:5px;transition:opacity .15s;text-decoration:none !important;box-shadow:none !important;opacity:1;}' +
+        '#ello-ctl-pdp-panel .ectl-btn span{display:block !important;min-width:0 !important;overflow:hidden !important;text-overflow:ellipsis !important;white-space:nowrap !important;font:inherit !important;color:inherit !important;margin:0 !important;padding:0 !important;background:transparent !important;}' +
         '#ello-ctl-pdp-panel .ectl-btn:hover{opacity:.88;}' +
-        '#ello-ctl-pdp-panel .ectl-btn:disabled{opacity:.55;cursor:wait;}' +
+        '#ello-ctl-pdp-panel .ectl-btn:disabled{opacity:.55 !important;cursor:wait;}' +
         // Two-piece state: one slim row — selectable thumbs + adaptive add button.
         '#ello-ctl-pdp-panel .ectl-brow{display:flex;align-items:center;gap:8px;}' +
         '#ello-ctl-pdp-panel .ectl-pick{position:relative;flex:0 0 auto;border:none;background:none;padding:0;cursor:pointer;-webkit-appearance:none;appearance:none;}' +
         '#ello-ctl-pdp-panel .ectl-pick img{width:40px !important;height:52px !important;border-radius:7px;object-fit:contain !important;background:#f1efe9;display:block;border:2px solid ' + primary + ';transition:opacity .15s,border-color .15s;}' +
         '#ello-ctl-pdp-panel .ectl-pick .ectl-tick{position:absolute;top:-5px;right:-5px;width:16px;height:16px;border-radius:50%;background:' + primary + ';color:' + primaryText + ';display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.25);}' +
-        '#ello-ctl-pdp-panel .ectl-pick .ectl-tick svg{width:9px;height:9px;}' +
+        '#ello-ctl-pdp-panel .ectl-pick .ectl-tick svg{width:9px !important;height:9px !important;}' +
         '#ello-ctl-pdp-panel .ectl-pick:not(.is-on) img{opacity:.4;border-color:#d8d8d8;}' +
         '#ello-ctl-pdp-panel .ectl-pick:not(.is-on) .ectl-tick{display:none;}' +
-        '#ello-ctl-pdp-panel .ectl-add{box-sizing:border-box;flex:1 1 auto;min-width:0;border:none;border-radius:999px;padding:10px 12px;font:600 12px/1 ' + f + ';cursor:pointer;background:' + primary + ';color:' + primaryText + ';display:flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s;white-space:nowrap;}' +
+        '#ello-ctl-pdp-panel .ectl-add{box-sizing:border-box;flex:1 1 auto;min-width:0 !important;border:none !important;border-radius:999px;padding:10px 12px;font:600 12px/1 ' + f + ' !important;cursor:pointer;-webkit-appearance:none !important;appearance:none !important;background:' + primary + ' !important;color:' + primaryText + ' !important;display:flex !important;align-items:center;justify-content:center;gap:6px;transition:opacity .15s;white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis;}' +
         '#ello-ctl-pdp-panel .ectl-add:hover{opacity:.9;}' +
         '#ello-ctl-pdp-panel .ectl-add:disabled{opacity:.6;cursor:wait;}' +
         '#ello-ctl-pdp-panel .ectl-msg{margin-top:8px;font:500 12px/1.4 ' + f + ';text-align:center;}' +
         '#ello-ctl-pdp-panel .ectl-msg.err{color:#b91c1c;}' +
         '#ello-ctl-pdp-panel .ectl-link{display:block;width:100%;margin-top:8px;text-align:center;font:600 13px/1 ' + f + ';color:#111;background:transparent;border:1px solid #d8d8d8;border-radius:10px;padding:11px;cursor:pointer;}' +
+        // Pick-your-own line (outfit editing v2) — quiet second path inside the
+        // sheet, mirrors the in-widget rail's .ello-ctl-alt.
+        '#ello-ctl-pdp-panel .ectl-alt{display:block;width:100%;background:none;border:none;cursor:pointer;-webkit-appearance:none;appearance:none;text-align:center;font:600 12px/1.35 ' + f + ';color:#6b7280;padding:9px 0 1px;margin:0;}' +
+        '#ello-ctl-pdp-panel .ectl-alt b{color:#111;font-weight:650;}' +
+        '#ello-ctl-pdp-panel .ectl-alt:hover b{text-decoration:underline;}' +
+        '#ello-ctl-pdp-panel .ectl-alt .ectl-alt-arrow{color:' + accent + ';font-weight:700;}' +
+        // ─── Intro styles (vto_stores.ctl_intro_style) ───────────────────────
+        // Panel modifiers first: the base rules pin a full-width bottom sheet
+        // with !important geometry armor; these two turn the SAME element into
+        // (a) a floating corner shell or (b) a centered chip shell. Id+class
+        // (1-1-0) outranks the base id rules (1-0-0), so the overrides win
+        // without an armor race.
+        '#ello-ctl-pdp-panel.ectl-float{left:auto !important;right:10px !important;bottom:12px !important;width:132px !important;max-width:132px !important;padding:0;margin:0;border:none;border-radius:0;background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none;overflow:visible;animation:none;text-align:left;}' +
+        '#ello-ctl-pdp-panel.ectl-chipmode{left:50% !important;right:auto !important;bottom:10px !important;width:auto !important;max-width:none !important;padding:0;margin:0;border:none;background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none;animation:none;transform:translateX(-50%);}' +
+        '#ello-ctl-pdp-panel.ectl-float .ectl-msg,#ello-ctl-pdp-panel.ectl-chipmode .ectl-msg{background:rgba(255,255,255,.95);border-radius:8px;padding:6px 8px;box-shadow:0 3px 10px rgba(0,0,0,.12);}' +
+        // Shared entrance/sparkle keyframes.
+        '@keyframes elloCtlPairIn{0%{opacity:0;transform:translateY(-30px) rotate(-6deg) scale(.7)}70%{opacity:1;transform:translateY(4px) rotate(1.5deg)}100%{opacity:1;transform:none}}' +
+        '@keyframes elloCtlChipIn{from{opacity:0;transform:translateY(14px) scale(.85)}to{opacity:1;transform:none}}' +
+        '@keyframes elloCtlFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}' +
+        '@keyframes elloCtlSpkPop{0%{opacity:0;transform:scale(.3) rotate(0deg)}45%{opacity:1;transform:scale(1.15) rotate(28deg)}100%{opacity:0;transform:scale(.7) rotate(45deg)}}' +
+        '@keyframes elloCtlTagSwing{0%{opacity:0;transform:rotate(-18deg) scale(.6)}60%{opacity:1;transform:rotate(6deg)}100%{opacity:1;transform:rotate(-4deg)}}' +
+        '@keyframes elloCtlDotPulse{0%,100%{transform:scale(1);opacity:.9}50%{transform:scale(1.5);opacity:.45}}' +
+        '#ello-ctl-pdp-panel .ectl-spk{position:absolute;color:#fff;opacity:0;pointer-events:none;filter:drop-shadow(0 1px 2px rgba(0,0,0,.25));animation:elloCtlSpkPop .7s ease both;}' +
+        '#ello-ctl-pdp-panel .ectl-spk svg{width:16px !important;height:16px !important;}' +
+        '#ello-ctl-pdp-panel .ectl-spk.s1{top:-14px;left:-10px;animation-delay:.55s;}' +
+        '#ello-ctl-pdp-panel .ectl-spk.s2{top:34px;right:-16px;animation-delay:.7s;}' +
+        '#ello-ctl-pdp-panel .ectl-spk.s3{bottom:-8px;left:-14px;animation-delay:.85s;}' +
+        // PAIRING — one floating object: etched label, the piece, the ask as
+        // the card's own bottom edge. No name, no price (peek has both).
+        '#ello-ctl-pdp-panel .ectlp-card{position:relative;border-radius:16px;background:rgba(243,241,235,.97);border:1px solid rgba(0,0,0,.05);box-shadow:0 16px 34px rgba(0,0,0,.22);animation:elloCtlPairIn .6s cubic-bezier(.34,1.56,.64,1) both;}' +
+        '#ello-ctl-pdp-panel .ectlp-head{display:flex;align-items:center;justify-content:center;gap:4px;white-space:nowrap;padding:9px 8px 3px;font:700 8.5px/1 ' + f + ';letter-spacing:.07em !important;text-transform:uppercase !important;color:#75716a;}' +
+        '#ello-ctl-pdp-panel .ectlp-head svg{width:10px !important;height:10px !important;flex:0 0 auto;}' +
+        '#ello-ctl-pdp-panel .ectlp-imgz{height:118px;display:flex;align-items:center;justify-content:center;padding:2px 6px;cursor:zoom-in;}' +
+        '#ello-ctl-pdp-panel .ectlp-img{max-width:92% !important;max-height:112px !important;width:auto !important;height:auto !important;object-fit:contain !important;display:block;}' +
+        '#ello-ctl-pdp-panel .ectlp-btn{display:flex;align-items:center;justify-content:center;gap:5px;box-sizing:border-box;width:100%;border:none;border-radius:0 0 15px 15px;padding:10px 8px;font:600 11.5px/1 ' + f + ';cursor:pointer;background:' + primary + ';color:' + primaryText + ';transition:opacity .15s;}' +
+        '#ello-ctl-pdp-panel .ectlp-btn:hover{opacity:.9;}' +
+        '#ello-ctl-pdp-panel .ectlp-btn:disabled{opacity:.6;cursor:wait;}' +
+        '#ello-ctl-pdp-panel .ectlp-x{position:absolute;top:-7px;right:-7px;width:18px;height:18px;border-radius:50%;background:#fff;border:1px solid rgba(0,0,0,.08);color:#666;font:600 11px/16px ' + f + ';text-align:center;padding:0;box-shadow:0 2px 6px rgba(0,0,0,.15);cursor:pointer;opacity:0;transition:opacity .15s ease;}' +
+        '@media (hover:hover){#ello-ctl-pdp-panel .ectlp-card:hover .ectlp-x{opacity:1;}#ello-ctl-pdp-panel .ectlp-x:focus-visible{opacity:1;}}' +
+        '@media (hover:none){#ello-ctl-pdp-panel .ectlp-x{display:none;}}' +
+        // DROP — the product bubble lands with a price tag and a pill button.
+        '#ello-ctl-pdp-panel .ectld-wrap{position:relative;width:116px;margin-left:auto;text-align:center;}' +
+        '#ello-ctl-pdp-panel .ectld-bub{position:relative;width:116px;height:142px;border-radius:12px;background:rgba(241,239,233,.96);border:1px solid rgba(0,0,0,.05);box-shadow:0 14px 30px rgba(0,0,0,.22);display:flex;align-items:center;justify-content:center;cursor:zoom-in;animation:elloCtlPairIn .6s cubic-bezier(.34,1.56,.64,1) both;}' +
+        '#ello-ctl-pdp-panel .ectld-img{max-width:88% !important;max-height:86% !important;width:auto !important;height:auto !important;object-fit:contain !important;display:block;}' +
+        '#ello-ctl-pdp-panel .ectld-tag{position:absolute;top:-9px;left:-13px;background:' + primary + ';color:' + primaryText + ';font:700 10.5px/1 ' + f + ';border-radius:999px;padding:6px 9px;box-shadow:0 4px 10px rgba(0,0,0,.25);transform-origin:top right;animation:elloCtlTagSwing .9s cubic-bezier(.34,1.56,.64,1) .55s both;}' +
+        '#ello-ctl-pdp-panel .ectld-btn{display:flex;align-items:center;justify-content:center;gap:5px;box-sizing:border-box;width:100%;margin-top:9px;border:none;border-radius:999px;padding:9px 10px;font:600 11.5px/1 ' + f + ';cursor:pointer;background:' + primary + ';color:' + primaryText + ';box-shadow:0 8px 18px rgba(0,0,0,.22);transition:opacity .15s;animation:elloCtlFadeUp .35s ease .8s both;}' +
+        '#ello-ctl-pdp-panel .ectld-btn:hover{opacity:.9;}' +
+        '#ello-ctl-pdp-panel .ectld-btn:disabled{opacity:.6;cursor:wait;}' +
+        // WHISPER — a tiny chip; tapping it unfolds the classic offer card.
+        '#ello-ctl-pdp-panel .ectlw-chip{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;border:1px solid rgba(0,0,0,.07);border-radius:999px;padding:9px 15px;font:600 12px/1 ' + f + ';color:#111;background:rgba(255,255,255,.94);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);box-shadow:0 4px 16px rgba(0,0,0,.14);cursor:pointer;animation:elloCtlChipIn .5s cubic-bezier(.34,1.56,.64,1) .1s both;}' +
+        '#ello-ctl-pdp-panel .ectlw-chip svg{color:' + accent + ';flex:0 0 auto;}' +
+        '#ello-ctl-pdp-panel .ectlw-dot{width:6px;height:6px;border-radius:50%;background:' + primary + ';margin-left:2px;animation:elloCtlDotPulse 2.2s ease infinite;}' +
+        '@media (prefers-reduced-motion:reduce){#ello-ctl-pdp-panel .ectlp-card,#ello-ctl-pdp-panel .ectld-bub,#ello-ctl-pdp-panel .ectld-tag,#ello-ctl-pdp-panel .ectld-btn,#ello-ctl-pdp-panel .ectlw-chip,#ello-ctl-pdp-panel .ectlw-dot{animation:none;}#ello-ctl-pdp-panel .ectl-spk{display:none;}}' +
         // MOBILE: the hero is small and the shopper has to SEE the garment (a
         // dress hem was disappearing behind the card — Andrew 2026-07-03). Hug
         // the bottom edge tighter and compress every row so the card obscures
         // as little of the image as possible.
         '@media (max-width:640px){' +
             '#ello-ctl-pdp-panel{left:0;right:0;bottom:0;padding:7px 9px;border-radius:11px 11px 0 0;}' +
-            '#ello-ctl-pdp-panel .ectl-head{margin:0 0 5px;font-size:11px;gap:5px;}' +
-            '#ello-ctl-pdp-panel .ectl-head svg{width:12px;height:12px;}' +
+            '#ello-ctl-pdp-panel .ectl-head{margin:0 0 5px;font-size:11px !important;gap:5px;}' +
+            '#ello-ctl-pdp-panel .ectl-head svg{width:12px !important;height:12px !important;}' +
             '#ello-ctl-pdp-panel .ectl-row{gap:8px;}' +
             '#ello-ctl-pdp-panel .ectl-thumb{width:32px !important;height:42px !important;border-radius:6px;}' +
-            '#ello-ctl-pdp-panel .ectl-name{font-size:11px;}' +
-            '#ello-ctl-pdp-panel .ectl-price{font-size:11px;margin-top:0;}' +
-            '#ello-ctl-pdp-panel .ectl-btn{padding:8px 12px;font-size:11px;}' +
+            '#ello-ctl-pdp-panel .ectl-name{font-size:11px !important;}' +
+            '#ello-ctl-pdp-panel .ectl-price{font-size:11px !important;margin-top:0;}' +
+            '#ello-ctl-pdp-panel .ectl-btn{padding:8px 12px !important;font-size:11px !important;}' +
             '#ello-ctl-pdp-panel .ectl-pick img{width:34px !important;height:44px !important;}' +
-            '#ello-ctl-pdp-panel .ectl-add{padding:9px 10px;font-size:11px;}' +
+            '#ello-ctl-pdp-panel .ectl-add{padding:9px 10px !important;font-size:11px !important;}' +
             '#ello-ctl-pdp-panel .ectl-msg{margin-top:6px;font-size:11px;}' +
             '#ello-ctl-pdp-panel .ectl-link{margin-top:6px;padding:9px;font-size:12px;}' +
-        '}';
+            // Intro styles shrink too — the mobile hero is precious.
+            '#ello-ctl-pdp-panel.ectl-float{width:112px !important;max-width:112px !important;right:8px !important;bottom:10px !important;}' +
+            '#ello-ctl-pdp-panel .ectlp-imgz{height:96px;}' +
+            '#ello-ctl-pdp-panel .ectlp-img{max-height:90px !important;}' +
+            '#ello-ctl-pdp-panel .ectlp-btn{padding:9px 6px;font-size:10.5px;border-radius:0 0 15px 15px;}' +
+            '#ello-ctl-pdp-panel .ectld-wrap{width:100px;}' +
+            '#ello-ctl-pdp-panel .ectld-bub{width:100px;height:124px;}' +
+            '#ello-ctl-pdp-panel .ectld-btn{padding:8px 6px;font-size:10.5px;}' +
+            '#ello-ctl-pdp-panel .ectlw-chip{padding:8px 12px;font-size:11px;}' +
+        '}' +
+        // ─── "Your look" N-piece row ─────────────────────────────────────────
+        // Deep chains can outgrow one row on narrow heroes — wrap instead of clip.
+        '#ello-ctl-pdp-panel .ectl-brow{flex-wrap:wrap;}' +
+        // Image-less descriptor (base64 garment art was dropped at save):
+        // initial-letter tile in the same frame as a pick thumb.
+        '#ello-ctl-pdp-panel .ectl-pick .ectl-pick-ph{width:40px !important;height:52px !important;border-radius:7px;background:#f1efe9;border:2px solid ' + primary + ';box-sizing:border-box;display:flex !important;align-items:center;justify-content:center;font:600 15px/1 ' + f + ' !important;color:#8a877f !important;transition:opacity .15s,border-color .15s;}' +
+        '#ello-ctl-pdp-panel .ectl-pick:not(.is-on) .ectl-pick-ph{opacity:.4;border-color:#d8d8d8;}' +
+        '@media (max-width:640px){#ello-ctl-pdp-panel .ectl-pick .ectl-pick-ph{width:34px !important;height:44px !important;}}' +
+        // While an Ello sheet (wardrobe / browsers / look viewer / size picker)
+        // is open, this panel must yield the screen. It can't lose on z-index
+        // alone: the sheets live inside #virtual-tryon-widget-container, whose
+        // own stacking context clamps them to z 999999 page-wide, while the
+        // demo-tier panel rides the MERCHANT's DOM at z 2147481000 — so on
+        // injected demo pages it painted straight through the wardrobe sheet
+        // (Andrew 2026-08-03). :has() sees across the two trees; old browsers
+        // that lack it just keep the cosmetic overlap (clicks are already safe
+        // via the shield standdown).
+        'body:has(#wardrobeModal.active) #ello-ctl-pdp-panel,' +
+        'body:has(#clothingBrowserModal.active) #ello-ctl-pdp-panel,' +
+        'body:has(#modelBrowserModal.active) #ello-ctl-pdp-panel,' +
+        'body:has(#imageModal.active) #ello-ctl-pdp-panel,' +
+        'body:has(#ello-sz-overlay) #ello-ctl-pdp-panel{visibility:hidden !important;}';
     document.head.appendChild(s);
 }
 
@@ -9762,6 +10984,11 @@ var ELLO_CTL_SPARK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none
 var ELLO_CTL_PLUS = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>';
 var ELLO_CTL_BAG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="20" r="1.4"></circle><circle cx="17.5" cy="20" r="1.4"></circle><path d="M2.5 3.5h2.3l2.2 11.1a1.4 1.4 0 0 0 1.37 1.1h8.1a1.4 1.4 0 0 0 1.36-1.07L21 7.5H6.2"></path></svg>';
 var ELLO_CTL_TICK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5 9.5 18 20 6.5"></path></svg>';
+// Two-way arrows — the "editable/swap" mark. Full size rides the viewer's
+// swap pill; the 9px flavor rides the wardrobe outfit badge (outfit editing
+// v2). The coach mark is the legend that teaches what the mark means.
+var ELLO_SWAP_ARROWS = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h13M13 3l4 4-4 4"></path><path d="M20 17H7M11 21l-4-4 4-4"></path></svg>';
+var ELLO_WC_EDIT_GLYPH = '<svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-0.5px;margin-left:4px;opacity:.9"><path d="M4 7h13M13 3l4 4-4 4"></path><path d="M20 17H7M11 21l-4-4 4-4"></path></svg>';
 
 // Called from the hero-swap success path (base pass). Snapshot A, fetch the
 // curated complementary item, and mount the offer card BELOW the hero. No-op if
@@ -9792,6 +11019,9 @@ async function elloMountCtlPdpPanel(garmentA) {
 
         var panel = document.createElement('div');
         panel.id = 'ello-ctl-pdp-panel';
+        // Injected demo pages get the max-z tier — unknowable gallery chrome
+        // (UO's expand arrow painted over the pill, Andrew 2026-08-02).
+        if (elloPdpUseOverlay()) panel.classList.add('ectl-demo');
         // Card taps must never reach a theme's click-to-zoom (some themes bind
         // it on the media CONTAINER, an ancestor of this card).
         panel.addEventListener('click', function (ev) { ev.stopPropagation(); });
@@ -9812,22 +11042,136 @@ async function elloMountCtlPdpPanel(garmentA) {
     } catch (e) { try { elloTeardownCtlPdpPanel(); } catch (e2) {} }
 }
 
-// Offer state: "Complete the look" + the item + "Try it on too".
+// Which intro the offer state uses — merchant choice from the dashboard
+// (vto_stores.ctl_intro_style). Anything unset/unknown = legacy sheet, so no
+// existing store shifts until its merchant picks. ?ello_ctl_style=pairing|
+// whisper|drop persists to localStorage for demos on ANY live store
+// (?ello_ctl_style=0 clears) — same pattern as the ?ello_ctl override.
+function elloCtlIntroStyle() {
+    var c = window.ELLO_STORE_CONFIG || {};
+    var s = c.ctlIntroStyle;
+    try {
+        var p = new URLSearchParams(window.location.search).get('ello_ctl_style');
+        if (p === '0') window.localStorage.removeItem('ello_ctl_style');
+        else if (p) window.localStorage.setItem('ello_ctl_style', p);
+        var o = window.localStorage.getItem('ello_ctl_style');
+        if (o) s = o;
+    } catch (e) { /* private mode — fall through to the store setting */ }
+    return (s === 'pairing' || s === 'whisper' || s === 'drop') ? s : null;
+}
+
+// Offer state dispatcher. Three intro styles + the legacy sheet; every one of
+// them funnels into the SAME two-piece row (elloRenderCtlBoth) on accept.
 function elloRenderCtlOffer() {
     var panel = __elloCtlB.panelEl, item = __elloCtlB.itemB;
     if (!panel || !item) return;
+    panel.classList.remove('ectl-float', 'ectl-chipmode');
+    var style = elloCtlIntroStyle();
+    if (style === 'pairing') return elloRenderCtlOfferPairing(panel, item);
+    if (style === 'drop') return elloRenderCtlOfferDrop(panel, item);
+    if (style === 'whisper') return elloRenderCtlOfferWhisper(panel, item);
+    elloRenderCtlOfferLegacy(panel, item);
+}
+
+// Legacy sheet: "Complete the look" + the item row + "Try it on too".
+// v2 (outfit editing): plus the pick-your-own line — the same one-module,
+// two-paths rule as the in-widget rail. The whisper intro expands into THIS
+// renderer, so whisper stores get the line on expand; pairing/drop keep their
+// deliberately minimal float (their door lives in the widget + wardrobe).
+function elloRenderCtlOfferLegacy(panel, item) {
+    // v2 line rides the PRICE ROW (zero added height over the photo —
+    // Andrew 2026-08-05), never its own row.
+    var pickLine = elloOutfitV2On()
+        ? '<button type="button" class="ectl-pickline" id="ectl-alt">&middot; <b>pick a different piece</b> <span class="ectl-alt-arrow">&rarr;</span></button>'
+        : '';
     panel.innerHTML =
         '<div class="ectl-head">' + ELLO_CTL_SPARK + '<span>Complete the look</span></div>' +
         '<div class="ectl-row">' +
             '<img class="ectl-thumb" src="' + elloCtlImgUrl(item.image_url || '', 240) + '" alt="" loading="lazy" decoding="async">' +
-            '<div class="ectl-info"><div class="ectl-name"></div><div class="ectl-price"></div></div>' +
+            '<div class="ectl-info"><div class="ectl-name"></div><div class="ectl-price"><span class="ectl-price-val"></span>' + pickLine + '</div></div>' +
             '<button type="button" class="ectl-btn" id="ectl-try-btn">' + ELLO_CTL_PLUS + '<span>Try it on too</span></button>' +
         '</div>';
     panel.querySelector('.ectl-name').textContent = item.name || 'Complementary item';
-    panel.querySelector('.ectl-price').textContent = elloCtlMoney(item.price);
+    panel.querySelector('.ectl-price-val').textContent = elloCtlMoney(item.price);
     elloCtlAttachPeek(panel.querySelector('.ectl-thumb'), item);
     var btn = panel.querySelector('#ectl-try-btn');
     if (btn) { btn.addEventListener('click', elloCtlLayerInB); btn.__elloTap = elloCtlLayerInB; }
+    var alt = panel.querySelector('#ectl-alt');
+    if (alt) { alt.addEventListener('click', elloCtlPickYourOwnB); alt.__elloTap = elloCtlPickYourOwnB; }
+}
+
+// PAIRING intro ("one object"): etched "Pairs with this" label, the piece,
+// and the ask as the card's own bottom edge. Deliberately NO name and NO
+// price (Andrew 2026-07-24: cost up-front is friction; the hover peek still
+// answers "what is this?" for whoever asks). × dismiss exists only on hover
+// devices and only while hovering — the resting state stays clean.
+function elloRenderCtlOfferPairing(panel, item) {
+    panel.classList.add('ectl-float');
+    panel.innerHTML =
+        '<div class="ectlp-card">' +
+            '<span class="ectl-spk s1">' + ELLO_CTL_SPARK + '</span>' +
+            '<span class="ectl-spk s2">' + ELLO_CTL_SPARK + '</span>' +
+            '<span class="ectl-spk s3">' + ELLO_CTL_SPARK + '</span>' +
+            '<div class="ectlp-head">' + ELLO_CTL_SPARK + '<span>Pairs with this</span></div>' +
+            '<div class="ectlp-imgz"><img class="ectlp-img" src="' + elloCtlImgUrl(item.image_url || '', 320) + '" alt="" loading="lazy" decoding="async"></div>' +
+            '<button type="button" class="ectlp-btn" id="ectl-try-btn">' + ELLO_CTL_PLUS + '<span>Try it on too</span></button>' +
+            '<button type="button" class="ectlp-x" id="ectl-x" aria-label="Dismiss">×</button>' +
+        '</div>';
+    elloCtlAttachPeek(panel.querySelector('.ectlp-img'), item);
+    var btn = panel.querySelector('#ectl-try-btn');
+    if (btn) { btn.addEventListener('click', elloCtlLayerInB); btn.__elloTap = elloCtlLayerInB; }
+    var x = panel.querySelector('#ectl-x');
+    if (x) {
+        var dismiss = function () {
+            try { if (typeof trackEvent === 'function') trackEvent('complete_the_look_dismiss', {}); } catch (e) {}
+            elloTeardownCtlPdpPanel();
+        };
+        x.addEventListener('click', dismiss); x.__elloTap = dismiss;
+    }
+}
+
+// DROP intro: the product bubble lands next to the shopper with a swinging
+// price tag and one pill button. No card chrome, no name.
+function elloRenderCtlOfferDrop(panel, item) {
+    panel.classList.add('ectl-float');
+    var price = elloCtlNum(item.price);
+    panel.innerHTML =
+        '<div class="ectld-wrap">' +
+            '<span class="ectl-spk s1">' + ELLO_CTL_SPARK + '</span>' +
+            '<span class="ectl-spk s2">' + ELLO_CTL_SPARK + '</span>' +
+            '<span class="ectl-spk s3">' + ELLO_CTL_SPARK + '</span>' +
+            '<div class="ectld-bub">' +
+                // Unsynced demo/bookmarklet stores can miss the price — a "$0"
+                // tag would be worse than none.
+                (price > 0 ? '<span class="ectld-tag"></span>' : '') +
+                '<img class="ectld-img" src="' + elloCtlImgUrl(item.image_url || '', 320) + '" alt="" loading="lazy" decoding="async">' +
+            '</div>' +
+            '<button type="button" class="ectld-btn" id="ectl-try-btn">' + ELLO_CTL_PLUS + '<span>Try it on too</span></button>' +
+        '</div>';
+    var tag = panel.querySelector('.ectld-tag');
+    if (tag) tag.textContent = elloCtlMoney(price);
+    elloCtlAttachPeek(panel.querySelector('.ectld-img'), item);
+    var btn = panel.querySelector('#ectl-try-btn');
+    if (btn) { btn.addEventListener('click', elloCtlLayerInB); btn.__elloTap = elloCtlLayerInB; }
+}
+
+// WHISPER intro: a tiny chip is all that appears; tapping it unfolds the
+// classic offer card in place. The photo stays clean until the shopper asks.
+function elloRenderCtlOfferWhisper(panel, item) {
+    panel.classList.add('ectl-chipmode');
+    panel.innerHTML =
+        '<button type="button" class="ectlw-chip" id="ectlw-chip">' + ELLO_CTL_SPARK +
+            '<span>Complete the look</span><span class="ectlw-dot"></span>' +
+        '</button>';
+    var chip = panel.querySelector('#ectlw-chip');
+    if (chip) {
+        var expand = function () {
+            try { if (typeof trackEvent === 'function') trackEvent('complete_the_look_expand', {}); } catch (e) {}
+            panel.classList.remove('ectl-chipmode');
+            elloRenderCtlOfferLegacy(panel, __elloCtlB.itemB || item);
+        };
+        chip.addEventListener('click', expand); chip.__elloTap = expand;
+    }
 }
 
 // Tap "Try it on too" → layer item B onto the hero-of-them (reusing the
@@ -9853,6 +11197,10 @@ function elloCtlLayerInB() {
         window._lastTryOnTimestamp = 0;
         // Last chance to capture the true photo before the re-base overwrites it.
         elloCtlStashUserPhoto();
+        // What the current render ALREADY wears (full chain when A rode an
+        // outfit re-base) — read BEFORE the new photo id invalidates the record.
+        var wearsB = __elloCtlB.garmentA
+            ? (elloComposeOutfitItems(__elloCtlB.garmentA) || [__elloCtlB.garmentA]) : null;
         // Re-base on the previous result (person already wearing A), like addToOutfit.
         userPhoto = base;
         window.elloUserImageUrl = base;
@@ -9860,8 +11208,8 @@ function elloCtlLayerInB() {
         activePhotoValidationId = userPhotoFileId;
         activePhotoValidationStatus = 'valid';
         lastRejectedPhotoValidationId = null;
-        // The base render wears garment A — the layered save is an A+B outfit.
-        if (__elloCtlB.garmentA) elloSetOutfitBase([__elloCtlB.garmentA]);
+        // The base render wears that chain — the layered save extends it by B.
+        if (wearsB) elloSetOutfitBase(wearsB);
         // Layer garment B on top.
         window.elloSelectedGarment = __elloCtlB.itemB;
 
@@ -9873,6 +11221,38 @@ function elloCtlLayerInB() {
     }
 }
 
+// Hero flavor of the pick-your-own path (outfit editing v2): same re-base as
+// "Try it on too", but the shopper chooses the piece in Browse Collection.
+// The next try-on layers their pick over the render on the product photo.
+function elloCtlPickYourOwnB() {
+    try {
+        if (isTryOnProcessing) return;
+        var base = __elloPdpSwap.lastResultB64;
+        if (!base) return;
+        // Keep the pre-pick render: deselecting the picked piece in the
+        // two-piece row reverts the hero to this image (same as LayerInB).
+        __elloCtlB.baseResultB64 = base;
+        // Last chance to capture the true photo before the re-base overwrites it.
+        elloCtlStashUserPhoto();
+        // Full chain the hero render already wears — read BEFORE the new photo
+        // id invalidates the key-guarded record (same rule as elloCtlLayerInB).
+        var wears = __elloCtlB.garmentA
+            ? (elloComposeOutfitItems(__elloCtlB.garmentA) || [__elloCtlB.garmentA]) : null;
+        userPhoto = base;
+        window.elloUserImageUrl = base;
+        userPhotoFileId = 'ctlpb_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        activePhotoValidationId = userPhotoFileId;
+        activePhotoValidationStatus = 'valid';
+        lastRejectedPhotoValidationId = null;
+        if (wears) elloSetOutfitBase(wears);
+        updatePhotoPreview(userPhoto);
+        if (typeof elloSetupFocusedExtras === 'function') elloSetupFocusedExtras();
+        if (typeof updatePreviewUserPhoto === 'function') updatePreviewUserPhoto(userPhoto);
+        window.ELLO_PENDING_ENTRY_SOURCE = 'complete_the_look_pick';
+        elloOpenBrowserWearing(wears ? wears.map(function (d) { return d.clothingName || d.name || ''; }) : null, 'hero');
+    } catch (e) { /* the hero render stays untouched on any failure */ }
+}
+
 // Both state: one slim row — two selectable thumbs + an adaptive add button.
 // No headline, no item names (Andrew 2026-07-03: the shopper KNOWS what
 // they're wearing — don't crowd the hero). Tapping a thumb includes/excludes
@@ -9881,6 +11261,9 @@ function elloCtlLayerInB() {
 function elloRenderCtlBoth(resultB64) {
     var panel = __elloCtlB.panelEl, item = __elloCtlB.itemB, A = __elloCtlB.garmentA;
     if (!panel || !item) return;
+    // Whatever intro the shopper came through, the two-piece row lives in the
+    // base bottom sheet — drop any corner/chip shell modifier.
+    panel.classList.remove('ectl-float', 'ectl-chipmode');
     if (resultB64) __elloCtlB.outfitResultB64 = resultB64;   // combined A+B render
     __elloCtlB.sel = { a: true, b: true };
     panel.innerHTML =
@@ -10103,6 +11486,7 @@ async function elloAddOutfitToCartB() {
 
 function elloRenderCtlSuccess() {
     var panel = __elloCtlB.panelEl; if (!panel) return;
+    panel.classList.remove('ectl-float', 'ectl-chipmode');
     panel.innerHTML =
         '<div class="ectl-head" style="justify-content:center;color:#0a7d34;">✓&nbsp;<span>Added to cart</span></div>' +
         '<button type="button" class="ectl-link" id="ectl-viewcart">View cart</button>';
@@ -10136,6 +11520,33 @@ function elloTeardownCtlPdpPanel() {
     __elloCtlB.panelEl = null;
     __elloCtlB.layered = false;
 }
+
+// Dev-only visual harness (?ello_dev=1): mount any CTL intro style against a
+// stub item inside an arbitrary container — no try-on pipeline, pure DOM.
+// Lets the design harness screenshot the REAL markup/CSS the fleet ships.
+// Never present on live shopper pages (URL gate).
+try {
+    if (new URLSearchParams(window.location.search).get('ello_dev') === '1') {
+        window.__elloCtlPreviewIntro = function (style, mountEl, fakeItem, state) {
+            try {
+                if (style) window.localStorage.setItem('ello_ctl_style', style);
+                else window.localStorage.removeItem('ello_ctl_style');
+            } catch (e) { /* private mode — preview still mounts */ }
+            elloEnsureCtlPdpStyles();
+            elloTeardownCtlPdpPanel();
+            __elloCtlB.itemB = fakeItem || { name: 'Ghost Protocol Jogger', price: 44, image_url: '', handle: 'ghost-protocol-jogger' };
+            __elloCtlB.garmentA = { name: 'Andromeda Tee', price: 28, image_url: (fakeItem && fakeItem.image_url_a) || '', id: 'andromeda-tee' };
+            __elloCtlB.priceA = 28;
+            var panel = document.createElement('div');
+            panel.id = 'ello-ctl-pdp-panel';
+            panel.addEventListener('click', function (ev) { ev.stopPropagation(); });
+            __elloCtlB.panelEl = panel;
+            (mountEl || document.body).appendChild(panel);
+            if (state === 'both') { elloRenderCtlBoth(null); } else { elloRenderCtlOffer(); }
+            return panel;
+        };
+    }
+} catch (e) { /* dev hook must never break the widget */ }
 
 // Return-visit restore of a LAYERED look: rebuild the panel straight into the
 // two-piece "Add both" state from the cached garment A + item B — no
@@ -10174,6 +11585,177 @@ function elloRestoreCtlOutfitPanel(garmentA, itemB, variantA, baseB64, outfitB64
             });
         }
     } catch (e) { try { elloTeardownCtlPdpPanel(); } catch (e2) {} }
+}
+
+// ─── "Your look" row: N-piece outfit chain with per-piece take-off ──────────
+// Generalizes the hardcoded two-piece CTL row to the whole outfit CHAIN
+// (wardrobe "Add to outfit" re-bases + CTL chains three deep or more): one
+// selectable thumb per piece in layer order + an adaptive add-to-cart button.
+// Take-off is SNAPSHOT-based (Andrew 2026-08-03): every pass auto-saved its
+// render, so deselecting from the top walks back through the saved prefix
+// images (jeans off → the vest+boots render → the vest render → the original
+// photo) and re-selecting walks forward — instant, free, no API calls. A
+// mid-chain deselect has no truthful render, so it only adjusts the cart
+// selection (same rule the two-piece row applied to deselecting item A).
+
+// Add every SELECTED piece to the cart — sequential so each piece gets its own
+// size pick; reuses the wardrobe outfit card's exact per-garment machinery.
+async function elloAddLookSelectedToCart(items, sel, btn) {
+    if (btn && btn.disabled) return;
+    var picked = [];
+    for (var i = 0; i < items.length; i++) if (sel[i]) picked.push(items[i]);
+    if (!picked.length) return;
+    var lblEl = btn && btn.querySelector('span');
+    var prev = lblEl ? lblEl.textContent : '';
+    if (btn) btn.disabled = true;
+    if (lblEl) lblEl.textContent = 'Adding…';
+    try {
+        // Attribute cart adds to the saved look card when it exists (the
+        // auto-save may still be compressing in the first seconds).
+        var card = elloLookWardrobeMatch(items);
+        var shim = card || { id: 'look_' + Date.now() };
+        for (var j = 0; j < picked.length; j++) {
+            await elloAddWardrobeGarmentToCart(shim, picked[j]);
+        }
+    } catch (e) { /* per-piece failures already notify; never leave the button stuck */ }
+    if (btn) { btn.disabled = false; }
+    if (lblEl) lblEl.textContent = prev;
+}
+
+function elloLookPickHTML(d, i, thumbPx) {
+    var name = d.clothingName || 'this piece';
+    var price = elloCtlNum(d.clothingPrice);
+    var title = elloEscapeHtml(name + (price > 0 ? ' — ' + elloCtlMoney(price) : ''));
+    var u = elloCtlImgUrl(d.clothingImageUrl || '', thumbPx);
+    var media = u
+        ? '<img alt="" src="' + elloEscapeHtml(u) + '" loading="lazy" decoding="async">'
+        : '<span class="ectl-pick-ph">' + elloEscapeHtml(String(name).charAt(0).toUpperCase() || '?') + '</span>';
+    return '<button type="button" class="ectl-pick is-on" data-idx="' + i + '" title="' + title + '"' +
+        ' aria-label="' + elloEscapeHtml('Take ' + name + ' off or put it back on') + '">' +
+        media + '<span class="ectl-tick">' + ELLO_CTL_TICK + '</span></button>';
+}
+
+function elloLookAddLabel(items, sel) {
+    var n = 0, total = 0;
+    for (var i = 0; i < items.length; i++) {
+        if (sel[i]) { n++; total += elloCtlNum(items[i].clothingPrice); }
+    }
+    if (n === 0) return 'Select a piece';
+    var money = total > 0 ? ' · ' + elloCtlMoney(total) : '';
+    if (n === items.length) return 'Add look to cart' + money;
+    return 'Add ' + n + (n === 1 ? ' piece' : ' pieces') + money;
+}
+
+// Hero-swap surface: the row rides the PDP hero exactly like the CTL panel
+// (same anchor, same tap shield, same host-CSS armor).
+function elloRenderLookPanelB(items, fullB64) {
+    try {
+        var img = __elloPdpSwap.imgEl;
+        if (!img || !Array.isArray(items) || items.length < 2) return;
+        elloEnsureCtlPdpStyles();
+        elloTeardownCtlPdpPanel();
+
+        var panel = document.createElement('div');
+        panel.id = 'ello-ctl-pdp-panel';
+        if (elloPdpUseOverlay()) panel.classList.add('ectl-demo');
+        panel.addEventListener('click', function (ev) { ev.stopPropagation(); });
+        __elloCtlB.panelEl = panel;   // registers the row with the PDP tap shield
+
+        var html = '<div class="ectl-head">' + ELLO_CTL_SPARK + '<span>Your look · ' + items.length + ' pieces</span></div>' +
+            '<div class="ectl-brow">';
+        for (var i = 0; i < items.length; i++) html += elloLookPickHTML(items[i], i, 160);
+        // Anywhere/platform hosts have no Shopify AJAX cart — keep the toggles
+        // (the mirror still works), drop the add button.
+        if (!window.ELLO_NO_SHOPIFY_CART) {
+            html += '<button type="button" class="ectl-add" id="ectl-look-add">' + ELLO_CTL_BAG + '<span></span></button>';
+        }
+        html += '</div><div class="ectl-msg" id="ectl-msg" style="display:none;"></div>';
+        panel.innerHTML = html;
+
+        var sel = items.map(function () { return true; });
+        var picks = panel.querySelectorAll('.ectl-pick');
+        var addBtn = panel.querySelector('#ectl-look-add');
+        function refresh() {
+            for (var p = 0; p < picks.length; p++) picks[p].classList.toggle('is-on', !!sel[p]);
+            if (addBtn) {
+                addBtn.disabled = sel.every(function (on) { return !on; });
+                var lbl = addBtn.querySelector('span');
+                if (lbl) lbl.textContent = elloLookAddLabel(items, sel);
+            }
+            // Mirror: clean top-down peels flip the hero through the snapshots.
+            // Skipped while a layer pass's reveal is still in flight.
+            if (!__elloPdpSwap.loadingEl) {
+                var want = elloLookSelectionImage(items, sel, fullB64);
+                if (want && want !== (__elloPdpSwap.resultRawUrl || __elloPdpSwap.resultUrl)) elloCtlSetHeroResult(want);
+            }
+        }
+        Array.prototype.forEach.call(picks, function (btn, idx) {
+            var tap = function () { sel[idx] = !sel[idx]; refresh(); };
+            btn.addEventListener('click', tap);
+            btn.__elloTap = tap;   // the tap shield re-dispatches through this
+        });
+        if (addBtn) {
+            var doAdd = function () { elloAddLookSelectedToCart(items, sel, addBtn); };
+            addBtn.addEventListener('click', doAdd);
+            addBtn.__elloTap = doAdd;
+        }
+        refresh();
+
+        elloInstallPdpTapShield();
+        var wrap = elloPdpAnchor(img);
+        __elloCtlB.wrapEl = wrap;
+        if (wrap) wrap.appendChild(panel);
+    } catch (e) { try { elloTeardownCtlPdpPanel(); } catch (e2) {} }
+}
+
+// In-widget result surface: same row as a rail above the result CTAs. Reuses
+// the CTL rail's id so every existing teardown path (fresh try-on, reset)
+// covers it for free.
+function elloRenderLookRail(items, fullB64) {
+    try {
+        if (window.ELLO_NO_SHOPIFY_CART) return;   // same gate as the CTL rail
+        if (!Array.isArray(items) || items.length < 2) return;
+        var resultSection = document.getElementById('resultSection');
+        if (!resultSection) return;
+        elloEnsureCtlStyles();
+        elloTeardownCompleteTheLook();             // idempotent re-render
+
+        var rail = document.createElement('div');
+        rail.id = 'ello-ctl-rail';
+        var html = '<div class="ello-ctl-head">' +
+                '<span class="ello-ctl-title">' + ELLO_CTL_SPARK + 'Your look · ' + items.length + ' pieces</span>' +
+                '<span class="ello-ctl-sub">tap a piece to take it off</span>' +
+            '</div>' +
+            '<div class="ello-ctl-picks">';
+        for (var i = 0; i < items.length; i++) html += elloLookPickHTML(items[i], i, 160);
+        html += '</div>' +
+            '<button type="button" class="ello-ctl-add" id="ello-look-rail-add">' + ELLO_CTL_BAG + '<span></span></button>';
+        rail.innerHTML = html;
+
+        var ctas = document.getElementById('ello-inline-result-ctas');
+        if (ctas && ctas.parentNode === resultSection) resultSection.insertBefore(rail, ctas);
+        else resultSection.appendChild(rail);
+
+        var sel = items.map(function () { return true; });
+        var picks = rail.querySelectorAll('.ectl-pick');
+        var addBtn = rail.querySelector('#ello-look-rail-add');
+        function refresh() {
+            for (var p = 0; p < picks.length; p++) picks[p].classList.toggle('is-on', !!sel[p]);
+            if (addBtn) {
+                addBtn.disabled = sel.every(function (on) { return !on; });
+                var lbl = addBtn.querySelector('span');
+                if (lbl) lbl.textContent = elloLookAddLabel(items, sel);
+            }
+            var want = elloLookSelectionImage(items, sel, fullB64);
+            var resImg = document.getElementById('ello-tryon-result-image');
+            if (want && resImg && resImg.src !== want) resImg.src = want;
+        }
+        Array.prototype.forEach.call(picks, function (btn, idx) {
+            btn.addEventListener('click', function () { sel[idx] = !sel[idx]; refresh(); });
+        });
+        if (addBtn) addBtn.addEventListener('click', function () { elloAddLookSelectedToCart(items, sel, addBtn); });
+        refresh();
+    } catch (e) { try { elloTeardownCompleteTheLook(); } catch (e2) {} }
 }
 
 window.elloMountCtlPdpPanel = elloMountCtlPdpPanel;
@@ -11146,6 +12728,10 @@ var startTryOn = async function startTryOn() {
     if (elloPdpSwapOn()) {
         elloIsPdpSwap = elloBeginPdpSwapLoading();
         if (!elloIsPdpSwap) {
+            // The swap was ON but no hero image resolved — this used to be a
+            // SILENT downgrade to the in-panel result (Boston Proper,
+            // 2026-07-25). Say so, and say what fixes it.
+            try { console.warn('[Ello pdp-swap] hero image not found on this theme — showing the result in-panel instead. Override: dashboard "Product image selector" (pdp_image_selector), or __elloDemo.pickImage() in a demo.'); } catch (e) {}
             showLoadingBar(true);
             scrollToLoadingBar();
         }
@@ -11227,15 +12813,33 @@ var startTryOn = async function startTryOn() {
             // Best-effort — never blocks the result the shopper is looking at.
             try {
                 __elloPdpSwap.lastResultB64 = imageB64;
+                // The chain this render wears (≥2 descriptors when the base was
+                // an outfit re-base) — the same compose the wardrobe save runs,
+                // so the row and the saved label can never disagree.
+                var lookItems = garment ? elloComposeOutfitItems(garment) : null;
                 if (window.__elloCtlLayeringInB) {
                     window.__elloCtlLayeringInB = false;
                     __elloCtlB.layered = true;
-                    elloRenderCtlBoth(imageB64);
-                    // Persist the OUTFIT (combined A+B image + item B) so a
-                    // return visit restores BOTH pieces + the two-piece panel,
-                    // not just item A (Andrew 2026-07-03).
                     var hA = __elloCtlB.triedOnHandleA || (__elloCtlB.garmentA && __elloCtlB.garmentA.id) || null;
-                    if (hA) elloSavePdpOutfitResult(hA, imageB64, __elloCtlB.itemB);
+                    if (lookItems && lookItems.length >= 3) {
+                        // The chain runs deeper than A+B (the base itself was an
+                        // outfit) — the hardcoded two-piece row would lie about
+                        // what's on. N-piece row + chain-carrying record instead.
+                        elloRenderLookPanelB(lookItems, imageB64);
+                        if (hA) elloSavePdpFullResult(hA, imageB64, __elloCtlB.garmentA, __elloCtlB.triedOnVariantA || null, lookItems);
+                    } else {
+                        elloRenderCtlBoth(imageB64);
+                        // Persist the OUTFIT (combined A+B image + item B) so a
+                        // return visit restores BOTH pieces + the two-piece panel,
+                        // not just item A (Andrew 2026-07-03).
+                        if (hA) elloSavePdpOutfitResult(hA, imageB64, __elloCtlB.itemB);
+                    }
+                } else if (lookItems) {
+                    // Wardrobe "Add to outfit" re-base: this result IS an outfit
+                    // — show the whole look with per-piece take-off instead of a
+                    // fresh upsell offer, and persist the chain for the restore.
+                    if (garment && garment.id) elloSavePdpFullResult(garment.id, imageB64, garment, window.__elloTriedOnVariant || null, lookItems);
+                    elloRenderLookPanelB(lookItems, imageB64);
                 } else {
                     // Base pass (item A only): cache the FULL-RES result + the
                     // garment/variant so a later revisit restores it crisply AND
@@ -11291,6 +12895,20 @@ var startTryOn = async function startTryOn() {
                     resultImg.style.opacity = "1";
                     resultImg.style.transform = "translateY(0)";
                 });
+                // rAF + CSS transitions need rendering frames; a hidden/occluded
+                // tab produces none (Chrome throttling), so the fade never starts
+                // or freezes mid-flight (~5% opacity, reproduced on Boston Proper
+                // 2026-07-25) and the finished render reads as a blank panel.
+                // Timers still fire there — force the end state; no-op when the
+                // fade completed normally.
+                setTimeout(() => {
+                    try {
+                        if (parseFloat(getComputedStyle(resultImg).opacity) > 0.95) return;
+                        resultImg.style.transition = "none";
+                        resultImg.style.opacity = "1";
+                        resultImg.style.transform = "none";
+                    } catch (e) { resultImg.style.transition = "none"; resultImg.style.opacity = "1"; resultImg.style.transform = "none"; }
+                }, 700);
 
                 // Auto-scroll to result once image is loaded
                 setTimeout(() => {
@@ -11316,11 +12934,20 @@ var startTryOn = async function startTryOn() {
         // tapped "Try on" in the rail) the result now shows A+B — morph the
         // rail to "Add both to cart" instead of offering a fresh item.
         try {
+            // Same chain read as the hero-swap path — outfit results get the
+            // N-piece "Your look" rail with per-piece take-off.
+            var lookItemsW = garment ? elloComposeOutfitItems(garment) : null;
             if (window.__elloCtlLayeringInWidget) {
                 window.__elloCtlLayeringInWidget = false;
                 __elloCtlA.layered = true;
                 __elloCtlA.lastResultB64 = imageB64;
-                elloRenderCtlRailBoth();
+                if (lookItemsW && lookItemsW.length >= 3) elloRenderLookRail(lookItemsW, imageB64);
+                else elloRenderCtlRailBoth();
+            } else if (lookItemsW) {
+                // Wardrobe "Add to outfit" re-base — the look rail replaces the
+                // fresh upsell offer (same precedence the layer pass has).
+                __elloCtlA.lastResultB64 = imageB64;
+                elloRenderLookRail(lookItemsW, imageB64);
             } else if (elloCompleteTheLookOn() && garment) {
                 __elloCtlA.lastResultB64 = imageB64;
                 elloRenderCompleteTheLook(garment);
@@ -11517,7 +13144,9 @@ function showElloLeadCaptureModal(garment) {
         'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
         'animation:elloLeadPop 260ms cubic-bezier(.2,.9,.3,1.1);';
     card.innerHTML =
-        '<button id="ello-lead-close" type="button" aria-label="Close" style="position:absolute;top:12px;right:12px;width:30px;height:30px;border-radius:50%;border:1px solid #ECEEF3;background:#FFFFFF;color:#6B7388;font-size:15px;line-height:1;cursor:pointer;padding:0;z-index:1;">×</button>' +
+        // 40x40 not 30x30 — this × is the ONLY way out of the modal (no skip, no
+        // backdrop dismiss), so on a phone it has to be an easy thumb target.
+        '<button id="ello-lead-close" type="button" aria-label="Close" style="position:absolute;top:8px;right:8px;width:40px;height:40px;border-radius:50%;border:1px solid #ECEEF3;background:#FFFFFF;color:#6B7388;font-size:17px;line-height:1;cursor:pointer;padding:0;z-index:1;display:flex;align-items:center;justify-content:center;">×</button>' +
         '<div style="background:linear-gradient(170deg,#F4F7FE 0%,#E8EEFD 55%,#FFFFFF 100%);padding:30px 26px 18px;">' +
             (garmentImg
                 ? '<img src="' + String(garmentImg).replace(/"/g, '&quot;') + '" alt="" style="width:84px;height:106px;object-fit:cover;border-radius:14px;border:3px solid #FFFFFF;box-shadow:0 10px 26px rgba(11,18,32,0.18);transform:rotate(-2deg);" />'
@@ -11527,7 +13156,10 @@ function showElloLeadCaptureModal(garment) {
             '<div style="font-size:10px;font-weight:var(--ello-fw-700, 700);letter-spacing:0.14em;text-transform:uppercase;color:#3B63D4;margin-bottom:8px;">Your virtual fitting room</div>' +
             '<div style="font-size:21px;font-weight:var(--ello-fw-800, 800);letter-spacing:-0.01em;color:#0B1220;margin-bottom:7px;">Don&#39;t lose this look</div>' +
             '<div style="font-size:13.5px;color:#434D63;line-height:1.55;margin-bottom:16px;">Enter your email and we&#39;ll keep your try-on results — plus you&#39;ll get first dibs on new drops.</div>' +
-            '<input id="ello-lead-email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" style="width:100%;box-sizing:border-box;padding:13px 15px;border:1.5px solid #D8DCE3;border-radius:12px;font-size:15px;color:#0B1220;outline:none;transition:border-color 140ms ease,box-shadow 140ms ease;" />' +
+            // font-size MUST stay >= 16px: iOS Safari auto-zooms the entire page
+            // when a shopper focuses an input smaller than that, and it does not
+            // zoom back out — the modal ends up half off-screen with no way back.
+            '<input id="ello-lead-email" type="email" inputmode="email" autocomplete="email" placeholder="you@email.com" style="width:100%;box-sizing:border-box;padding:13px 15px;border:1.5px solid #D8DCE3;border-radius:12px;font-size:16px;color:#0B1220;outline:none;transition:border-color 140ms ease,box-shadow 140ms ease;" />' +
             '<div id="ello-lead-error" style="display:none;color:#D94E4E;font-size:12px;margin-top:8px;text-align:left;"></div>' +
             '<button id="ello-lead-submit" type="button" style="width:100%;box-sizing:border-box;padding:13px;margin-top:12px;border:none;border-radius:12px;background:' + accent + ';color:' + accentText + ';font-size:15px;font-weight:var(--ello-fw-700, 700);letter-spacing:0.01em;cursor:pointer;box-shadow:0 8px 22px rgba(11,18,32,0.18);">Save my looks</button>' +
             '<div style="font-size:11px;color:#9098A8;margin-top:12px;">No spam, ever. Unsubscribe anytime.</div>' +
@@ -11546,7 +13178,12 @@ function showElloLeadCaptureModal(garment) {
     const errEl = card.querySelector('#ello-lead-error');
     input.addEventListener('focus', () => { input.style.borderColor = '#3B63D4'; input.style.boxShadow = '0 0 0 3px #E8EEFD'; });
     input.addEventListener('blur', () => { input.style.borderColor = '#D8DCE3'; input.style.boxShadow = 'none'; });
-    setTimeout(() => { if (input) input.focus(); }, 80);
+    // Autofocus on DESKTOP only. On a phone, focusing the field throws the
+    // keyboard up over the bottom half of the screen the instant the modal
+    // appears — the card is vertically centred in the FULL viewport, so it ends
+    // up behind the keyboard before the shopper has even read the headline.
+    // Let them tap the field themselves.
+    if (!isMobile) setTimeout(() => { if (input) input.focus(); }, 80);
 
     const submit = () => {
         const email = ((input && input.value) || '').trim();
@@ -11888,20 +13525,42 @@ function showSizeSelector(clothing) {
 
 // Custom Notification Function
 function showSuccessNotification(title, subtitle, duration = 4000, isError = false) {
+    // On a phone the desktop toast becomes a full-width gradient banner pinned
+    // over the top of the store — far too loud for what it says. So on mobile:
+    // success/info toasts never render at all (the flow already shows its own
+    // result — the photo appears, the render appears, the cart updates), and
+    // only failures surface, as a small bottom pill. `isMobile` is the widget's
+    // orientation-stable device verdict; the width test covers calls that land
+    // before detectDevice() has run.
+    const compact = isMobile || (window.innerWidth || 0) <= 768;
+    if (compact && !isError) return;
+
     // Remove any existing notification
     const existing = document.querySelector('.ello-notification');
     if (existing) {
         existing.remove();
     }
 
-    // Create notification element. (Toasts are brand-colored — green/red
-    // gradient with white text — so they read correctly on both themes.)
+    // Create notification element. (Desktop toast = white card + bright-green
+    // check chip — solid, bordered, shadowed, so it reads on any theme.)
     const notification = document.createElement('div');
-    notification.className = 'ello-notification' + (isError ? ' error' : '');
+    notification.className = 'ello-notification'
+        + (isError ? ' error' : '')
+        + (compact ? ' ello-notification--compact' : '');
 
-    notification.innerHTML = `
+    // Compact drops the icon bubble, the close button and the progress bar —
+    // it auto-dismisses fast and is pointer-events:none, so there is nothing
+    // to tap and nothing for it to block.
+    notification.innerHTML = compact ? `
+<div class="ello-notification-content">
+    <div class="ello-notification-title">${elloEscapeHtml(title)}</div>
+    <div class="ello-notification-subtitle">${elloEscapeHtml(subtitle)}</div>
+</div>
+` : `
 <div class="ello-notification-icon">
-    ${isError ? '✗' : '✓'}
+    ${isError
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12.8 9.5 17.5 19.5 7"></path></svg>'}
 </div>
 <div class="ello-notification-content">
     <div class="ello-notification-title">${elloEscapeHtml(title)}</div>
@@ -11923,7 +13582,7 @@ function showSuccessNotification(title, subtitle, duration = 4000, isError = fal
     // Auto-hide after duration
     setTimeout(() => {
         hideNotification(notification);
-    }, duration);
+    }, compact ? Math.min(duration, 4000) : duration);
 }
 
 function hideNotification(notification) {
@@ -12032,7 +13691,7 @@ async function handleBuyNow(clothingId, tryonResultUrl, tryOnId, buyBtnElement =
     elloLog('handleBuyNow called for:', clothing);
 
     if (!clothing) {
-        alert('Item not found. Please try again.');
+        showSuccessNotification('Item not found', 'Please try again.', 4000, true);
         return;
     }
 
@@ -12059,7 +13718,7 @@ async function handleBuyNow(clothingId, tryonResultUrl, tryOnId, buyBtnElement =
     }
 
     if (!clothing.variants || clothing.variants.length === 0) {
-        alert('Product details not available (variants missing).');
+        showSuccessNotification('Sizes unavailable', 'We could not load this product\u2019s sizes. Please use the store\u2019s own add-to-cart.', 5000, true);
         return;
     }
 
@@ -12081,7 +13740,7 @@ async function handleBuyNow(clothingId, tryonResultUrl, tryOnId, buyBtnElement =
 
             variantToAdd = clothing.variants.find(v => v.id == selectedVariantId);
             if (!variantToAdd) {
-                alert('Selected size not found. Please try again.');
+                showSuccessNotification('Size unavailable', 'That size could not be found. Please pick another.', 4000, true);
                 return;
             }
 
@@ -12117,7 +13776,7 @@ async function handleBuyNow(clothingId, tryonResultUrl, tryOnId, buyBtnElement =
 
     } catch (error) {
         console.error('❌ Purchase error:', error);
-        alert('❌ Purchase error: ' + error.message);
+        showSuccessNotification('Could not add to cart', 'Something went wrong. Please try again.', 5000, true);
         buyBtn.classList.remove('loading');
         buyBtn.disabled = false;
     }
@@ -12200,7 +13859,7 @@ async function handleShopifyPurchase(clothing, variantToAdd, tryonResultUrl, try
         } else {
             const errorText = await cartResponse.text();
             console.error('❌ Shopify cart error:', errorText);
-            alert(`❌ Failed to add to cart. Error: ${cartResponse.status}`);
+            showSuccessNotification('Could not add to cart', 'Please try again, or use the store\u2019s own add-to-cart button.', 5000, true);
             return false;
         }
     } catch (error) {
@@ -12486,19 +14145,35 @@ function closeImageModal(event) {
     }
 }
 
+var __elloLastViewportW = 0;
+var __elloOrientationTimer = null;
 function handleOrientationChange() {
-    if (isMobile) {
-        setTimeout(() => {
-            detectDevice();
+    // Bound to BOTH `orientationchange` and `resize`. On mobile, `resize` also
+    // fires every time Safari's URL bar collapses and every time the keyboard
+    // opens/closes — repainting the open panel on those made it visibly blink
+    // mid-scroll. Only a real width change (i.e. an actual rotation) is worth
+    // reacting to.
+    var w = window.innerWidth;
+    if (w === __elloLastViewportW) return;
+    __elloLastViewportW = w;
 
-            if (widgetOpen) {
-                const widget = document.getElementById('virtualTryonWidget');
-                widget.style.display = 'none';
-                widget.offsetHeight;
-                widget.style.display = 'flex';
-            }
-        }, 100);
-    }
+    // Previously gated behind `if (isMobile)`, which latched: once a rotation
+    // flipped isMobile to false this handler stopped running and could never
+    // flip it back. detectDevice() is orientation-stable now, but keep the
+    // handler itself unconditional so the verdict can always re-converge.
+    if (__elloOrientationTimer) clearTimeout(__elloOrientationTimer);
+    __elloOrientationTimer = setTimeout(function () {
+        __elloOrientationTimer = null;
+        detectDevice();
+
+        if (widgetOpen) {
+            const widget = document.getElementById('virtualTryonWidget');
+            if (!widget) return;
+            widget.style.display = 'none';
+            void widget.offsetHeight;
+            widget.style.display = 'flex';
+        }
+    }, 120);
 }
 
 function preventZoom() {
@@ -12933,6 +14608,74 @@ function applyBrandFont() {
     }
 }
 
+// ─── Inline try-on button border treatment ─────────────────────────────────
+// Dashboard pick (vto_stores.inline_button_border_style → config
+// inlineButtonBorderStyle): 'halo' | 'gradient' | 'double' | 'shimmer';
+// NULL/unknown = none. Styles the theme block's .ello-inline-tryon-btn from
+// the WIDGET side so the treatment ships via Cloud Run — the liquid block
+// rides the separate `shopify app deploy` pipeline and stays untouched.
+// ?ello_btn_border=halo|gradient|double|shimmer persists to localStorage for
+// demos on any live store (=0 clears) — same pattern as ?ello_ctl_style.
+function elloInlineBtnBorderStyle() {
+    var c = window.ELLO_STORE_CONFIG || {};
+    var s = c.inlineButtonBorderStyle;
+    try {
+        var p = new URLSearchParams(window.location.search).get('ello_btn_border');
+        if (p === '0') window.localStorage.removeItem('ello_btn_border');
+        else if (p) window.localStorage.setItem('ello_btn_border', p);
+        var o = window.localStorage.getItem('ello_btn_border');
+        if (o) s = o;
+    } catch (e) { /* private mode — fall through to the store setting */ }
+    return (s === 'halo' || s === 'gradient' || s === 'double' || s === 'shimmer') ? s : null;
+}
+
+function elloApplyInlineBtnBorder() {
+    try {
+        var style = elloInlineBtnBorderStyle();
+        var c = window.ELLO_STORE_CONFIG || {};
+        // Solid border rides its own config key and composes with (or without)
+        // an animation — white-button-black-border stores use it alone.
+        var borderColor = (typeof c.inlineButtonBorderColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(c.inlineButtonBorderColor))
+            ? c.inlineButtonBorderColor : null;
+        var el = document.getElementById('ello-inline-border-styles');
+        if (!style && !borderColor) { if (el) el.remove(); return; }
+        var accent = c.widgetAccentColor || c.inlineButtonColor || c.widgetPrimaryColor || '#3B63D4';
+        var B = '.ello-inline-tryon-btn';
+        // position:relative hosts the pseudo-element rings; the block never
+        // sets position inline, so no !important race.
+        var css = B + '{position:relative;}';
+        if (borderColor) {
+            // !important: the block's own stylesheet sets border:none, and
+            // injection order vs the block <style> isn't guaranteed on SPA-ish
+            // themes that re-render the section.
+            css += B + '{border:2px solid ' + borderColor + ' !important;}';
+        }
+        if (style === 'halo') {
+            css += B + '{box-shadow:0 0 0 1px rgba(0,0,0,.28);}' +
+                B + '::after{content:"";position:absolute;inset:-5px;border-radius:8px;border:1.5px solid ' + accent + ';opacity:0;animation:elloBtnHalo 2.6s ease infinite;pointer-events:none;}' +
+                '@keyframes elloBtnHalo{0%{opacity:0;transform:scale(.96)}35%{opacity:.8}70%,100%{opacity:0;transform:scale(1.06)}}';
+        } else if (style === 'gradient') {
+            css += '@property --elloBtnA{syntax:"<angle>";initial-value:0deg;inherits:false}' +
+                B + '::before{content:"";position:absolute;inset:-2px;border-radius:6px;padding:2px;background:conic-gradient(from var(--elloBtnA,0deg),#9a9a9a,#fff,' + accent + ',#9a9a9a);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;animation:elloBtnSpin 3.5s linear infinite;pointer-events:none;}' +
+                '@keyframes elloBtnSpin{to{--elloBtnA:360deg}}';
+        } else if (style === 'double') {
+            css += B + '{box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.85),0 0 0 1px rgba(0,0,0,.55);}' +
+                B + '::after{content:"";position:absolute;inset:-5px;border:1px solid rgba(0,0,0,.45);border-radius:8px;pointer-events:none;}';
+        } else if (style === 'shimmer') {
+            css += B + '{overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.4);}' +
+                B + '::after{content:"";position:absolute;top:0;bottom:0;width:36%;left:-45%;background:linear-gradient(105deg,transparent,rgba(255,255,255,.34),transparent);animation:elloBtnSweep 3.2s ease infinite;pointer-events:none;}' +
+                '@keyframes elloBtnSweep{0%{left:-45%}55%,100%{left:115%}}';
+        }
+        css += '@media (prefers-reduced-motion:reduce){' + B + '::before,' + B + '::after{animation:none;}}';
+        if (!el) {
+            el = document.createElement('style');
+            el.id = 'ello-inline-border-styles';
+            document.head.appendChild(el);
+        }
+        if (el.textContent !== css) el.textContent = css;
+    } catch (e) { /* cosmetic — must never break config apply */ }
+}
+
 /**
  * Apply per-store style overrides from window.ELLO_STORE_CONFIG.styleOverrides.
  *
@@ -12992,6 +14735,10 @@ function applyStyleOverrides() {
     // widget's first paint, and this is the hook that re-runs when it does.
     // Must sit above the early return so a cleared override restores white.
     applyWidgetThemeColors();
+
+    // Inline try-on button border treatment — same retry-ladder hook, above
+    // the early return so it applies on stores with no style_overrides row.
+    elloApplyInlineBtnBorder();
 
     // Default-on brand font — also above the early return: stores with NO
     // style_overrides row still inherit the merchant theme's font.
@@ -13161,6 +14908,14 @@ function ensureEmojiStripper() {
     // PDP panel/card) live outside the container, so a second observer watches
     // document.body — but only strips inside our own surfaces, so merchant DOM
     // churn costs one closest() per added node at worst.
+    //
+    // NOTE (2026-07-24): this observer has the same page-wide shape that caused
+    // the React flicker fixed in widget-loader.js, and it adds characterData on
+    // top. It is left alone deliberately: it is gated behind hide_emojis, and
+    // the only store with that on today is boadevelopment (Shopify Liquid — a
+    // static DOM, where the cost is nil). Rewriting it to a poll traded a real
+    // emoji-flash risk on the BOA pilot for no benefit. If a REACT/headless
+    // merchant ever enables hide_emojis, scope this the same way first.
     var BODY_SURFACES = ELLO_FONT_SCOPES
         .filter(function (s) { return s !== '#virtual-tryon-widget-container'; })
         .join(',');
@@ -13315,7 +15070,7 @@ function elloIdbKvDelete(key) {
 // on a return visit (the complementary fetch needs the numeric product id, and
 // "Add both to cart" needs the color the shopper actually tried). Best-effort;
 // keeps at most ELLO_PDP_FULL_MAX products (evicts the oldest).
-async function elloSavePdpFullResult(handle, dataUrl, garment, variant) {
+async function elloSavePdpFullResult(handle, dataUrl, garment, variant, lookItems) {
     try {
         if (__elloIdbUnavailable || !handle) return;
         if (typeof dataUrl !== 'string' || dataUrl.indexOf('data:image') !== 0) return;
@@ -13323,7 +15078,15 @@ async function elloSavePdpFullResult(handle, dataUrl, garment, variant) {
             id: garment.id, name: garment.name, price: garment.price, image_url: garment.image_url,
             shopify_product_id: garment.shopify_product_id, shopify_product_gid: garment.shopify_product_gid
         } : null;
-        await elloIdbKvSet(ELLO_PDP_FULL_PREFIX + handle, { result: dataUrl, ts: Date.now(), garment: g, variant: variant || null });
+        var rec = { result: dataUrl, ts: Date.now(), garment: g, variant: variant || null };
+        // Outfit chain (wardrobe re-base / extended CTL chains): tiny descriptors
+        // only, so a return visit can rebuild the N-piece row. A fresh solo save
+        // omits it, which correctly clears a stale chain — same contract as
+        // outfit/itemB on the legacy two-piece record.
+        if (Array.isArray(lookItems) && lookItems.length >= 2) {
+            rec.lookItems = lookItems.map(elloGarmentDescriptor);
+        }
+        await elloIdbKvSet(ELLO_PDP_FULL_PREFIX + handle, rec);
         var idx = [];
         try { idx = (await elloIdbKvGet(ELLO_PDP_FULL_INDEX)) || []; } catch (e) { idx = []; }
         if (!Array.isArray(idx)) idx = [];
@@ -13616,7 +15379,10 @@ function elloGarmentDescriptor(src) {
         clothingId: src.clothingId != null ? src.clothingId : src.id,
         clothingName: src.clothingName || src.name || '',
         clothingPrice: src.clothingPrice != null ? src.clothingPrice : (src.price || 0),
-        clothingImageUrl: imageUrl
+        clothingImageUrl: imageUrl,
+        // Category feeds the swap pill's copy ("Try a different overshirt").
+        // Chains saved before this field existed fall back to "piece".
+        clothingCategory: src.clothingCategory || src.category || ''
     };
 }
 
@@ -13625,22 +15391,82 @@ function elloSetOutfitBase(garments) {
     __elloOutfitBase = items.length ? { key: userPhotoFileId, items: items } : null;
 }
 
+// The full garment chain a render of `clothing` on the CURRENT base photo will
+// wear, in layer order — or null when it's a plain solo try-on. Single source
+// of truth shared by addToWardrobe (save labeling) and the outfit-row UIs, so
+// the label and the chips can never disagree.
+function elloComposeOutfitItems(clothing) {
+    const baseItems = (__elloOutfitBase && __elloOutfitBase.key === userPhotoFileId)
+        ? __elloOutfitBase.items : null;
+    if (!baseItems || !baseItems.length) return null;
+    const newDescriptor = elloGarmentDescriptor(clothing);
+    const outfitItems = baseItems
+        .filter(d => String(d.clothingId) !== String(newDescriptor.clothingId))
+        .concat([newDescriptor]);
+    return outfitItems.length >= 2 ? outfitItems : null; // re-layered the same piece → solo
+}
+
+// Wardrobe card whose garment set EXACTLY matches `descriptors` (solo card for
+// one piece, outfit card for several). Order-insensitive — same sorted-id key
+// the addToWardrobe dedupe uses. Returns the item or null.
+function elloLookWardrobeMatch(descriptors) {
+    if (!descriptors || !descriptors.length) return null;
+    const wardrobe = getWardrobe();
+    if (descriptors.length === 1) {
+        const wantId = String(descriptors[0].clothingId);
+        return wardrobe.find(w => w && !w.isOutfit && !w.isOriginalPhoto &&
+            String(w.clothingId) === wantId) || null;
+    }
+    const wantKey = descriptors.map(d => String(d.clothingId)).sort().join('|');
+    return wardrobe.find(w => w && w.isOutfit && Array.isArray(w.outfitItems) &&
+        w.outfitItems.map(d => String(d.clothingId)).sort().join('|') === wantKey) || null;
+}
+
+// Saved render for the first k pieces of an outfit chain ('' when we don't
+// have one). Every layer pass auto-saves its result, so each PREFIX of the
+// chain normally has a truthful snapshot in the wardrobe:
+//   k=0 → the chain's original photo (pre-any-garment), k=1 → the solo render,
+//   k≥2 → the k-piece outfit render. This is what makes "take the top piece
+//   off / put it back on" instant and free — no re-render, no API call.
+function elloLookPrefixImage(items, k) {
+    const valid = (s) => typeof s === 'string' && s.indexOf('data:image') === 0;
+    if (k <= 0) {
+        // The photo the chain STARTED from: the first piece's solo card stored
+        // it. Prefer that over the currently-saved photo — the shopper may have
+        // changed photos since this chain was built.
+        const first = elloLookWardrobeMatch(items.slice(0, 1));
+        if (first && valid(first.originalPhotoUrl)) return first.originalPhotoUrl;
+        const p = (typeof elloCtlOriginalUserPhoto === 'function') ? elloCtlOriginalUserPhoto() : null;
+        return valid(p) ? p : '';
+    }
+    const match = elloLookWardrobeMatch(items.slice(0, k));
+    return (match && valid(match.resultImageUrl)) ? match.resultImageUrl : '';
+}
+
+// Which image a piece-selection should show, or null for "leave it as is".
+// Rule (Andrew 2026-08-03, snapshots-only): the image only changes when the
+// selection is a clean top-down peel — pieces 1..k on, everything above off —
+// because those are the states we actually rendered. A mid-chain deselect
+// (boots off while jeans stay on) has no truthful render, so it adjusts the
+// cart selection but keeps the nearest truthful image, exactly like the
+// original two-piece row treated deselecting item A.
+function elloLookSelectionImage(items, sel, fullB64) {
+    let k = 0;
+    while (k < items.length && sel[k]) k++;
+    for (let i = k; i < items.length; i++) {
+        if (sel[i]) return null;                  // gap in the chain → no truthful render
+    }
+    if (k === items.length) return fullB64 || null;
+    return elloLookPrefixImage(items, k) || null;
+}
+
 // Add item to wardrobe
 async function addToWardrobe(clothing, resultImageUrl, tryOnId) {
     const wardrobe = getWardrobe();
 
-    // Layered try-on? The outfit base must belong to the CURRENT photo id —
-    // otherwise the shopper re-based, then changed photos, and this is solo.
-    const baseItems = (__elloOutfitBase && __elloOutfitBase.key === userPhotoFileId)
-        ? __elloOutfitBase.items : null;
-    const newDescriptor = elloGarmentDescriptor(clothing);
-    let outfitItems = null;
-    if (baseItems && baseItems.length) {
-        outfitItems = baseItems
-            .filter(d => String(d.clothingId) !== String(newDescriptor.clothingId))
-            .concat([newDescriptor]);
-        if (outfitItems.length < 2) outfitItems = null; // re-layered the same piece → solo
-    }
+    // Layered try-on? elloComposeOutfitItems key-guards on the CURRENT photo id
+    // — if the shopper re-based, then changed photos, this comes back null (solo).
+    const outfitItems = elloComposeOutfitItems(clothing);
     const isOutfit = !!outfitItems;
 
     // Dedupe: solo looks replace the previous solo card for the same garment;
@@ -13902,7 +15728,7 @@ function elloLookCardHTML(item) {
     const displayName = elloEscapeHtml(elloWardrobeDisplayName(item));
     const priceLabel = elloWardrobePriceLabel(item);
     const chip = isOutfit
-        ? `<span class="ewc-chip ewc-chip-outfit">Outfit · ${item.outfitItems.length} items</span>`
+        ? `<span class="ewc-chip ewc-chip-outfit">Outfit · ${item.outfitItems.length} items${elloOutfitV2On() ? ELLO_WC_EDIT_GLYPH : ''}</span>`
         : '';
     return `
         <div class="epc-card ewc-card${isOutfit ? ' ewc-outfit' : ''}" data-tryon-id="${elloEscapeHtml(item.id)}">
@@ -13942,6 +15768,68 @@ function renderWardrobeGrid() {
         .map(item => item.isOriginalPhoto ? elloPhotoCardHTML(item) : elloLookCardHTML(item))
         .join('');
     elloWireWardrobeGrid(grid);
+    elloMaybeShowOutfitCoach();
+}
+
+// One coach mark, one time (outfit editing v2, Andrew 2026-08-04). The hard
+// bar: premium, never annoying. Fires once per shopper EVER — the flag is set
+// the moment it shows, so no navigation trick replays it — auto-dismisses in
+// 6s, and ANY tap in the wardrobe kills it instantly. It exists to give the
+// badge glyph its meaning once; the glyph carries it from then on.
+const ELLO_OUTFIT_COACH_KEY = 'ello_outfit_coach_v1';
+function elloMaybeShowOutfitCoach() {
+    try {
+        if (!elloOutfitV2On()) return;
+        if (localStorage.getItem(ELLO_OUTFIT_COACH_KEY)) return;
+        const modal = document.getElementById('wardrobeModal');
+        const grid = document.getElementById('wardrobeGrid');
+        if (!modal || !grid || !modal.classList.contains('active')) return;
+        if (document.getElementById('ello-outfit-coach')) {
+            // Grid re-rendered under a live coach (photo poll) — the ringed
+            // card was replaced, so re-ring its successor. The pulse animation
+            // self-terminates, so a stale class is never visible.
+            const oc = grid.querySelector('.ewc-card.ewc-outfit');
+            if (oc) oc.classList.add('ello-coach-ring');
+            return;
+        }
+        const outfitCard = grid.querySelector('.ewc-card.ewc-outfit');
+        if (!outfitCard) return;                 // no outfit yet → nothing to teach
+        localStorage.setItem(ELLO_OUTFIT_COACH_KEY, '1');
+        const mark = document.createElement('div');
+        mark.id = 'ello-outfit-coach';
+        mark.innerHTML = '<span class="eoc-ic">' + ELLO_SWAP_ARROWS + '</span>' +
+            '<span class="eoc-body"><div class="eoc-t">Your looks are editable</div>' +
+            '<div class="eoc-b">Tap an outfit to take pieces off or put them back on</div></span>';
+        modal.appendChild(mark);
+        outfitCard.classList.add('ello-coach-ring');
+        // setTimeout, not rAF: rAF pauses in hidden tabs, which would burn the
+        // once-ever flag on an entrance nobody saw start.
+        setTimeout(function () { mark.classList.add('on'); }, 20);
+        let killed = false;
+        const killOnClick = function (e) {
+            // Only REAL human clicks dismiss — the tap shield re-dispatches
+            // synthetic clicks on some surfaces, and one of those insta-killed
+            // the coach ("it flashed away", Andrew 2026-08-05).
+            if (e && e.isTrusted === false) return;
+            kill();
+        };
+        const kill = function () {
+            if (killed) return;
+            killed = true;
+            mark.classList.remove('on');
+            const ringed = grid.querySelector('.ello-coach-ring');
+            if (ringed) ringed.classList.remove('ello-coach-ring');
+            setTimeout(function () { try { mark.remove(); } catch (e) {} }, 320);
+            modal.removeEventListener('click', killOnClick, true);
+        };
+        setTimeout(kill, 6000);
+        // Capture phase, armed 600ms late: the opening interaction's residue
+        // can never dismiss it, but the shopper's first real tap still does —
+        // and still performs whatever they tapped. Never a tap tax.
+        setTimeout(function () {
+            if (!killed) modal.addEventListener('click', killOnClick, true);
+        }, 600);
+    } catch (e) { /* the wardrobe never breaks over a hint */ }
 }
 
 // One delegated listener owns every wardrobe card action. No inline onclick:
@@ -13999,6 +15887,7 @@ const __elloViewer = {
     list: [], index: -1,
     scale: 1, tx: 0, ty: 0,
     pointers: new Map(), pinch: null, gesture: null, lastTap: 0,
+    sel: null,   // outfit take-off selection for the shown item (null = not an outfit)
     wired: false
 };
 
@@ -14030,6 +15919,9 @@ function elloViewerShow(index) {
     }
     const footer = document.getElementById('elloViewerFooter');
     if (footer) footer.innerHTML = elloViewerFooterHTML(item);
+    // Outfit cards get take-off chips — fresh all-on selection per look shown.
+    v.sel = elloWardrobeIsOutfit(item) ? item.outfitItems.map(() => true) : null;
+    if (v.sel) elloEnsureCtlStyles();
     const count = document.getElementById('elloViewerCount');
     if (count) { count.textContent = (v.index + 1) + ' / ' + n; count.hidden = n < 2; }
     const prev = document.getElementById('elloViewerPrev');
@@ -14053,6 +15945,18 @@ function elloViewerFooterHTML(item) {
     const isOutfit = elloWardrobeIsOutfit(item);
     const badge = isOutfit ? `<span class="ewv-badge">Outfit · ${item.outfitItems.length} items</span>` : '';
     const priceLabel = elloWardrobePriceLabel(item);
+    // Outfit cards are editable in place: one take-off chip per piece, same
+    // snapshot-peel + cart-selection rules as the "Your look" rail (the chips
+    // reuse its exact markup so both surfaces read as one feature).
+    const pieces = isOutfit
+        ? `<div class="ewv-pieces">${item.outfitItems.map((d, i) => elloLookPickHTML(d, i, 160)).join('')}</div>` +
+          `<div class="ewv-pieces-hint">Tap a piece to take it off</div>` +
+          // Swap pill (v2): hidden until a clean top-down peel creates the
+          // "what else would go there?" moment — refresh owns its visibility.
+          (elloOutfitV2On()
+              ? `<button type="button" class="ewv-swap" id="ewv-swap" hidden><span class="ewv-swap-ic">${ELLO_SWAP_ARROWS}</span><span id="ewv-swap-txt"></span></button>`
+              : '')
+        : '';
     return `
         <div class="ewv-meta">
             <div class="ewv-title">${elloEscapeHtml(elloWardrobeDisplayName(item))}${badge}</div>
@@ -14061,7 +15965,122 @@ function elloViewerFooterHTML(item) {
         <div class="ewv-actions">
             <button class="ewc-btn ewc-btn-primary" data-act="cart" data-id="${id}">${ELLO_WC_ICONS.cart}<span>${isOutfit ? 'Add all to cart' : 'Add to cart'}</span></button>
             <button class="ewc-btn ewc-btn-ghost" data-act="outfit" data-id="${id}">${ELLO_WC_ICONS.outfit}<span>Add to outfit</span></button>
-        </div>`;
+        </div>
+        ${pieces}`;
+}
+
+// Adaptive cart label for the viewer's take-off state. Full selection keeps
+// the wardrobe's own "Add all to cart" copy; partial shows count + subtotal.
+function elloViewerCartLabel(items, sel) {
+    let n = 0, total = 0;
+    for (let i = 0; i < items.length; i++) {
+        if (sel[i]) { n++; total += elloCtlNum(items[i].clothingPrice); }
+    }
+    if (n === 0) return 'Select a piece';
+    if (n === items.length) return 'Add all to cart';
+    return 'Add ' + n + (n === 1 ? ' piece' : ' pieces') + (total > 0 ? ' · ' + elloCtlMoney(total) : '');
+}
+
+// Repaint after a chip toggle: chip states, adaptive cart label, and the stage
+// image following clean top-down peels. Same truthful-snapshot rule as the
+// "Your look" rail — a mid-chain deselect has no real render, so it keeps the
+// nearest truthful image and only adjusts what goes to the cart.
+function elloViewerRefreshPieces() {
+    const v = __elloViewer;
+    const item = v.list[v.index];
+    if (!item || !elloWardrobeIsOutfit(item) || !v.sel) return;
+    const footer = document.getElementById('elloViewerFooter');
+    if (!footer) return;
+    const picks = footer.querySelectorAll('.ectl-pick');
+    for (let p = 0; p < picks.length; p++) picks[p].classList.toggle('is-on', !!v.sel[p]);
+    const btn = footer.querySelector('[data-act="cart"]');
+    if (btn) {
+        btn.disabled = v.sel.every(on => !on);
+        const lbl = btn.querySelector('span');
+        if (lbl) lbl.textContent = elloViewerCartLabel(item.outfitItems, v.sel);
+    }
+    const want = elloLookSelectionImage(item.outfitItems, v.sel, item.resultImageUrl);
+    const img = document.getElementById('modalImage');
+    if (want && img && img.src !== want) {
+        elloViewerResetZoom();   // a different render means the old pan/zoom frame is stale
+        img.src = want;
+    }
+    // Swap pill: offered only when the removed pieces are a clean top of the
+    // chain AND a truthful prefix render exists to re-base on. The first
+    // removed piece names the pill ("Try a different overshirt").
+    const pill = footer.querySelector('#ewv-swap');
+    if (pill) {
+        const items = item.outfitItems;
+        let k = 0; while (k < items.length && v.sel[k]) k++;
+        let gap = false;
+        for (let g = k; g < items.length; g++) if (v.sel[g]) { gap = true; break; }
+        const removed = (!gap && k < items.length) ? items[k] : null;
+        const baseImg = removed ? elloLookPrefixImage(items, k) : '';
+        if (removed && baseImg) {
+            const cat = elloSingularCategory(removed.clothingCategory);
+            const txt = cat ? 'Try a different ' + cat : 'Try a different piece';
+            const txtEl = pill.querySelector('#ewv-swap-txt');
+            if (txtEl) txtEl.textContent = txt;
+            pill.hidden = false;
+        } else {
+            pill.hidden = true;
+        }
+    }
+}
+
+// Merchant categories are messy singular/plural mixes ("shirts", "pants",
+// "dresses", "accessories"). "Try a different shirts" must never ship — keep
+// plural-only garment nouns, naively singularize the rest, and bail to '' on
+// anything unusable (the pill then says "piece").
+function elloSingularCategory(cat) {
+    var c = String(cat || '').trim().toLowerCase();
+    if (!c || c.length > 24) return '';
+    // Junk/meaningless categories → '' so the pill says "piece", never
+    // "Try a different clothing" (Andrew 2026-08-05, dev-store catalog).
+    var junk = ['uncategorized', 'all', 'other', 'clothing', 'clothes', 'apparel',
+        'garment', 'garments', 'item', 'items', 'product', 'products', 'misc',
+        'general', 'default', 'featured', 'new', 'sale', 'collection'];
+    if (junk.indexOf(c) !== -1) return '';
+    var pluralOnly = ['pants', 'shorts', 'jeans', 'leggings', 'joggers', 'trousers',
+        'sweatpants', 'overalls', 'tights', 'glasses', 'sunglasses', 'sweats', 'scrubs'];
+    if (c === 'bottoms') return '';                      // reads wrong singular or plural
+    if (pluralOnly.indexOf(c) !== -1) return c;
+    if (/ies$/.test(c)) return c.replace(/ies$/, 'y');   // accessories → accessory
+    if (/(ss|sh|ch|x)es$/.test(c)) return c.replace(/es$/, '');   // dresses → dress
+    if (/s$/.test(c) && !/ss$/.test(c)) return c.replace(/s$/, ''); // shirts → shirt
+    return c;                                            // shirt, hoodie, jacket, dress
+}
+
+// Swap-a-piece (outfit editing v2, Andrew 2026-08-04): re-base on the pieces
+// still worn and open Browse Collection — take the overshirt off, try another.
+// The next render extends the kept prefix, and its save composes a DIFFERENT
+// garment set, so it lands as a NEW outfit card: the original look survives.
+function elloViewerSwapPiece() {
+    try {
+        const v = __elloViewer;
+        const item = v.list[v.index];
+        if (!item || !elloWardrobeIsOutfit(item) || !v.sel) return;
+        const items = item.outfitItems;
+        let k = 0; while (k < items.length && v.sel[k]) k++;
+        for (let g = k; g < items.length; g++) if (v.sel[g]) return;   // gap → pill should not have been visible
+        if (k >= items.length) return;                                  // nothing removed
+        const baseImg = elloLookPrefixImage(items, k);
+        if (!baseImg) return;
+        userPhoto = baseImg;
+        window.elloUserImageUrl = baseImg;
+        userPhotoFileId = 'swap_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        activePhotoValidationId = userPhotoFileId;
+        activePhotoValidationStatus = 'valid';
+        lastRejectedPhotoValidationId = null;
+        elloSetOutfitBase(items.slice(0, k));   // [] → bare photo, next render is a solo
+        updatePhotoPreview(userPhoto);
+        if (typeof elloSetupFocusedExtras === 'function') elloSetupFocusedExtras();
+        if (typeof updatePreviewUserPhoto === 'function') updatePreviewUserPhoto(userPhoto);
+        window.ELLO_PENDING_ENTRY_SOURCE = 'wardrobe_swap';
+        closeImageModal();
+        closeWardrobe();
+        elloOpenBrowserWearing(k ? items.slice(0, k).map(d => d.clothingName) : null, 'swap');
+    } catch (e) { /* stay in the viewer on any failure */ }
 }
 
 function elloViewerWireChrome() {
@@ -14075,15 +16094,42 @@ function elloViewerWireChrome() {
     if (prev) prev.addEventListener('click', function (e) { e.stopPropagation(); elloViewerShow(v.index - 1); });
     if (next) next.addEventListener('click', function (e) { e.stopPropagation(); elloViewerShow(v.index + 1); });
     if (footer) footer.addEventListener('click', function (e) {
+        // Take-off chip: toggle in place — the viewer stays open, the image
+        // and cart label follow. Handled before [data-act] since chips carry
+        // only data-idx (shared markup with the "Your look" rail).
+        const pick = e.target.closest('.ectl-pick');
+        if (pick && footer.contains(pick)) {
+            e.stopPropagation();
+            const idx = parseInt(pick.getAttribute('data-idx'), 10);
+            if (v.sel && idx >= 0 && idx < v.sel.length) {
+                v.sel[idx] = !v.sel[idx];
+                elloViewerRefreshPieces();
+            }
+            return;
+        }
+        // Swap pill: leaves the viewer for Browse Collection re-based on the
+        // kept pieces — handled before [data-act] (the pill carries none).
+        const swapBtn = e.target.closest('#ewv-swap');
+        if (swapBtn && footer.contains(swapBtn)) {
+            e.stopPropagation();
+            elloViewerSwapPiece();
+            return;
+        }
         const btn = e.target.closest('[data-act]');
         if (!btn) return;
         const act = btn.getAttribute('data-act');
         const id = btn.getAttribute('data-id');
+        // A partial take-off selection routes cart to the selected pieces only.
+        // Snapshot it now — closing the viewer below clears the live state.
+        const item = v.list[v.index];
+        const partial = act === 'cart' && item && elloWardrobeIsOutfit(item) &&
+            v.sel && v.sel.some(on => !on);
+        const selNow = partial ? v.sel.slice() : null;
         // Close the viewer first: cart flow opens the size picker over the
         // wardrobe grid (its proven stacking context), outfit/use-photo close
         // the wardrobe themselves.
         closeImageModal();
-        if (act === 'cart') addWardrobeItemToCart(id);
+        if (act === 'cart') { if (partial) addWardrobeSelectedToCart(id, selNow); else addWardrobeItemToCart(id); }
         else if (act === 'outfit') addToOutfit(id);
         else if (act === 'use-photo') useOriginalPhoto(id);
     });
@@ -14258,6 +16304,13 @@ function addToOutfit(tryOnId) {
     // Update photo preview to show the previous try-on result (with garment already on)
     // This shows the user their current outfit state, ready for the next garment
     updatePhotoPreview(userPhoto);
+    // The base workspace preview above is display:none in the focused one-view
+    // UI — its "You" tile only repaints via elloSetupFocusedExtras (same hook
+    // the upload + model-select paths call). Without this the tile kept the OLD
+    // photo after "Add to outfit" even though the try-on used the new base
+    // (Andrew 2026-08-03, bookmarklet demo). Mini preview popup mirrors too.
+    if (typeof elloSetupFocusedExtras === 'function') elloSetupFocusedExtras();
+    if (typeof updatePreviewUserPhoto === 'function') updatePreviewUserPhoto(userPhoto);
 
     // Close wardrobe modal
     closeWardrobe();
@@ -14314,6 +16367,12 @@ function useOriginalPhoto(tryOnId) {
     activePhotoValidationId = userPhotoFileId;
     activePhotoValidationStatus = 'valid';
     lastRejectedPhotoValidationId = null;
+
+    // Same repaint contract as addToOutfit: the focused "You" tile + mini
+    // preview don't listen to updatePhotoPreview, so switching back to the
+    // original photo must push to them explicitly.
+    if (typeof elloSetupFocusedExtras === 'function') elloSetupFocusedExtras();
+    if (typeof updatePreviewUserPhoto === 'function') updatePreviewUserPhoto(userPhoto);
 
     // Close wardrobe modal
     closeWardrobe();
@@ -14391,11 +16450,16 @@ async function autoSaveToWardrobe(clothing, resultImageUrl, tryOnId) {
         const saved = await addToWardrobe(clothing, resultImageUrl, tryOnId);
         await addOriginalPhotoToWardrobe(); // Also save original photo if not already saved
         const isOutfit = saved && saved.isOutfit;
+        // v2 outfit copy (Andrew 2026-08-04): say what was made and where it
+        // lives — the save moment is the cheapest teaching moment we own.
+        const v2Outfit = isOutfit && elloOutfitV2On();
         showSuccessNotification(
-            isOutfit ? 'Outfit Saved to Wardrobe' : 'Saved to Wardrobe',
-            isOutfit
-                ? `${saved.outfitItems.map(d => d.clothingName).join(' + ')} saved as an outfit!`
-                : `${clothing.name} has been saved to your wardrobe!`
+            v2Outfit ? `Outfit saved · ${saved.outfitItems.length} pieces`
+                     : (isOutfit ? 'Outfit Saved to Wardrobe' : 'Saved to Wardrobe'),
+            v2Outfit ? 'Take pieces off or swap them anytime in your Wardrobe'
+                     : (isOutfit
+                        ? `${saved.outfitItems.map(d => d.clothingName).join(' + ')} saved as an outfit!`
+                        : `${clothing.name} has been saved to your wardrobe!`)
         );
     }
 }
@@ -14419,6 +16483,19 @@ async function addWardrobeItemToCart(tryOnId) {
     }
 }
 
+// Viewer take-off row: add only the SELECTED pieces of a saved outfit card
+// (sel is index-aligned with outfitItems). Sequential like the full-outfit
+// path so each piece gets its own size pick.
+async function addWardrobeSelectedToCart(tryOnId, sel) {
+    const wardrobe = getWardrobe();
+    const item = wardrobe.find(w => w.id === tryOnId);
+    if (!item || !elloWardrobeIsOutfit(item) || !Array.isArray(sel)) return;
+    const picked = item.outfitItems.filter((g, i) => !!sel[i]);
+    for (const garment of picked) {
+        await elloAddWardrobeGarmentToCart(item, garment);
+    }
+}
+
 // Resolve one garment reference to catalog data + a variant and add it to the
 // Shopify cart (the single-item body of the old addWardrobeItemToCart).
 async function elloAddWardrobeGarmentToCart(item, garment) {
@@ -14437,7 +16514,7 @@ async function elloAddWardrobeGarmentToCart(item, garment) {
 
     if (!clothing) {
         console.error('Original clothing data not found for wardrobe item:', garment.clothingId);
-        alert('Item not found. Please try again.');
+        showSuccessNotification('Item not found', 'Please try again.', 4000, true);
         return;
     }
 
@@ -14464,7 +16541,7 @@ async function elloAddWardrobeGarmentToCart(item, garment) {
     }
 
     if (!clothing.variants || clothing.variants.length === 0) {
-        alert('Product variants not found or failed to load.');
+        showSuccessNotification('Sizes unavailable', 'We could not load this product\u2019s sizes. Please use the store\u2019s own add-to-cart.', 5000, true);
         return;
     }
 
@@ -14480,7 +16557,7 @@ async function elloAddWardrobeGarmentToCart(item, garment) {
 
             variantToAdd = clothing.variants.find(v => v.id == selectedVariantId);
             if (!variantToAdd) {
-                alert('Selected size not found. Please try again.');
+                showSuccessNotification('Size unavailable', 'That size could not be found. Please pick another.', 4000, true);
                 return;
             }
         }
@@ -14574,12 +16651,12 @@ async function elloAddWardrobeGarmentToCart(item, garment) {
         } else {
             const errorText = await cartResponse.text();
             console.error('❌ Shopify cart error:', errorText);
-            alert(`❌ Failed to add to cart. Error: ${cartResponse.status}`);
+            showSuccessNotification('Could not add to cart', 'Please try again, or use the store\u2019s own add-to-cart button.', 5000, true);
         }
 
     } catch (error) {
         console.error('❌ Network error:', error);
-        alert('❌ Network error: ' + error.message);
+        showSuccessNotification('Connection problem', 'Check your connection and try again.', 5000, true);
     }
 }
 
@@ -15298,6 +17375,16 @@ function checkOnboarding() {
         // already shows the shopper's product (never a flash of the generic strip).
         personalizeIntroStrip(overlay);
 
+        // Reserve the header's real height so it can't paint over the top of the
+        // intro card on mobile (see .first-run-overlay's padding-top note in the
+        // template). Measured rather than hard-coded because the header grows
+        // with the merchant's brand font.
+        try {
+            const introHeader = document.querySelector('#virtualTryonWidget .widget-header');
+            const headerH = introHeader ? Math.round(introHeader.getBoundingClientRect().height) : 0;
+            if (headerH > 0) overlay.style.setProperty('--ello-intro-header-offset', headerH + 'px');
+        } catch (e) { /* fall back to the CSS default */ }
+
         // Make sure it's visible. In hub mode paint it OPAQUE on the first frame
         // (add .active synchronously, no fade) so it covers the panel before the
         // browser paints — eliminating the flash of the bare workspace behind it.
@@ -15465,6 +17552,536 @@ function smoothScrollToSelection(type) {
 // End of file cleanup - redundant definitions removed
 
 
+// ─── Live Try-On (Decart realtime mirror) ───────────────────────────────────
+// A parallel, opt-in path next to the static try-on: camera → WebRTC →
+// lucy-vton-3 → live mirror overlay. Design rules:
+//   • The static 2D flow is never touched — live failures degrade to it.
+//   • The Decart key never reaches the browser: /api/live-token mints a
+//     short-lived scoped token, and Decart itself kills the stream at the
+//     token's maxSessionDuration, so every cap is server-enforced.
+//   • The vendored SDK (public/ello-live-sdk.js, ~900KB) loads lazily on
+//     first use only — zero cost to shoppers who never tap the button.
+//   • The whole session auto-records (MediaRecorder on the transformed
+//     stream) and replays at the end — shoppers spin a 360 and then scrub
+//     back to any angle. No capture button to remember (Andrew 2026-08-02).
+var __elloLive = {
+    stage: 'idle',          // idle | consent | connecting | live | ending | ended
+    entrySource: null,
+    garment: null,
+    client: null,           // RealtimeClient from the SDK
+    camStream: null,
+    remoteStream: null,     // transformed stream from Decart (what we record)
+    liveSessionId: null,    // vto_live_sessions row id (metering)
+    maxSeconds: 60,
+    secondsUsed: 0,         // authoritative: Decart generationTick
+    deadline: 0,
+    countdownTimer: null,
+    recorder: null,
+    recordedChunks: [],
+    replayUrl: null,
+    beaconSent: false
+};
+
+function elloLiveSupported() {
+    try {
+        return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
+            window.RTCPeerConnection && window.WebSocket && window.fetch);
+    } catch (e) { return false; }
+}
+
+function elloLiveEnabled() {
+    var cfg = window.ELLO_STORE_CONFIG || {};
+    return cfg.tryOnLiveEnabled === true && elloLiveSupported();
+}
+
+// Show/hide the entry points. Called at parse + on every config resolve, and
+// follows the codebase idiom: when live can't run, the button never renders
+// (fail invisible, no dead controls).
+function elloLiveSyncEntryButtons() {
+    try {
+        var btn = document.getElementById('liveTryOnBtn');
+        if (btn) btn.style.display = elloLiveEnabled() ? 'flex' : 'none';
+    } catch (e) { /* never break widget init */ }
+}
+
+// Lazy SDK load from our own origin (merchant script-src CSPs already trust
+// it); ?v= rides the same cache-busting scheme as widget-main itself.
+var __elloLiveSdkPromise = null;
+function elloLiveLoadSdk() {
+    if (window.__elloDecartSDK) return Promise.resolve(window.__elloDecartSDK);
+    if (__elloLiveSdkPromise) return __elloLiveSdkPromise;
+    __elloLiveSdkPromise = new Promise(function (resolve, reject) {
+        var base = String(window.ELLO_WIDGET_BASE_URL || '').replace(/\/+$/, '');
+        var s = document.createElement('script');
+        s.src = base + '/ello-live-sdk.js?v=' + WIDGET_VERSION;
+        s.async = true;
+        s.onload = function () {
+            if (window.__elloDecartSDK) resolve(window.__elloDecartSDK);
+            else reject(new Error('live sdk loaded but global missing'));
+        };
+        s.onerror = function () {
+            __elloLiveSdkPromise = null;
+            reject(new Error('live sdk failed to load'));
+        };
+        document.head.appendChild(s);
+    });
+    return __elloLiveSdkPromise;
+}
+
+function elloLiveEl(id) { return document.getElementById(id); }
+
+function elloLiveSetStage(stage) {
+    __elloLive.stage = stage;
+    var consent = elloLiveEl('elloLiveConsent');
+    var stageEl = elloLiveEl('elloLiveStage');
+    var ended = elloLiveEl('elloLiveEnded');
+    if (consent) consent.hidden = stage !== 'consent';
+    if (stageEl) stageEl.hidden = !(stage === 'connecting' || stage === 'live');
+    if (ended) ended.hidden = stage !== 'ended';
+}
+
+function elloLiveShowError(msg) {
+    var box = elloLiveEl('elloLiveErrorBox');
+    if (box) { box.textContent = msg; box.hidden = false; }
+}
+
+function elloBuildLivePrompt(garment) {
+    var name = garment && garment.name ? String(garment.name).slice(0, 80) : 'the garment';
+    return "Change the person's clothing to the exact garment in the reference image (" + name + "). " +
+        "Match its color, fabric, print, and any logo text precisely. " +
+        "Keep the person's identity, face, and hair unchanged.";
+}
+
+// Entry point — from the workspace button or the post-result chip.
+async function startLiveTryOn(entrySource) {
+    if (!elloLiveEnabled() || __elloLive.stage !== 'idle') return;
+    try { await elloApplyColorCorrectGarment(); } catch (e) { /* keep catalog image */ }
+    var garment = window.elloSelectedGarment;
+    if (!garment || !garment.image_url) {
+        elloLog('[Ello Live] no garment selected — live entry ignored');
+        return;
+    }
+    __elloLive.entrySource = (entrySource === 'result_cta') ? 'result_cta' : 'workspace_button';
+    __elloLive.garment = garment;
+    __elloLive.recordedChunks = [];
+    if (__elloLive.replayUrl) { try { URL.revokeObjectURL(__elloLive.replayUrl); } catch (e) {} __elloLive.replayUrl = null; }
+    __elloLive.secondsUsed = 0;
+    __elloLive.beaconSent = false;
+    __elloLive.liveSessionId = null;
+
+    var nameEl = elloLiveEl('elloLiveGarmentName');
+    if (nameEl) nameEl.textContent = garment.name || 'this piece';
+    var thumb = elloLiveEl('elloLiveGarmentThumb');
+    if (thumb) thumb.src = elloAbsImageUrl(garment.image_url);
+    var err = elloLiveEl('elloLiveErrorBox');
+    if (err) err.hidden = true;
+
+    var overlay = elloLiveEl('elloLiveOverlay');
+    if (overlay) overlay.classList.add('active');
+    elloLiveSetStage('consent');
+    trackEvent('live_tryon_opened', { entry_source: __elloLive.entrySource, product_id: garment.id || null });
+}
+
+// Consent accepted → mint, load SDK, open camera, connect.
+async function beginLiveTryOn() {
+    if (__elloLive.stage !== 'consent') return;
+    elloLiveSetStage('connecting');
+    var statusEl = elloLiveEl('elloLiveStatus');
+    var setStatus = function (t) { if (statusEl) { statusEl.textContent = t; statusEl.hidden = false; } };
+    setStatus('Warming up the mirror…');
+    var garment = __elloLive.garment;
+    var base = String(window.ELLO_WIDGET_BASE_URL || '').replace(/\/+$/, '');
+
+    try {
+        // 1. Server-gated token mint (flag, caps, shopper limit all server-side).
+        var cfg = window.ELLO_STORE_CONFIG || {};
+        var mintRes = await fetch(base + '/api/live-token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                storeSlug: cfg.storeSlug || cfg.storeId || window.ELLO_STORE_SLUG || '',
+                sessionId: window.ELLO_SESSION_ID || null,
+                productId: garment.id || null,
+                entrySource: __elloLive.entrySource
+            })
+        });
+        var mint = await mintRes.json().catch(function () { return {}; });
+        if (!mintRes.ok || !mint.token) {
+            var friendly = mint && mint.message ? mint.message : 'Live try-on is unavailable right now.';
+            throw Object.assign(new Error(friendly), { friendly: true });
+        }
+        __elloLive.liveSessionId = mint.liveSessionId || null;
+        __elloLive.maxSeconds = mint.maxSeconds || 60;
+
+        // 2 + 3. SDK and camera in parallel; camera prompt is the slow human step.
+        var sdkAndCam = await Promise.all([
+            elloLiveLoadSdk(),
+            navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } },
+                audio: false
+            })
+        ]);
+        var SDK = sdkAndCam[0];
+        __elloLive.camStream = sdkAndCam[1];
+
+        // Local self-view while Decart warms up, mirrored like a real mirror.
+        var video = elloLiveEl('elloLiveVideo');
+        if (video) {
+            video.classList.add('elive-mirrored');
+            video.srcObject = __elloLive.camStream;
+            var p = video.play(); if (p && p.catch) p.catch(function () {});
+        }
+        setStatus('Styling you in ' + (garment.name || 'the piece') + '…');
+
+        // 4. Garment reference blob (Shopify CDN serves CORS-friendly images).
+        var garmentBlob = null;
+        try {
+            var gRes = await fetch(elloAbsImageUrl(garment.image_url), { mode: 'cors' });
+            if (gRes.ok) garmentBlob = await gRes.blob();
+        } catch (e) { /* prompt-only fallback below */ }
+
+        // 5. Connect. Model object comes from the SDK registry (dims + fps).
+        var model = SDK.models.realtime('lucy-vton-3');
+        var client = SDK.createDecartClient({ apiKey: mint.token });
+        var promptText = elloBuildLivePrompt(garment);
+        var rc = await client.realtime.connect(__elloLive.camStream, {
+            model: model,
+            mirror: 'auto',
+            initialState: { prompt: { text: promptText, enhance: true } },
+            onRemoteStream: function (remote) {
+                __elloLive.remoteStream = remote;
+                if (video) {
+                    video.classList.remove('elive-mirrored'); // SDK mirror:'auto' owns orientation now
+                    video.srcObject = remote;
+                    var pp = video.play(); if (pp && pp.catch) pp.catch(function () {});
+                }
+                // Record from the FIRST transformed frame, not from the UI's
+                // go-live transition — a shopper who bails while the UI still
+                // says "warming up" must still get their replay + wardrobe
+                // save (Andrew's 2026-08-03 repro: 5s generated, ✕, nothing).
+                elloLiveStartRecorder();
+            }
+        });
+        __elloLive.client = rc;
+        if (__elloLive.stage !== 'connecting') { // closed while connecting
+            try { rc.disconnect(); } catch (e) {}
+            return;
+        }
+
+        if (garmentBlob) {
+            var file = new File([garmentBlob], 'garment', { type: garmentBlob.type || 'image/png' });
+            try { await rc.set({ prompt: promptText, image: file, enhance: true }); } catch (e) { elloLog('[Ello Live] set(image) failed, prompt-only', e); }
+        }
+
+        rc.on('generationTick', function (t) {
+            if (t && typeof t.seconds === 'number') __elloLive.secondsUsed = t.seconds;
+            // Billed generation seconds are PROOF the mirror is live — if the
+            // UI still says "warming up" at that point, flip it. (Andrew's
+            // repro: 5s generated while the stage never left 'connecting'.)
+            if (__elloLive.stage === 'connecting' && __elloLive.secondsUsed > 0) elloLiveMarkLive();
+        });
+        rc.on('connectionChange', function (state) {
+            elloLog('[Ello Live] connection:', state);
+            if (state === 'generating') elloLiveMarkLive();
+            if (state === 'disconnected' && (__elloLive.stage === 'live' || __elloLive.stage === 'connecting')) {
+                // Decart's server-side cap kill lands here too.
+                elloLiveEnd('disconnected');
+            }
+        });
+        rc.on('error', function (e) {
+            // warn (not elloLog) so field reports include the reason without
+            // needing the debug flag flipped first.
+            try { console.warn('[Ello Live] realtime error:', e && e.code, e && e.message); } catch (w) {}
+        });
+
+        // Belt-and-braces: if 'generating' never fires but frames arrive, go
+        // live when the video reports data; if nothing after 20s, fail out.
+        if (video) {
+            video.addEventListener('playing', function onPlaying() {
+                if (__elloLive.stage === 'connecting' && video.srcObject !== __elloLive.camStream) elloLiveMarkLive();
+            });
+        }
+        setTimeout(function () {
+            if (__elloLive.stage === 'connecting') {
+                elloLiveShowError('The mirror is taking too long. Photo try-on still works great.');
+                elloLiveEnd('timeout');
+            }
+        }, 20000);
+    } catch (err) {
+        elloLog('[Ello Live] begin failed:', err);
+        var msg = err && err.friendly ? err.message
+            : (err && err.name === 'NotAllowedError') ? 'Camera access was blocked. You can still use photo try-on.'
+            : 'Live try-on could not start. Photo try-on still works great.';
+        elloLiveShowError(msg);
+        trackEvent('live_tryon_failed', { reason: (err && (err.code || err.name)) || 'unknown' });
+        setTimeout(function () { closeLiveTryOn(); }, 2600);
+    }
+}
+
+// Record the TRANSFORMED stream (what the shopper sees), not the raw camera.
+// Kept on-device only: chunks → Blob → object URL for the replay stage,
+// revoked on close. Nothing is uploaded.
+function elloLiveStartRecorder() {
+    if (!window.MediaRecorder || !__elloLive.remoteStream || __elloLive.recorder) return;
+    try {
+        // WebM FIRST: it's Chrome/Edge/Firefox's native recorder format and is
+        // valid chunk-by-chunk. Chrome's mp4 muxer finalizes metadata only at
+        // stop, which produced undecodable (black) replays when assembly raced
+        // the final flush (Andrew's Chrome repro, 2026-08-02). Safari fails all
+        // webm probes and lands on mp4, which it records natively.
+        var candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4;codecs=avc1', 'video/mp4'];
+        var mime = '';
+        for (var i = 0; i < candidates.length; i++) {
+            if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(candidates[i])) { mime = candidates[i]; break; }
+        }
+        var rec = new MediaRecorder(__elloLive.remoteStream, mime ? { mimeType: mime } : undefined);
+        __elloLive.recordedChunks = [];
+        rec.ondataavailable = function (e) {
+            if (e.data && e.data.size > 0) __elloLive.recordedChunks.push(e.data);
+        };
+        rec.start(1000);
+        __elloLive.recorder = rec;
+    } catch (e) {
+        // No recorder → the session still runs; we just close instead of replaying.
+        elloLog('[Ello Live] recorder unavailable:', e);
+        __elloLive.recorder = null;
+    }
+}
+
+function elloLiveMarkLive() {
+    if (__elloLive.stage !== 'connecting') return;
+    elloLiveSetStage('live');
+    var statusEl = elloLiveEl('elloLiveStatus');
+    if (statusEl) statusEl.hidden = true;
+    elloLiveStartRecorder(); // no-op if already rolling since first remote frame
+    var recPill = elloLiveEl('elloLiveRecPill');
+    if (recPill) recPill.hidden = !__elloLive.recorder;
+    trackEvent('live_tryon_started', {
+        entry_source: __elloLive.entrySource,
+        product_id: (__elloLive.garment && __elloLive.garment.id) || null
+    });
+    // Attribution insurance, same moment static try-on stamps it: the shopper
+    // is seeing themselves in the product NOW.
+    try { elloWriteSessionCartAttr(); } catch (e) {}
+
+    // Countdown — display only; the authoritative cutoff is the token's
+    // server-enforced maxSessionDuration (we just end gracefully first).
+    __elloLive.deadline = Date.now() + __elloLive.maxSeconds * 1000;
+    var pill = elloLiveEl('elloLiveCountdown');
+    if (pill) pill.hidden = false;
+    __elloLive.countdownTimer = setInterval(function () {
+        var left = Math.max(0, Math.ceil((__elloLive.deadline - Date.now()) / 1000));
+        if (pill) pill.textContent = left + 's';
+        if (left <= 0) elloLiveEnd('time');
+    }, 250);
+}
+
+function elloLiveSendBeacon() {
+    if (__elloLive.beaconSent || !__elloLive.liveSessionId) return;
+    __elloLive.beaconSent = true;
+    try {
+        var base = String(window.ELLO_WIDGET_BASE_URL || '').replace(/\/+$/, '');
+        var payload = JSON.stringify({
+            liveSessionId: __elloLive.liveSessionId,
+            seconds: Math.ceil(__elloLive.secondsUsed || 0)
+        });
+        if (navigator.sendBeacon) {
+            navigator.sendBeacon(base + '/api/live-session-end', new Blob([payload], { type: 'text/plain' }));
+        } else {
+            fetch(base + '/api/live-session-end', { method: 'POST', body: payload, keepalive: true }).catch(function () {});
+        }
+    } catch (e) { /* metering only — never user-visible */ }
+}
+
+function elloLiveTeardownStream() {
+    if (__elloLive.countdownTimer) { clearInterval(__elloLive.countdownTimer); __elloLive.countdownTimer = null; }
+    if (__elloLive.client) { try { __elloLive.client.disconnect(); } catch (e) {} __elloLive.client = null; }
+    if (__elloLive.camStream) {
+        try { __elloLive.camStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+        __elloLive.camStream = null;
+    }
+    var video = elloLiveEl('elloLiveVideo');
+    if (video) { try { video.srcObject = null; } catch (e) {} }
+    var pill = elloLiveEl('elloLiveCountdown');
+    if (pill) pill.hidden = true;
+    var recPill = elloLiveEl('elloLiveRecPill');
+    if (recPill) recPill.hidden = true;
+    elloLiveSendBeacon();
+}
+
+function elloLiveEnd(reason) {
+    if (__elloLive.stage !== 'live' && __elloLive.stage !== 'connecting') return;
+    // "Did the shopper actually see the try-on" must NOT depend on the UI's
+    // go-live transition (which has missed real sessions) — remote frames or
+    // recorded chunks are the ground truth.
+    var liveVideo = elloLiveEl('elloLiveVideo');
+    var remoteAttached = !!(__elloLive.remoteStream && liveVideo &&
+        liveVideo.srcObject === __elloLive.remoteStream && liveVideo.videoWidth);
+    var hadFrames = __elloLive.stage === 'live' || remoteAttached ||
+        __elloLive.recordedChunks.length > 0;
+    // 'ending' guard: teardown's disconnect() fires a 'disconnected'
+    // connectionChange that would re-enter this function mid-flight.
+    __elloLive.stage = 'ending';
+
+    // Grab the last visible frame NOW, while the stream is still painting —
+    // it auto-saves to the wardrobe so every live session persists like a
+    // static try-on, with no button for the shopper to remember. Only from
+    // the TRANSFORMED stream: a raw self-view frame must never be saved.
+    var wardrobeFrame = null;
+    if (remoteAttached) {
+        try {
+            if (liveVideo && liveVideo.videoWidth) {
+                var frameCanvas = document.createElement('canvas');
+                frameCanvas.width = liveVideo.videoWidth;
+                frameCanvas.height = liveVideo.videoHeight;
+                frameCanvas.getContext('2d').drawImage(liveVideo, 0, 0);
+                wardrobeFrame = frameCanvas.toDataURL('image/jpeg', 0.9);
+            }
+        } catch (e) { elloLog('[Ello Live] frame grab failed:', e); }
+    }
+
+    var rec = __elloLive.recorder;
+    var recMime = (rec && rec.mimeType) || '';
+    __elloLive.recorder = null;
+
+    var finished = false;
+    var finish = function () {
+        if (finished) return;
+        finished = true;
+        elloLiveTeardownStream();
+        var blob = null;
+        if (hadFrames && __elloLive.recordedChunks.length > 0) {
+            try {
+                blob = new Blob(__elloLive.recordedChunks, {
+                    type: recMime || __elloLive.recordedChunks[0].type || 'video/webm'
+                });
+            } catch (e) { blob = null; }
+        }
+        elloLog('[Ello Live] replay blob:', blob && blob.size, blob && blob.type);
+        trackEvent('live_tryon_ended', {
+            reason: reason || 'unknown',
+            seconds: Math.ceil(__elloLive.secondsUsed || 0),
+            replay: !!(blob && blob.size > 0)
+        });
+        if (wardrobeFrame && __elloLive.garment) {
+            var tryOnId = 'live_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            autoSaveToWardrobe(__elloLive.garment, wardrobeFrame, tryOnId).catch(function (err) {
+                elloLog('[Ello Live] wardrobe save failed:', err);
+            });
+        }
+        if (blob && blob.size > 0) {
+            __elloLive.replayUrl = URL.createObjectURL(blob);
+            elloLiveShowReplay();
+        } else {
+            elloLiveHideOverlay();
+        }
+    };
+
+    if (rec && rec.state !== 'inactive') {
+        // requestData() flushes the in-flight chunk, stop() delivers the final
+        // one via onstop — assemble the replay there. The timer is a last
+        // resort for an onstop that never fires, generous enough that it can't
+        // race a slow finalization into a truncated (undecodable) file.
+        rec.onstop = finish;
+        setTimeout(finish, 4000);
+        try { rec.requestData(); } catch (e) { /* older engines */ }
+        try { rec.stop(); } catch (e) { finish(); }
+    } else {
+        finish();
+    }
+}
+
+function elloLiveShowReplay() {
+    var video = elloLiveEl('elloLiveReplay');
+    if (!video || !__elloLive.replayUrl) { elloLiveHideOverlay(); return; }
+    video.onerror = function () {
+        // Never strand the shopper on a black screen: the wardrobe frame is
+        // already saved, so fold the mirror away cleanly.
+        elloLog('[Ello Live] replay failed to decode — closing');
+        trackEvent('live_tryon_replay_error', {});
+        closeLiveTryOn();
+    };
+    video.onloadedmetadata = function () {
+        // Chrome MediaRecorder webm reports duration=Infinity until the tail
+        // is seeked once — without this the scrubber (the whole point of the
+        // replay) is broken. Canonical workaround: seek far past the end and
+        // wait for durationchange to deliver the real length, then snap back.
+        // (Verified in-engine: ontimeupdate fires BEFORE duration updates, so
+        // the listener must be on durationchange, not timeupdate.)
+        if (video.duration === Infinity) {
+            var onDur = function () {
+                if (video.duration !== Infinity) {
+                    video.removeEventListener('durationchange', onDur);
+                    video.currentTime = 0;
+                }
+            };
+            video.addEventListener('durationchange', onDur);
+            video.currentTime = 1e101;
+        }
+    };
+    video.src = __elloLive.replayUrl;
+    video.load();
+    var p = video.play(); if (p && p.catch) p.catch(function () {});
+    elloLiveSetStage('ended');
+}
+
+function elloLiveHideOverlay() {
+    var overlay = elloLiveEl('elloLiveOverlay');
+    if (overlay) overlay.classList.remove('active');
+    elloLiveSetStage('idle');
+}
+
+function closeLiveTryOn() {
+    if (__elloLive.stage === 'live' || __elloLive.stage === 'connecting') {
+        elloLiveEnd('closed');
+        return;
+    }
+    // Replay (or ending/consent) → discard the on-device recording and close.
+    var video = elloLiveEl('elloLiveReplay');
+    if (video) { try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) {} }
+    if (__elloLive.replayUrl) {
+        try { URL.revokeObjectURL(__elloLive.replayUrl); } catch (e) {}
+        __elloLive.replayUrl = null;
+    }
+    elloLiveHideOverlay();
+}
+
+// Post-result upsell: once a static result is visible, offer the live mirror.
+// A MutationObserver keeps this fully decoupled from startTryOn()'s success
+// path — zero risk to the static flow if live is off or broken.
+function elloLiveObserveResult() {
+    var panel = document.getElementById('ello-tryon-result');
+    if (!panel || !window.MutationObserver) return;
+    var mo = new MutationObserver(function () {
+        try {
+            if (!elloLiveEnabled()) return;
+            var visible = panel.style.display !== 'none' && panel.style.display !== '';
+            if (!visible || panel.querySelector('.elive-result-chip')) return;
+            var chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'elive-result-chip';
+            chip.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 7l-7 5 7 5V7z"></path><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg> See it on you, live';
+            chip.addEventListener('click', function () { startLiveTryOn('result_cta'); });
+            panel.appendChild(chip);
+        } catch (e) { /* upsell only — never break the result */ }
+    });
+    mo.observe(panel, { attributes: true, attributeFilter: ['style'] });
+}
+
+// Wire-up (parse time — template DOM is injected before this script loads).
+try {
+    elloLiveSyncEntryButtons();
+    elloLiveObserveResult();
+    window.addEventListener('ello:config-resolved', elloLiveSyncEntryButtons);
+    // Tab close / navigation mid-session: flush the metering beacon.
+    window.addEventListener('pagehide', function () {
+        if (__elloLive.stage === 'live' || __elloLive.stage === 'connecting') {
+            elloLiveSendBeacon();
+        }
+    });
+} catch (e) { /* live mode must never break widget init */ }
+
+
 // ─── Inline-handler namespace ───────────────────────────────────────────────
 // The widget's HTML uses inline on*= attributes, which resolve their functions
 // against window. Everything is published under the single window.__elloWidget
@@ -15473,6 +18090,40 @@ function smoothScrollToSelection(type) {
 // they exist solely so a CDN-cached older widget.html (whose markup still
 // calls bare names) keeps working until its cache expires.
 window.__elloWidget = window.__elloWidget || {};
+
+// ── Read-only diagnostics for the PDP hero swap ("mirror mode") ────────────
+// Since the IIFE wrap, NOTHING about the swap is inspectable from outside, and
+// elloPdpSwapOn() has four independent ways to return false — all of which look
+// identical from the outside (result quietly lands in the panel / wardrobe
+// instead of on the hero photo, no badge, no error). That made a field report
+// like "mirror mode doesn't work on my phone" undiagnosable without a rebuild.
+// These are getters only; nothing here mutates widget state.
+window.__elloWidget.debugPdpSwap = function () {
+    var d = {};
+    var cfg = window.ELLO_STORE_CONFIG || {};
+    d.pdpImageSwapEnabled = cfg.pdpImageSwapEnabled;     // gate 1: merchant/demo config
+    d.pdpImageSelector = cfg.pdpImageSelector || null;   // manual override (demo picker / merchant field)
+    try { d.handle = getProductIdFromUrl(window.location.pathname); } catch (e) { d.handle = 'ERR:' + e.message; }
+    d.isPdp = !!d.handle;                                // gate 2: must be a product URL
+    var g = window.elloSelectedGarment;
+    d.selectedGarmentId = g ? g.id : null;
+    d.garmentIsThisProduct = !!(g && d.handle && g.id === d.handle);  // gate 3
+    try { d.pdpSwapOn = elloPdpSwapOn(); } catch (e) { d.pdpSwapOn = 'ERR:' + e.message; }
+    try {
+        // gate 4: even with pdpSwapOn true, a null here means elloBeginPdpSwapLoading()
+        // returns false and the try-on silently falls back to the in-panel result.
+        var img = elloFindPdpImage();
+        d.resolvedHero = img ? {
+            cls: (img.className || '').slice(0, 80),
+            w: img.clientWidth, h: img.clientHeight,
+            src: (img.currentSrc || img.src || '').split('/').pop().slice(0, 50)
+        } : null;
+    } catch (e) { d.resolvedHero = 'ERR:' + e.message; }
+    d.swapState = { swapped: __elloPdpSwap.swapped, hasLoadingBadge: !!__elloPdpSwap.loadingEl, progress: __elloPdpSwap.progress };
+    d.isMobile = isMobile;                               // the widget's OWN device verdict, not a guess
+    d.viewport = window.innerWidth;
+    return d;
+};
 
 window.__elloWidget.addToOutfit = (typeof addToOutfit !== 'undefined') ? addToOutfit : window.addToOutfit;
 window.__elloWidget.addWardrobeItemToCart = (typeof addWardrobeItemToCart !== 'undefined') ? addWardrobeItemToCart : window.addWardrobeItemToCart;
@@ -15493,6 +18144,8 @@ window.__elloWidget.applyStyleOverrides = (typeof applyStyleOverrides !== 'undef
 window.__elloWidget.goToBrowserPage = (typeof goToBrowserPage !== 'undefined') ? goToBrowserPage : window.goToBrowserPage;
 window.__elloWidget.handleBestPracticesUpload = (typeof handleBestPracticesUpload !== 'undefined') ? handleBestPracticesUpload : window.handleBestPracticesUpload;
 window.__elloWidget.handleBrowserSearch = (typeof handleBrowserSearch !== 'undefined') ? handleBrowserSearch : window.handleBrowserSearch;
+window.__elloWidget.handleBrowserSortChange = (typeof handleBrowserSortChange !== 'undefined') ? handleBrowserSortChange : window.handleBrowserSortChange;
+window.__elloWidget.epcSearchKeydown = (typeof epcSearchKeydown !== 'undefined') ? epcSearchKeydown : window.epcSearchKeydown;
 window.__elloWidget.handlePhotoUpload = (typeof handlePhotoUpload !== 'undefined') ? handlePhotoUpload : window.handlePhotoUpload;
 window.__elloWidget.handlePhotoUploadClick = (typeof handlePhotoUploadClick !== 'undefined') ? handlePhotoUploadClick : window.handlePhotoUploadClick;
 window.__elloWidget.handlePreviewTryOn = (typeof handlePreviewTryOn !== 'undefined') ? handlePreviewTryOn : window.handlePreviewTryOn;
@@ -15512,6 +18165,10 @@ window.__elloWidget.elloHubSwitch = (typeof elloHubSwitch !== 'undefined') ? ell
 window.__elloWidget.startTryOn = (typeof startTryOn !== 'undefined') ? startTryOn : window.startTryOn;
 window.__elloWidget.resetPreviewTimers = (typeof resetPreviewTimers !== 'undefined') ? resetPreviewTimers : window.resetPreviewTimers;
 window.__elloWidget.forceShowPreview = (typeof forceShowPreview !== 'undefined') ? forceShowPreview : window.forceShowPreview;
+// Live Try-On (realtime mirror) handlers
+window.__elloWidget.startLiveTryOn = (typeof startLiveTryOn !== 'undefined') ? startLiveTryOn : window.startLiveTryOn;
+window.__elloWidget.beginLiveTryOn = (typeof beginLiveTryOn !== 'undefined') ? beginLiveTryOn : window.beginLiveTryOn;
+window.__elloWidget.closeLiveTryOn = (typeof closeLiveTryOn !== 'undefined') ? closeLiveTryOn : window.closeLiveTryOn;
 
 Object.keys(window.__elloWidget).forEach(function (n) {
     if (typeof window[n] === 'undefined' && typeof window.__elloWidget[n] === 'function') {

@@ -59,7 +59,15 @@
       <li>Open a prospect's product page (e.g. <code>madhappy.com</code> or <code>youngla.com</code> → any product).</li>
       <li>Click the <strong>Ello Try-On Demo</strong> bookmark. A native <strong>Try it on</strong> button appears by Add-to-Cart, plus the floating launcher. Click it, upload a photo once, and the try-on renders on the prospect's actual product image.</li>
     </ol>
-    <div class="note"><strong>Settings gear ⚙ (bottom-left):</strong> change the demo live, just like the dashboard. Switch <strong>Result shows in → Popup widget vs PDP image</strong> (turns the widget off and drops the try-on onto the product photo), toggle the floating launcher / inline button / Complete the Look, and set the brand color + button text. Changes apply instantly and are remembered for next time.</div>
+    <div class="note"><strong>Settings gear ⚙ (bottom-left):</strong> change the demo live, just like the dashboard. Toggle the floating launcher / inline button / Complete the Look, pick the upsell item, and set the brand color + button text. Changes apply instantly and are remembered for next time.
+      <table style="margin-top:10px;">
+        <tr><td>Result shows in</td><td><strong>Defaults to “PDP image”</strong> — the try-on replaces the product photo on their page. Switch to “Popup widget” to show it in the Ello panel instead.</td></tr>
+        <tr><td>Try-on lands on</td><td><strong>Pick image on page</strong> — if the result lands on the wrong photo (a thumbnail, a related product), click this, then click the photo it <em>should</em> replace. Saved per store, so one pick fixes every product page there. <em>clear</em> goes back to auto-detect.</td></tr>
+        <tr><td>Button placement</td><td><strong>Place on page</strong> — if the “Try it on” button doesn't appear or lands in the wrong section, click this, then click whatever it should sit <em>under</em> (usually Add to Cart). The button drops in right below your pick, instantly, and the spot is saved per store. <em>clear</em> goes back to auto.</td></tr>
+        <tr><td>Upsell item</td><td><strong>Paste the product URL</strong> of whatever you want Complete&nbsp;the&nbsp;Look to offer — open that product on their store, copy the address bar, paste it in. It pulls the handle out for you (<code>?variant=</code> and tracking junk are fine) and confirms with a green <strong>✓ Product Name</strong> so you know the pin took <em>before</em> you record. No product IDs, no console. Turns Complete the Look on automatically.</td></tr>
+        <tr><td>Brand color</td><td><strong>Auto</strong> — read off the store's own Add-to-cart button, so “Try it on” matches their buy button without you touching anything. Pick a color to override; hit <em>reset</em> to go back to auto.</td></tr>
+      </table>
+    </div>
     <div class="note">Console controls: <code>window.__elloDemo.tryOn()</code> (fire a try-on), <code>.open()</code> (fitting room), <code>.set('mode','mirror')</code> (change a setting), <code>.settings()</code> (see current), <code>.ctx()</code> (product data read off the page), <code>.reset()</code>.</div>
   </div>
 

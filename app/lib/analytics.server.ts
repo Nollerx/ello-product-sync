@@ -188,7 +188,14 @@ async function fetchPaged<T>(
   return out;
 }
 
-export async function fetchCoreEvents(slug: string, from: Date, to: Date): Promise<CoreEvents> {
+export async function fetchCoreEvents(
+  slug: string,
+  from: Date,
+  to: Date,
+  // rowCap bounds the per-table fetch for callers that only need the newest
+  // slice (Home's recent-sessions card) — 1000 = one page, one round trip.
+  opts?: { rowCap?: number },
+): Promise<CoreEvents> {
   const fromIso = from.toISOString();
   const toIso = to.toISOString();
   const paged = <T,>(table: string, columns: string) =>
@@ -201,6 +208,7 @@ export async function fetchCoreEvents(slug: string, from: Date, to: Date): Promi
         .lt("created_at", toIso)
         .order("created_at", { ascending: false })
         .range(lo, hi),
+      opts?.rowCap ?? ROW_CAP,
     );
 
   const [widgetEvents, tryons, carts, purchases, views] = await Promise.all([
@@ -215,6 +223,71 @@ export async function fetchCoreEvents(slug: string, from: Date, to: Date): Promi
   ]);
 
   return { widgetEvents, tryons, carts, purchases, views };
+}
+
+/** Narrow created_at-only fetch — feeds daily bar series + range totals without
+ *  dragging full event rows through the loader. */
+export async function fetchEventDates(
+  table: "tryon_events" | "cart_events",
+  slug: string,
+  from: Date,
+  to: Date,
+): Promise<string[]> {
+  const rows = await fetchPaged<{ created_at: string }>((lo, hi) =>
+    supabaseAdmin
+      .from(table)
+      .select("created_at")
+      .eq("store_slug", slug)
+      .gte("created_at", from.toISOString())
+      .lt("created_at", to.toISOString())
+      .order("created_at", { ascending: false })
+      .range(lo, hi),
+  );
+  return rows.map((r) => r.created_at);
+}
+
+/** Head count of widget_open events in a window (funnel top + headline strip). */
+export async function countWidgetOpens(slug: string, from: Date, to: Date): Promise<number> {
+  try {
+    const { count } = await supabaseAdmin
+      .from("widget_events")
+      .select("*", { count: "exact", head: true })
+      .eq("store_slug", slug)
+      .eq("event_type", "widget_open")
+      .gte("created_at", from.toISOString())
+      .lt("created_at", to.toISOString());
+    return count ?? 0;
+  } catch (err) {
+    console.error("[analytics] widget_open count failed (non-fatal):", err);
+    return 0;
+  }
+}
+
+/** Per-day attributed revenue via get_vto_daily_attributed_revenue — the same
+ *  qualified-revenue cascade + 7-day attribution cap as the summary RPC, so the
+ *  Home bars reconcile with the hero number. Gross basis (attributed_revenue),
+ *  matching what the dashboard displays. Fails soft to []. */
+export async function getDailyRevenue(
+  slug: string,
+  from: Date,
+  to: Date,
+  tz: string,
+): Promise<Array<{ day: string; value: number }>> {
+  const { data, error } = await supabaseAdmin.rpc("get_vto_daily_attributed_revenue", {
+    p_store_slug: slug,
+    p_from: from.toISOString(),
+    p_to: to.toISOString(),
+    p_tz: tz,
+  });
+  if (error) {
+    console.error("[analytics] daily revenue failed (non-fatal):", error.message);
+    return [];
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return ((data as any[] | null) ?? []).map((r) => ({
+    day: String(r.day),
+    value: Number(r.attributed_revenue ?? 0),
+  }));
 }
 
 export interface ConversionSummary {
@@ -261,6 +334,152 @@ export async function getConversionSummary(
     netRevenue: Number(row.attributed_revenue_net ?? row.attributed_revenue ?? 0),
     purchaseConversionPct:
       row.purchase_conversion_pct != null ? Number(row.purchase_conversion_pct) : null,
+  };
+}
+
+/** One billable line on a statement: a shopper tried this product on, then
+ *  bought it. `netAttributed` is the figure the rev-share percentage is applied
+ *  to, and the lines are guaranteed to sum to the invoice total (see
+ *  20260804_billing_statement.sql on why this rounds per line rather than per
+ *  order — a client adds these up by hand). */
+export interface StatementLine {
+  orderId: string | null;
+  productId: string | null;
+  /** Resolved through catalog → order line title → PDP handle. Null only if
+   *  every source missed, in which case callers show the product id. */
+  productName: string | null;
+  triedOnAt: string;
+  purchasedAt: string;
+  hoursToPurchase: number;
+  attributedRevenue: number;
+  refundedAmount: number;
+  netAttributed: number;
+  /** Inside the deal's free window: shown to the client (the widget is working)
+   *  but contributing zero to the fee. */
+  inTrial: boolean;
+  /** netAttributed, or 0 during the trial — what the percentage is applied to. */
+  billableNet: number;
+  revenueBasis: string | null;
+  currency: string | null;
+}
+
+/** The billing terms on file for a store, plus the period totals computed from
+ *  them. `hasDeal === false` means nothing is on file and `amountDue` is null —
+ *  callers must never fall back to a default rate and invent a charge. */
+export interface Invoice {
+  dealType: "rev_share" | "flat" | null;
+  revSharePercent: number | null;
+  flatAmount: number | null;
+  includedTryons: number | null;
+  trialDays: number;
+  trialUntil: string | null;
+  salesCount: number;
+  ordersCount: number;
+  tryonsUsed: number;
+  grossAttributed: number;
+  refunded: number;
+  netAttributed: number;
+  trialExcluded: number;
+  billableNet: number;
+  amountDue: number | null;
+  currency: string;
+  hasDeal: boolean;
+}
+
+/** The line-by-line proof behind an invoice, for [from, to). Bill from the sum
+ *  of these lines: the daily-revenue RPC rounds per order instead of per line
+ *  and can differ by a cent or two on the same window. */
+export async function getBillingStatement(
+  slug: string,
+  from: Date,
+  to: Date,
+): Promise<StatementLine[]> {
+  const { data, error } = await supabaseAdmin.rpc("get_vto_billing_statement", {
+    p_store_slug: slug,
+    p_from: from.toISOString(),
+    p_to: to.toISOString(),
+  });
+  if (error) {
+    console.error("[analytics] billing statement failed (non-fatal):", error.message);
+    return [];
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return ((data ?? []) as any[]).map((r) => ({
+    orderId: (r.order_id as string | null) ?? null,
+    productId: (r.product_id as string | null) ?? null,
+    productName: (r.product_name as string | null) ?? null,
+    triedOnAt: r.tried_on_at as string,
+    purchasedAt: r.purchased_at as string,
+    hoursToPurchase: Number(r.hours_to_purchase ?? 0),
+    attributedRevenue: Number(r.attributed_revenue ?? 0),
+    refundedAmount: Number(r.refunded_amount ?? 0),
+    netAttributed: Number(r.net_attributed ?? 0),
+    inTrial: r.in_trial === true,
+    billableNet: Number(r.billable_net ?? 0),
+    revenueBasis: (r.revenue_basis as string | null) ?? null,
+    currency: (r.currency as string | null) ?? null,
+  }));
+}
+
+/** Billing terms + period totals for [from, to). Returns null only if the RPC
+ *  itself failed; a store with no deal on file still returns a row with
+ *  hasDeal false, so the UI can say "no terms on file" rather than "$0 due". */
+export async function getInvoice(
+  slug: string,
+  from: Date,
+  to: Date,
+): Promise<Invoice | null> {
+  const { data, error } = await supabaseAdmin.rpc("get_vto_invoice", {
+    p_store_slug: slug,
+    p_from: from.toISOString(),
+    p_to: to.toISOString(),
+  });
+  if (error) {
+    console.error("[analytics] invoice failed (non-fatal):", error.message);
+    return null;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row = (Array.isArray(data) ? data[0] : null) as any;
+  if (!row) return null;
+  return {
+    dealType: (row.deal_type as Invoice["dealType"]) ?? null,
+    revSharePercent: row.rev_share_percent != null ? Number(row.rev_share_percent) : null,
+    flatAmount: row.flat_amount != null ? Number(row.flat_amount) : null,
+    includedTryons: row.included_tryons != null ? Number(row.included_tryons) : null,
+    trialDays: Number(row.trial_days ?? 0),
+    trialUntil: (row.trial_until as string | null) ?? null,
+    salesCount: Number(row.sales_count ?? 0),
+    ordersCount: Number(row.orders_count ?? 0),
+    tryonsUsed: Number(row.tryons_used ?? 0),
+    grossAttributed: Number(row.gross_attributed ?? 0),
+    refunded: Number(row.refunded ?? 0),
+    netAttributed: Number(row.net_attributed ?? 0),
+    trialExcluded: Number(row.trial_excluded ?? 0),
+    billableNet: Number(row.billable_net ?? 0),
+    amountDue: row.amount_due != null ? Number(row.amount_due) : null,
+    currency: (row.currency as string | null) ?? "USD",
+    hasDeal: row.has_deal === true,
+  };
+}
+
+/** Totals for a statement. Summed from the lines themselves so the header
+ *  figure and the rows can never disagree on screen or on an invoice. */
+export function totalStatement(lines: StatementLine[]): {
+  gross: number;
+  refunded: number;
+  net: number;
+  billable: number;
+  orders: number;
+  currency: string | null;
+} {
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  return {
+    gross: round2(lines.reduce((s, l) => s + l.attributedRevenue, 0)),
+    refunded: round2(lines.reduce((s, l) => s + l.refundedAmount, 0)),
+    net: round2(lines.reduce((s, l) => s + l.netAttributed, 0)),
+    billable: round2(lines.reduce((s, l) => s + l.billableNet, 0)),
+    orders: new Set(lines.map((l) => l.orderId).filter(Boolean)).size,
+    currency: lines.find((l) => l.currency)?.currency ?? null,
   };
 }
 

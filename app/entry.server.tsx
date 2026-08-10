@@ -6,7 +6,9 @@ import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 
-export const streamTimeout = 5000;
+// Must exceed the slowest streamed loader promise (the live theme read is
+// bounded at ~8s in app._index) so deferred data resolves instead of aborting.
+export const streamTimeout = 10000;
 
 export default async function handleRequest(
   request: Request,

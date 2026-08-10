@@ -50,6 +50,40 @@ The merchant-facing dashboard is a Lovable project, not a Cloud Run deploy. It r
 - **Edge functions:** in `supabase/functions/`. Deploy: `supabase functions deploy <name> --project-ref rwmvgwnebnsqcyhhurti --no-verify-jwt`
 - **Migrations:** in `supabase/migrations/`. Andrew runs them manually in the Supabase SQL editor. Lovable Cloud manages permissions, so do not assume Supabase MCP can execute against this project without explicit per-statement authorization.
 
+### Adding a widget-config field (checklist — every step, or the field silently no-ops)
+A merchant-facing widget setting travels: `vto_stores` column → `get_widget_config` RPC → `/api/widget-config` → widget-loader.js `ELLO_STORE_CONFIG` mapping → widget-main.js consumer, with `config_version` as the cache key. Miss one link and the dashboard preview looks right while every storefront serves the old config. Incident 2026-07-25: `ctl_intro_style` + button border saved to the DB but never appeared on the test store because step 3 was missed. Update ALL of:
+1. `vto_stores` column (+ CHECK constraint)
+2. `get_widget_config` RPC — typed TABLE, so DROP + CREATE and re-GRANT EXECUTE to anon/authenticated/service_role
+3. **`bump_vto_store_config_version()` trigger — add the column to BOTH watched tuples (NEW.* and OLD.*).** A save that changes only an unwatched column never bumps `config_version`, so cached storefronts never refetch.
+4. widget-loader.js config mapping
+5. widget-main.js consumer
+6. `app.widget-design.tsx` loader + action
+
+## Live Try-On (Decart realtime mirror) — added 2026-08-02
+
+Camera → WebRTC → Decart `lucy-vton-3` → full-screen mirror overlay. The whole
+session auto-records (MediaRecorder on the transformed stream, on-device only)
+and replays at the end so shoppers can spin 360 and scrub back — no capture
+button (Andrew 2026-08-02). Static 2D try-on is untouched; live failures
+degrade to it silently.
+
+- **Server:** `app/routes/api.live-token.tsx` (gates on `vto_stores.live_tryon_enabled`
+  + daily/shopper caps, mints a short-lived Decart client token scoped to model +
+  origin + `maxSessionDuration` — Decart kills the stream at the cap server-side);
+  `app/routes/api.live-session-end.tsx` (sendBeacon close-out into `vto_live_sessions`).
+- **Widget:** overlay markup/CSS in `widget-template.html` (`#elloLiveOverlay`, `.elive-*`),
+  controller in `widget-main.js` (search `elloLive`), config flag `tryOnLiveEnabled`
+  mapped in `widget-loader.js` (+ forced off in the A/B holdout block).
+- **SDK:** `public/ello-live-sdk.js` is GENERATED (vendored @decartai/sdk, ~900KB,
+  lazy-loaded on first use). Rebuild with `npm run build:live-sdk`; eslint-ignored.
+  Cached LONG (1 day) by the Cloudflare worker — worker redeploy needed once.
+- **Env:** `DECART_API_KEY` in both cloud_run_env yamls + local `.env` (gitignored).
+- **Migration:** `supabase/migrations/20260802_live_tryon.sql` (columns + `vto_live_sessions`
+  + get_widget_config/trigger walk). Rollout = flag defaults false fleet-wide; enable
+  per store via one SQL UPDATE (demo store first).
+- **Billing caveat:** live seconds are metered in `vto_live_sessions` only — NOT yet
+  wired into plan quotas or Shopify usage charges. Decart costs ~$0.02/sec realtime.
+
 ## Deploy commands (use exactly these)
 
 ### Public app

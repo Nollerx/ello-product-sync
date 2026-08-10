@@ -20,7 +20,9 @@ import {
   setOnboardingStep,
   type OnboardingStep,
 } from "../lib/onboarding.server";
+import { gateAllowedRecently, markGateAllowed } from "../lib/gate-cache.server";
 import { WebVitals } from "../components/web-vitals";
+import "../styles/admin-theme.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing, session, admin } = await authenticate.admin(request);
@@ -32,6 +34,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const isOnboardingRoute = url.pathname.startsWith("/app/onboarding");
   const isBillingActivationRequest =
     url.pathname === "/app" && url.searchParams.get("billing") === "activating";
+
+  // Fast path: this shop fully passed the gate (onboarding complete + billing
+  // allowed) within the last few minutes — skip the 3-4 Supabase reads and the
+  // live Shopify billing.check. Never taken during activation polling, and
+  // negative verdicts are never cached, so new installs still route correctly.
+  if (
+    !isOnboardingRoute &&
+    !isBillingRoute &&
+    !isBillingActivationRequest &&
+    gateAllowedRecently(session.shop)
+  ) {
+    // eslint-disable-next-line no-undef
+    return { apiKey: process.env.SHOPIFY_API_KEY || "", shop: session.shop };
+  }
 
   // Onboarding gate — new installs walk through /app/onboarding/* before
   // anything else. Existing merchants have onboarding_step='complete' (set by
@@ -52,6 +68,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       console.error("[OnboardingGate] check failed (non-fatal):", err);
     }
   }
+
+  // Whether this request ended in a definite "allowed" billing verdict — the
+  // only outcome the gate cache is permitted to remember.
+  // eslint-disable-next-line no-undef
+  let billingAllowed = process.env.SKIP_BILLING === "true";
 
   // eslint-disable-next-line no-undef
   if (!isBillingRoute && process.env.SKIP_BILLING !== "true") {
@@ -123,12 +144,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         if (onboardingStep && onboardingStep !== "complete") {
           try {
             await setOnboardingStep(session.shop, "complete");
+            onboardingStep = "complete";
             console.log(`[BillingGate] Marked onboarding complete for ${session.shop}`);
           } catch (err) {
             console.error(`[BillingGate] Failed to mark onboarding complete (non-fatal):`, err);
           }
         }
         // Subscription is active on Shopify — allow through
+        billingAllowed = true;
       } else if (isBillingActivationRequest) {
         // Billing just approved but Shopify hasn't activated yet — let dashboard show pending banner
         console.log(`[BillingGate] Activation still pending for ${session.shop}`);
@@ -136,6 +159,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         // No paid Shopify sub, but an active Supabase sub exists (ello_free /
         // developer_free / custom_distribution). Allow through — the merchant
         // can upgrade from the dashboard.
+        billingAllowed = true;
       } else {
         // No paid sub and no Supabase sub — redirect to billing (afterAuth likely failed)
         const billingParams = new URLSearchParams();
@@ -159,15 +183,37 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
         throw redirect(`/app/billing?${billingParams.toString()}`);
       }
+      billingAllowed = hasActiveSub;
     }
   }
 
-  // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "", shop: session.shop };
+  // Remember only a full positive pass: onboarding verified complete on this
+  // request AND billing definitively allowed. Redirect/pending paths never
+  // reach here with these flags set.
+  if (
+    !isOnboardingRoute &&
+    !isBillingRoute &&
+    !isBillingActivationRequest &&
+    onboardingStep === "complete" &&
+    billingAllowed
+  ) {
+    markGateAllowed(session.shop);
+  }
+
+  // The billing statement is only meaningful to rev-share clients, who are
+  // always on a custom-distribution build (App Store merchants pay through
+  // Shopify's own subscription and have no attributed-revenue fee to audit).
+  return {
+    // eslint-disable-next-line no-undef
+    apiKey: process.env.SHOPIFY_API_KEY || "",
+    shop: session.shop,
+    // eslint-disable-next-line no-undef
+    showStatement: process.env.APP_DISTRIBUTION === "SingleMerchant",
+  };
 };
 
 export default function App() {
-  const { apiKey, shop } = useLoaderData<typeof loader>();
+  const { apiKey, shop, showStatement } = useLoaderData<typeof loader>();
 
   return (
     <AppProvider embedded apiKey={apiKey}>
@@ -179,6 +225,7 @@ export default function App() {
           <s-link href="/app/widget-design">Widget Design</s-link>
           <s-link href="/app/analytics">Analytics</s-link>
           <s-link href="/app/proof">Proof</s-link>
+          {showStatement ? <s-link href="/app/statement">Billing statement</s-link> : null}
           <s-link href="/app/leads">Leads</s-link>
           <s-link href="/app/settings">Settings</s-link>
         </s-app-nav>

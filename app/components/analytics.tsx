@@ -1,13 +1,13 @@
 // Shared analytics UI: time-range selector, deltas, charts, heatmap, funnel,
 // insights, and the free-plan lock. Brand-styled to match components/ui.tsx.
 
-import { Fragment, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { BlockStack, Box, Button, ButtonGroup, Card, InlineStack, Text } from "@shopify/polaris";
-import { MagicIcon } from "@shopify/polaris-icons";
+import { BlockStack, Box, Button, Card, InlineStack, Text } from "@shopify/polaris";
+import { LockIcon } from "@shopify/polaris-icons";
 import { RANGE_OPTIONS, parseRange, type RangeKey } from "../lib/timerange";
-import { brand, IconChip, StatusPill, TONE_STYLES, type IconSource, type Tone } from "./ui";
+import { brand, fonts, ledger, tnum, Eyebrow, MonoMeta, IconChip, StatusPill, TONE_STYLES, type IconSource, type Tone } from "./ui";
 import type { Insight } from "../lib/analytics-shared";
 
 // Re-exported so existing `../components/analytics` imports keep working; the
@@ -15,6 +15,8 @@ import type { Insight } from "../lib/analytics-shared";
 export { IconChip, StatusPill, type Tone };
 
 // ─── Time range selector (?range=7d|30d|90d, preserves other params) ───────
+// Hairline pill segmented control in the Ledger language: the active range is
+// an ink chip, the rest stay quiet. Same URL contract as before.
 export function TimeRangeSelector() {
   const [searchParams, setSearchParams] = useSearchParams();
   const current = parseRange(searchParams.get("range"));
@@ -26,26 +28,101 @@ export function TimeRangeSelector() {
   };
 
   return (
-    <ButtonGroup variant="segmented">
-      {RANGE_OPTIONS.map((opt) => (
-        <Button key={opt.key} pressed={current === opt.key} onClick={() => select(opt.key)} size="slim">
-          {opt.label}
-        </Button>
-      ))}
-    </ButtonGroup>
+    <div
+      role="group"
+      aria-label="Time range"
+      style={{
+        display: "inline-flex",
+        border: `1px solid ${brand.ink200}`,
+        borderRadius: 999,
+        background: brand.white,
+        padding: 2,
+        gap: 2,
+      }}
+    >
+      {RANGE_OPTIONS.map((opt) => {
+        const active = current === opt.key;
+        return (
+          <button
+            key={opt.key}
+            type="button"
+            aria-pressed={active}
+            onClick={() => select(opt.key)}
+            style={{
+              border: "none",
+              borderRadius: 999,
+              padding: "4px 12px",
+              fontSize: 12,
+              fontWeight: active ? 650 : 500,
+              fontFamily: "inherit",
+              lineHeight: 1.4,
+              cursor: active ? "default" : "pointer",
+              background: active ? brand.ink : "transparent",
+              color: active ? brand.white : brand.ink500,
+              transition: "background 120ms ease, color 120ms ease",
+              ...tnum,
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
 // ─── Delta vs previous period ───────────────────────────────────────────────
+// Rounded diagonal trend arrow — friendlier than ▲/▼ and drawn with the same
+// round-capped stroke language as the Polaris icon set.
+function TrendArrow({ dir, size = 10 }: { dir: "up" | "down" | "flat"; size?: number }) {
+  const d =
+    dir === "up"
+      ? "M1.5 8.5 L8.5 1.5 M4.2 1.5 H8.5 V5.8"
+      : dir === "down"
+        ? "M1.5 1.5 L8.5 8.5 M8.5 4.2 V8.5 H4.2"
+        : "M1.5 5 H8.5";
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 10 10"
+      role="img"
+      aria-label={dir === "up" ? "Up" : dir === "down" ? "Down" : "Flat"}
+      style={{ flexShrink: 0 }}
+    >
+      <path d={d} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </svg>
+  );
+}
+
+// Plain colored delta in the Ledger register: arrow glyph + tabular percent in
+// the semantic ink, comparison caption in quiet gray. The color carries the
+// verdict; the number stays legible without a pill box. `invert` flips the
+// good/bad coloring for lower-is-better metrics; direction always follows sign.
 export function Delta({ value, invert }: { value: number | null; invert?: boolean }) {
   if (value == null) return null;
   const good = invert ? value <= 0 : value >= 0;
-  const color = value === 0 ? brand.ink500 : good ? brand.success : brand.danger;
-  const arrow = value > 0 ? "▲" : value < 0 ? "▼" : "—";
+  const flat = value === 0;
+  const fg = flat ? brand.ink500 : good ? brand.successInk : brand.dangerInk;
+  const dir = value > 0 ? "up" : value < 0 ? "down" : "flat";
   return (
-    <span style={{ fontSize: 12, fontWeight: 600, color }}>
-      {arrow} {Math.abs(value)}%
-      <span style={{ color: brand.ink500, fontWeight: 400 }}> vs prev.</span>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
+      <span
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 3,
+          color: fg,
+          fontSize: 12,
+          fontWeight: 650,
+          lineHeight: 1.2,
+          ...tnum,
+        }}
+      >
+        <TrendArrow dir={dir} />
+        {Math.abs(value)}%
+      </span>
+      <span style={{ fontSize: 12, color: brand.ink500 }}>vs prev.</span>
     </span>
   );
 }
@@ -63,61 +140,437 @@ export function verdictFromDelta(delta: number | null | undefined, invert = fals
 }
 
 // ─── Plain-English headline strip ───────────────────────────────────────────
-// The TL;DR above the tabs: one sentence a non-technical merchant can read in
-// two seconds. The page composes `children` (bold the numbers that matter).
+// The TL;DR above everything: one sentence a non-technical merchant can read
+// in two seconds, set like the opening line of a ledger — a solid ink rule
+// above, a dashed receipt rule below, no colored box shouting over the words.
+// The page composes `children` (bold the numbers that matter).
 export function HeadlineStrip({ eyebrow = "This period at a glance", children }: { eyebrow?: string; children: ReactNode }) {
   return (
-    <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: brand.blue100, borderLeft: `3px solid ${brand.blue}`, padding: "12px 14px" }}>
-      <span aria-hidden style={{ marginTop: 2, display: "inline-flex" }}>
-        <MagicIcon width={20} height={20} style={{ fill: brand.blue700 }} />
-      </span>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: brand.blue700, marginBottom: 3 }}>{eyebrow}</div>
-        <div style={{ fontSize: 15, lineHeight: 1.5, color: brand.ink }}>{children}</div>
+    <div
+      style={{
+        borderTop: ledger.totalRule,
+        borderBottom: ledger.dashed,
+        padding: "12px 2px 13px",
+      }}
+    >
+      <div style={{ marginBottom: 4 }}>
+        <Eyebrow>{eyebrow}</Eyebrow>
       </div>
+      <div style={{ fontSize: 14.5, lineHeight: 1.55, color: brand.ink700, ...tnum }}>{children}</div>
     </div>
   );
 }
 
-// ─── KPI tile with icon, verdict, and optional delta ────────────────────────
-export function KpiTile({
-  label,
-  value,
-  hint,
-  delta,
-  invertDelta,
-  accent,
-  icon,
-  iconTone,
-  status,
-}: {
+// ─── KPI anatomy (Editorial Ledger) ─────────────────────────────────────────
+// Reading order per tile, top to bottom: quiet eyebrow label (verdict pill on
+// the same line when present) → Playfair hero numeral → colored delta → mono
+// receipt footnote. Icon chips deliberately stay out of KPI tiles — they
+// belong to section headings; next to a number they read template, not ledger.
+
+export type KpiTileProps = {
   label: string;
   value: string;
   hint?: string;
   delta?: number | null;
   invertDelta?: boolean;
   accent?: boolean;
+  /** Accepted for call-site compatibility; KPI tiles no longer render icons. */
   icon?: IconSource;
   iconTone?: Tone;
   status?: { label: string; tone: Tone } | null;
-}) {
+};
+
+// The inner anatomy, shared by the standalone card tile and the banded cell.
+function KpiBody({ label, value, hint, delta, invertDelta, accent, status, hero }: KpiTileProps & { hero?: boolean }) {
   return (
-    <Card padding="500">
-      <BlockStack gap="150">
-        {(icon || status) && (
-          <InlineStack align="space-between" blockAlign="center">
-            {icon ? <IconChip source={icon} tone={iconTone ?? (accent ? "money" : "neutral")} /> : <span />}
-            {status && <StatusPill label={status.label} tone={status.tone} />}
-          </InlineStack>
-        )}
-        <Text as="span" variant="bodySm" tone="subdued">{label}</Text>
-        <span style={{ fontSize: 28, fontWeight: 600, lineHeight: 1.1, color: accent ? brand.blue : brand.ink }}>
-          {value}
-        </span>
+    <BlockStack gap="100">
+      <InlineStack align="space-between" blockAlign="center" wrap={false}>
+        <Eyebrow>{label}</Eyebrow>
+        {status && <StatusPill label={status.label} tone={status.tone} />}
+      </InlineStack>
+      <span
+        style={{
+          fontFamily: fonts.serif,
+          fontSize: hero ? 40 : 31,
+          fontWeight: 500,
+          lineHeight: 1.12,
+          letterSpacing: "-0.01em",
+          color: accent ? brand.blue : brand.ink,
+          ...tnum,
+        }}
+      >
+        {value}
+      </span>
+      {(delta !== undefined || hint) && (
         <InlineStack gap="200" blockAlign="center">
           {delta !== undefined && <Delta value={delta} invert={invertDelta} />}
-          {hint && <Text as="span" variant="bodySm" tone="subdued">{hint}</Text>}
+          {hint && <MonoMeta>{hint}</MonoMeta>}
         </InlineStack>
+      )}
+    </BlockStack>
+  );
+}
+
+export function KpiTile(props: KpiTileProps) {
+  return (
+    <Card padding="500">
+      <KpiBody {...props} />
+    </Card>
+  );
+}
+
+// One flat card holding a row of KPI cells separated by dashed receipt rules —
+// never four boxed cards in a row. The first tile may set `accent`/`hero` via
+// its props to be the page's single accented number.
+export function KpiBand({ tiles }: { tiles: KpiTileProps[] }) {
+  return (
+    <Card padding="500">
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${Math.max(1, tiles.length)}, minmax(190px, 1fr))`,
+          overflowX: "auto",
+        }}
+      >
+        {tiles.map((t, i) => (
+          <div
+            key={t.label}
+            style={{
+              padding: i === 0 ? "2px 18px 2px 0" : "2px 18px",
+              borderLeft: i === 0 ? undefined : ledger.dashed,
+              minWidth: 0,
+              overflow: "hidden",
+            }}
+          >
+            <KpiBody {...t} hero={t.accent} />
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// ─── Daily performance card (Home) ──────────────────────────────────────────
+// One full-width chart card: revenue bars on top, try-on/cart-add lines below,
+// aligned to a shared x-axis with date ticks and a unified crosshair readout —
+// the same interaction language as the external dashboard. Two stacked panels
+// (never a dual axis): money and counts each get their own scale, and hover
+// reads out all three series for the day under the cursor.
+//
+// Series colors are palette-validated (dataviz six checks): revenue = brand
+// blue BARS, try-ons = orchid LINE + soft area, cart adds = success LINE.
+// Orchid's only sub-10 CVD pair is vs the blue, which lives in the other panel
+// with a different mark shape; the legend + tooltip carry exact values.
+
+export type DailyPerfPoint = { day: string; value: number };
+
+const PANEL_BARS_H = 128;
+const PANEL_LINES_H = 104;
+
+function LegendStat({
+  color,
+  label,
+  value,
+  delta,
+}: {
+  color: string;
+  label: string;
+  value: string;
+  delta: number | null;
+}) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, whiteSpace: "nowrap" }}>
+      <span aria-hidden style={{ width: 10, height: 10, borderRadius: 3, background: color, flexShrink: 0 }} />
+      <span style={{ fontSize: 12.5, color: brand.ink600 }}>{label}</span>
+      <span style={{ fontSize: 14, fontWeight: 650, color: brand.ink, ...tnum }}>{value}</span>
+      <Delta value={delta} />
+    </span>
+  );
+}
+
+export function DailyPerformanceCard({
+  revenue,
+  tryons,
+  carts,
+  totals,
+  deltas,
+  formatMoney,
+  rangeDays,
+  cartConversionPct,
+}: {
+  revenue: DailyPerfPoint[];
+  tryons: DailyPerfPoint[];
+  carts: DailyPerfPoint[];
+  totals: { revenue: number; tryons: number; carts: number };
+  deltas: { revenue: number | null; tryons: number | null; carts: number | null };
+  formatMoney: (v: number) => string;
+  rangeDays: number;
+  cartConversionPct: number | null;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const gradId = useId().replace(/:/g, "");
+
+  // Unified day list: the revenue RPC's gap-filled series is authoritative;
+  // fall back to the try-on series if revenue came back empty. Counts merge in
+  // by day key so a missing bucket reads 0, never misaligns.
+  const days = (revenue.length > 0 ? revenue : tryons).map((d) => d.day);
+  const byDay = (list: DailyPerfPoint[]) => {
+    const m = new Map(list.map((d) => [d.day, d.value]));
+    return days.map((day) => m.get(day) ?? 0);
+  };
+  const revVals = byDay(revenue);
+  const tryVals = byDay(tryons);
+  const cartVals = byDay(carts);
+
+  const n = days.length;
+  const revMax = Math.max(...revVals, 0);
+  const countMax = Math.max(...tryVals, ...cartVals, 0);
+  const hasAny = revMax > 0 || countMax > 0;
+
+  // One x-mapping for everything: slot centers, so bars, line points, ticks,
+  // and the crosshair all land on the same column.
+  const xPct = (i: number) => ((i + 0.5) / Math.max(1, n)) * 100;
+
+  const move = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const rect = boxRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return;
+    const frac = Math.min(0.9999, Math.max(0, (e.clientX - rect.left) / rect.width));
+    setHover(Math.min(n - 1, Math.floor(frac * n)));
+  };
+
+  // ~5 date ticks spread across the window (always first + last).
+  const tickCount = Math.min(n, rangeDays <= 7 ? 4 : 5);
+  const tickIdx = Array.from({ length: tickCount }, (_, i) =>
+    Math.round((i * (n - 1)) / Math.max(1, tickCount - 1)),
+  );
+
+  const linePts = (vals: number[]) =>
+    vals.map((v, i) => [xPct(i), 8 + (1 - v / Math.max(1, countMax)) * 86] as [number, number]);
+
+  const hx = hover != null ? xPct(hover) : 0;
+  const tipAlign = hx < 16 ? "0%" : hx > 84 ? "-100%" : "-50%";
+
+  const SERIES = [
+    { key: "revenue", label: "Attributed revenue", color: brand.blue, fmt: formatMoney, vals: revVals },
+    { key: "tryons", label: "Try-ons", color: brand.orchid, fmt: (v: number) => v.toLocaleString(), vals: tryVals },
+    { key: "carts", label: "Cart adds", color: brand.success, fmt: (v: number) => v.toLocaleString(), vals: cartVals },
+  ];
+
+  return (
+    <Card padding="500">
+      <BlockStack gap="400">
+        <InlineStack align="space-between" blockAlign="start" wrap>
+          <BlockStack gap="100">
+            <Text as="h2" variant="headingMd">Daily performance</Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              Revenue, try-ons & cart adds per day · last {rangeDays} days
+            </Text>
+          </BlockStack>
+          {cartConversionPct != null && (
+            <Text as="span" variant="bodySm" tone="subdued">
+              {cartConversionPct}% of try-on sessions add to cart
+            </Text>
+          )}
+        </InlineStack>
+
+        {/* Legend doubles as the stat row: color key + range total + delta. */}
+        <InlineStack gap="500" blockAlign="center" wrap>
+          <LegendStat color={brand.blue} label="Attributed revenue" value={formatMoney(totals.revenue)} delta={deltas.revenue} />
+          <LegendStat color={brand.orchid} label="Try-ons" value={totals.tryons.toLocaleString()} delta={deltas.tryons} />
+          <LegendStat color={brand.success} label="Cart adds" value={totals.carts.toLocaleString()} delta={deltas.carts} />
+        </InlineStack>
+
+        {!hasAny ? (
+          <div
+            style={{
+              height: PANEL_BARS_H + PANEL_LINES_H + 46,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 13,
+              color: brand.ink500,
+            }}
+          >
+            No activity in this period yet — charts fill in as shoppers use the widget.
+          </div>
+        ) : (
+          <div
+            ref={boxRef}
+            onMouseMove={move}
+            onMouseLeave={() => setHover(null)}
+            style={{ position: "relative", cursor: "crosshair" }}
+          >
+            {/* ── Panel A: attributed revenue (bars) ── */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: brand.ink500 }}>
+                Revenue
+              </span>
+              {revMax > 0 && (
+                <span style={{ fontSize: 11, color: brand.ink500 }}>peak {formatMoney(revMax)}/day</span>
+              )}
+            </div>
+            <div
+              style={{
+                height: PANEL_BARS_H,
+                display: "flex",
+                alignItems: "flex-end",
+                borderBottom: `1px solid ${brand.ink100}`,
+              }}
+            >
+              {revVals.map((v, i) => {
+                const h = v > 0 ? Math.max(3, Math.round((v / Math.max(1, revMax)) * (PANEL_BARS_H - 14))) : 0;
+                return (
+                  <div
+                    key={days[i]}
+                    style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "flex-end", justifyContent: "center", height: "100%" }}
+                  >
+                    <div
+                      style={{
+                        width: n > 45 ? "calc(100% - 1px)" : "min(68%, 44px)",
+                        height: h,
+                        background: hover === i ? brand.blue700 : brand.blue,
+                        borderRadius: n > 45 ? "1.5px 1.5px 0 0" : "4px 4px 0 0",
+                        transition: "background 80ms ease",
+                      }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* ── Panel B: try-ons + cart adds (lines, shared count scale) ── */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", margin: "14px 0 6px" }}>
+              <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", color: brand.ink500 }}>
+                Try-ons & cart adds
+              </span>
+              {countMax > 0 && (
+                <span style={{ fontSize: 11, color: brand.ink500 }}>peak {countMax.toLocaleString()}/day</span>
+              )}
+            </div>
+            <div style={{ position: "relative", height: PANEL_LINES_H, borderBottom: `1px solid ${brand.ink100}` }}>
+              <svg
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                style={{ position: "absolute", inset: 0, width: "100%", height: "100%", display: "block", overflow: "visible" }}
+                aria-hidden
+              >
+                <defs>
+                  <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={brand.orchid} stopOpacity="0.20" />
+                    <stop offset="100%" stopColor={brand.orchid} stopOpacity="0.02" />
+                  </linearGradient>
+                </defs>
+                <path d={`${smoothPath(linePts(tryVals))} L 100 100 L 0 100 Z`} fill={`url(#${gradId})`} stroke="none" />
+                <path
+                  d={smoothPath(linePts(tryVals))}
+                  fill="none"
+                  stroke={brand.orchid}
+                  strokeWidth={2.25}
+                  vectorEffect="non-scaling-stroke"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d={smoothPath(linePts(cartVals))}
+                  fill="none"
+                  stroke={brand.success}
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+
+            {/* ── Shared x-axis date ticks ── */}
+            <div style={{ position: "relative", height: 20, marginTop: 6 }}>
+              {tickIdx.map((idx, k) => (
+                <span
+                  key={idx}
+                  style={{
+                    position: "absolute",
+                    left: `${xPct(idx)}%`,
+                    transform: k === 0 ? "translateX(0)" : k === tickIdx.length - 1 ? "translateX(-100%)" : "translateX(-50%)",
+                    fontSize: 11,
+                    color: brand.ink500,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {prettyDay(days[idx])}
+                </span>
+              ))}
+            </div>
+
+            {/* ── Unified crosshair + readout across both panels ── */}
+            {hover != null && (
+              <>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 22,
+                    bottom: 26,
+                    left: `${hx}%`,
+                    width: 1,
+                    background: brand.ink200,
+                    pointerEvents: "none",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${hx}%`,
+                    top: 16,
+                    transform: `translate(${tipAlign}, 0)`,
+                    background: brand.ink,
+                    color: brand.white,
+                    borderRadius: 8,
+                    padding: "7px 10px",
+                    fontSize: 11,
+                    lineHeight: 1.55,
+                    whiteSpace: "nowrap",
+                    pointerEvents: "none",
+                    boxShadow: "0 4px 14px rgba(11,18,32,0.22)",
+                    zIndex: 3,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, marginBottom: 2 }}>{prettyDay(days[hover])}</div>
+                  {SERIES.map((s) => (
+                    <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 7, height: 7, borderRadius: "50%", background: s.color, display: "inline-block", flexShrink: 0 }} />
+                      <span style={{ opacity: 0.85 }}>{s.label}:</span>
+                      <span style={{ fontWeight: 700 }}>{s.fmt(s.vals[hover] ?? 0)}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </BlockStack>
+    </Card>
+  );
+}
+
+// Fixed-size shimmer stand-in so the streamed chart never shifts layout.
+export function DailyPerformanceSkeleton() {
+  return (
+    <Card padding="500">
+      <BlockStack gap="400">
+        <BlockStack gap="100">
+          <div style={{ width: 170, height: 20, borderRadius: 6, background: brand.ink50 }} />
+          <div style={{ width: 280, height: 13, borderRadius: 4, background: brand.ink50 }} />
+        </BlockStack>
+        <div style={{ display: "flex", gap: 20 }}>
+          {[150, 110, 110].map((w, i) => (
+            <div key={i} style={{ width: w, height: 16, borderRadius: 5, background: brand.ink50 }} />
+          ))}
+        </div>
+        <div style={{ height: 18, width: 90, borderRadius: 4, background: brand.ink50 }} />
+        <div style={{ height: PANEL_BARS_H, borderRadius: 6, background: brand.ink50 }} />
+        <div style={{ height: 18, width: 140, borderRadius: 4, background: brand.ink50 }} />
+        <div style={{ height: PANEL_LINES_H, borderRadius: 6, background: brand.ink50 }} />
+        <div style={{ height: 14, borderRadius: 4, background: brand.ink50, width: "60%" }} />
       </BlockStack>
     </Card>
   );
@@ -479,37 +932,31 @@ export function FunnelBar({
   return (
     <BlockStack gap="100">
       <InlineStack align="space-between" blockAlign="center">
-        <span style={{ fontSize: 13, fontWeight: highlight ? 600 : 400, color: highlight ? TONE_STYLES[tone].fg : brand.ink }}>{label}</span>
-        <span style={{ fontSize: 13, color: highlight ? TONE_STYLES[tone].fg : brand.ink500, fontWeight: highlight ? 600 : 400 }}>
+        <span style={{ fontSize: 12.5, fontWeight: highlight ? 600 : 500, color: highlight ? TONE_STYLES[tone].fg : brand.ink700 }}>{label}</span>
+        <span style={{ fontSize: 12.5, color: highlight ? TONE_STYLES[tone].fg : brand.ink500, fontWeight: highlight ? 650 : 500, ...tnum }}>
           {value.toLocaleString()}{showPct && max > 0 ? ` · ${pct}%` : ""}{note ? `  ${note}` : ""}
         </span>
       </InlineStack>
-      <div style={{ height: 8, background: brand.ink100, borderRadius: 6, overflow: "hidden" }}>
-        <div style={{ width: `${pct}%`, height: "100%", background: fill, borderRadius: 6, transition: "width 300ms ease" }} />
+      <div style={{ height: 9, background: brand.ink50, borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: fill, borderRadius: 3, transition: "width 300ms ease" }} />
       </div>
     </BlockStack>
   );
 }
 
-// ─── Funnel silhouette with drop-off summary ────────────────────────────────
-// One connected funnel: each stage is a centered trapezoid whose bottom edge is
-// the next stage's top edge, so the segments join into a single shape that
-// narrows as conversion falls away. Fill deepens toward the bottom for depth,
-// the count sits inside each band, and the stage name rides a left gutter. The
-// biggest leak is tinted red and summarized in a callout beneath (unless the
-// caller renders its own via `showLeakSummary={false}`). Pass `leakLabel` to
-// pin the flag to a server-computed leak; otherwise it's the biggest lost count.
+// ─── Funnel as left-aligned bars with drop-off summary ──────────────────────
+// Every stage is a horizontal bar on a common baseline — never a trapezoid,
+// whose diagonal areas flatter the drop-off. The right column carries the
+// count plus the stage-to-stage conversion ("76% of opens"), because the
+// decision lives between stages, not in share-of-top. The biggest leak keeps
+// its red callout beneath (unless the caller renders its own via
+// `showLeakSummary={false}`). Pass `leakLabel` to pin the flag to a
+// server-computed leak; otherwise it's the biggest lost count.
 export type FunnelStage = { key?: string; label: string; value: number };
 
-// Blend two hex colors — used to graduate the funnel from a lighter blue at the
-// top to a deep blue at the bottom without hand-listing a shade per stage.
-function mixHex(a: string, b: string, t: number): string {
-  const parse = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-  const [ar, ag, ab] = parse(a);
-  const [br, bg, bb] = parse(b);
-  const to = (x: number, y: number) => Math.round(x + (y - x) * t).toString(16).padStart(2, "0");
-  return `#${to(ar, br)}${to(ag, bg)}${to(ab, bb)}`;
-}
+// Funnel stage shades, deep to light — approved palette steps only (never
+// interpolated hexes; Brand-Palette.md forbids invented values).
+const FUNNEL_RAMP = [brand.blue, brand.blue500, brand.blue400, brand.blue300];
 
 export function Funnel({
   stages,
@@ -540,13 +987,10 @@ export function Funnel({
   }
   const leakIdx = leakLabel != null ? stages.findIndex((s, i) => i > 0 && s.label === leakLabel) : autoLeakIdx;
 
-  // Stylized display width: monotonic in the real share so ordering always
-  // holds, but floored to ~0.2 so even a tiny stage keeps a readable neck and
-  // the count fits inside it. The exact count (shown inside) carries precision;
-  // the shape is the at-a-glance read.
-  const dispFrac = (v: number) => 0.2 + 0.8 * Math.max(0, Math.min(1, v / top));
-  const half = (f: number) => Math.round(50 * f * 100) / 100;
-  const shade = (i: number) => mixHex("#4A6FD6", brand.blue700, n > 1 ? i / (n - 1) : 0);
+  // Graduated blue: deepest at the top stage, lighter as the funnel descends —
+  // snapped to the nearest approved palette step.
+  const shade = (i: number) =>
+    FUNNEL_RAMP[n > 1 ? Math.min(FUNNEL_RAMP.length - 1, Math.round((i / (n - 1)) * (FUNNEL_RAMP.length - 1))) : 0];
 
   const leak =
     leakIdx > 0
@@ -563,68 +1007,61 @@ export function Funnel({
 
   return (
     <BlockStack gap="300">
-      <div style={{ maxWidth: 520, width: "100%", margin: "0 auto" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(84px, 132px) 1fr", columnGap: 12 }}>
-          {stages.map((s, i) => {
-            const isLeak = i === leakIdx;
-            const wTop = dispFrac(s.value);
-            const wBot = i < n - 1 ? dispFrac(stages[i + 1].value) : wTop;
-            const clip = `polygon(${50 - half(wTop)}% 0%, ${50 + half(wTop)}% 0%, ${50 + half(wBot)}% 100%, ${50 - half(wBot)}% 100%)`;
-            const fill = isLeak ? brand.danger : shade(i);
+      <div style={{ display: "grid", gap: 13 }}>
+        {stages.map((s, i) => {
+          const isLeak = i === leakIdx;
+          const prev = i > 0 ? stages[i - 1].value : s.value;
+          const stepPct = i === 0 ? 100 : prev > 0 ? Math.round((s.value / prev) * 1000) / 10 : 0;
+          const stepNote =
+            i === 0 ? "100%" : `${stepPct}% of ${stages[i - 1].label.toLowerCase()}`;
+          // Width is share-of-top so bars stay comparable on one baseline; a
+          // 2.5% floor keeps the smallest stage visible as more than a sliver.
+          const widthPct = top > 0 ? Math.max(2.5, (s.value / top) * 100) : 0;
 
-            return (
-              <Fragment key={s.key ?? s.label}>
-                <div style={{ height: 50, display: "flex", alignItems: "center", justifyContent: "flex-end", textAlign: "right" }}>
-                  <span style={{ fontSize: 12.5, fontWeight: isLeak ? 600 : 500, lineHeight: 1.25, color: isLeak ? brand.dangerInk : brand.ink700 }}>
-                    {s.label}
-                  </span>
-                </div>
-                <div style={{ height: 50, position: "relative" }}>
-                  <div
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      background: fill,
-                      clipPath: clip,
-                      WebkitClipPath: clip,
-                      transition: "clip-path 300ms ease, background 200ms ease",
-                    }}
-                  />
-                  <span
-                    style={{
-                      position: "absolute",
-                      inset: 0,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: brand.white,
-                      fontSize: 13.5,
-                      fontWeight: 500,
-                      pointerEvents: "none",
-                    }}
-                  >
-                    {s.value.toLocaleString()}
-                  </span>
-                </div>
-              </Fragment>
-            );
-          })}
-        </div>
+          return (
+            <div key={s.key ?? s.label}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginBottom: 5 }}>
+                <span style={{ fontSize: 12.5, fontWeight: 500, color: isLeak ? brand.dangerInk : brand.ink700 }}>
+                  {s.label}
+                </span>
+                <span style={{ fontSize: 12.5, fontWeight: 650, color: brand.ink, whiteSpace: "nowrap", ...tnum }}>
+                  {s.value.toLocaleString()}
+                  <span style={{ color: brand.ink500, fontWeight: 500 }}> · {stepNote}</span>
+                </span>
+              </div>
+              <div style={{ height: 9, background: brand.ink50, borderRadius: 3, position: "relative", overflow: "hidden" }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    bottom: 0,
+                    left: 0,
+                    width: `${widthPct}%`,
+                    background: shade(i),
+                    borderRadius: 3,
+                    transition: "width 300ms ease",
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {showLeakSummary && leak && leak.lost > 0 && (
         <div
           style={{
-            border: `1px solid ${brand.ink100}`,
-            borderLeft: `4px solid ${brand.danger}`,
-            borderRadius: 10,
-            padding: "10px 12px",
-            background: brand.offwhite,
+            background: brand.dangerBg,
+            borderRadius: 8,
+            padding: "9px 12px",
+            fontSize: 12.5,
+            lineHeight: 1.5,
+            color: brand.dangerInk,
+            ...tnum,
           }}
         >
-          <Text as="p" variant="bodySm">
-            <strong>Biggest drop-off:</strong> {leak.pct}% from {leak.from.toLowerCase()} to {leak.to.toLowerCase()} — {leak.lost.toLocaleString()} lost.
-          </Text>
+          <strong style={{ fontWeight: 650 }}>Biggest leak:</strong> {leak.pct}% drop from {leak.from.toLowerCase()} to{" "}
+          {leak.to.toLowerCase()} — {leak.lost.toLocaleString()} lost. This is the lever.
         </div>
       )}
     </BlockStack>
@@ -720,11 +1157,24 @@ export function LockedCard({ feature }: { feature: string }) {
     <Card padding="500">
       <Box paddingBlock="400">
         <BlockStack gap="300" inlineAlign="center">
-          <span style={{ fontSize: 28 }}>🔒</span>
-          <Text as="h3" variant="headingMd" alignment="center">{feature} is a paid feature</Text>
-          <Text as="p" variant="bodySm" tone="subdued" alignment="center">
-            Upgrade to unlock the full conversion story — funnels, device breakdowns, product health, and plain-English recommendations.
-          </Text>
+          <IconChip source={LockIcon} tone="neutral" size={38} />
+          <BlockStack gap="100" inlineAlign="center">
+            <span
+              style={{
+                fontFamily: fonts.serif,
+                fontSize: 20,
+                fontWeight: 500,
+                letterSpacing: "-0.01em",
+                color: brand.ink,
+                textAlign: "center",
+              }}
+            >
+              {feature} is a paid feature
+            </span>
+            <Text as="p" variant="bodySm" tone="subdued" alignment="center">
+              Upgrade to unlock the full conversion story — funnels, device breakdowns, product health, and plain-English recommendations.
+            </Text>
+          </BlockStack>
           <Button variant="primary" onClick={() => navigate("/app/billing")}>View plans</Button>
         </BlockStack>
       </Box>

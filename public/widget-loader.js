@@ -179,16 +179,45 @@
 
         var __elloHubStart = function () {
             __elloHubScan();
-            // Re-scan on DOM changes (late headers, SPA nav), rAF-debounced so
-            // repeated mutations stay cheap; per-element dedupe avoids re-binding.
+            // Re-scan by POLLING, not with a MutationObserver.
+            //
+            // This used to be `mo.observe(document.documentElement, {childList,
+            // subtree})` with an rAF-debounced callback. On a Liquid theme that
+            // is free — the DOM sits still. On a REACT storefront it is the
+            // opposite: the page re-renders on every hover, so the browser had
+            // to build a MutationRecord for each of thousands of DOM changes per
+            // second and hand them to us. That saturates the main thread, and a
+            // saturated thread cannot decode or paint images — so every product
+            // photo flashed white as the cursor moved (Andrew, gymshark.com
+            // 2026-07-24). Measured on that page: attaching this observer shape
+            // and moving the cursor froze the renderer for 45s+, twice, even
+            // with a trivial callback — so THROTTLING the callback is not
+            // enough, the observer itself is the cost and has to go.
+            //
+            // Hub triggers are a nav link or a tagged element: rare, and never
+            // urgent. A 1s poll of two attribute selectors (no layout, no
+            // coupling to merchant churn) catches late headers and SPA nav just
+            // as well, and __elloHubBind's per-element dedupe makes re-scanning
+            // idempotent. Cost is flat regardless of how busy the store's page is.
+            //
+            // A flat 1s poll would leave a real gap the observer did not have:
+            // a trigger rendered just after load stays UNBOUND for up to a
+            // second, so an early click falls through to the bare "#ello-fitting
+            // -room" href and does nothing, and an A/B holdout shopper (whose
+            // link __elloHubBind hides) could see it in the meantime. Almost all
+            // late triggers land in the first second — headers hydrate, app
+            // blocks mount — so ramp fast there, then settle to the cheap steady
+            // poll. Worst-case unbound window drops from ~1000ms to ~100ms.
             try {
-                var raf = null;
-                var mo = new MutationObserver(function () {
-                    if (raf) return;
-                    raf = requestAnimationFrame(function () { raf = null; __elloHubScan(); });
+                [100, 250, 500, 1000, 2000].forEach(function (ms) {
+                    setTimeout(__elloHubScan, ms);
                 });
-                mo.observe(document.documentElement, { childList: true, subtree: true });
-            } catch (e) { /* MutationObserver unsupported — initial scan still bound */ }
+                setInterval(__elloHubScan, 1000);
+                window.addEventListener('popstate', __elloHubScan);
+                // SPA route changes often re-render the header; catch that the
+                // moment focus/visibility returns too, not on the next tick.
+                window.addEventListener('pageshow', __elloHubScan);
+            } catch (e) { /* timers unavailable — the initial scan still bound */ }
         };
 
         if (document.readyState === 'loading') {
@@ -242,8 +271,12 @@
     // whichever Cloud Run (staging or production) served the file.
     let WIDGET_BASE_URL;
     const _loaderScript = document.currentScript;
-    if (ELLO_DEV_ORIGIN
-        && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    if (ELLO_DEV_ORIGIN) {
+        // Explicit opt-in wins EVERYWHERE, including on localhost pages: local
+        // harnesses (dev/sfcc-harness.mjs) run on their own port and need the
+        // widget served from the vite origin, not the harness origin. The value
+        // itself is restricted to localhost origins at set time, so this can
+        // never point a real shopper anywhere.
         WIDGET_BASE_URL = ELLO_DEV_ORIGIN;
         // Always-on warn (not elloLog) so a forgotten dev mode can't hide.
         console.warn('[Ello] DEV MODE — widget + API served from ' + ELLO_DEV_ORIGIN
@@ -271,7 +304,7 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.8.9';
+    const WIDGET_VERSION = '2.13.0';
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -319,6 +352,17 @@
     // idempotent (reuses the existing 7-day id), so the later callers inside
     // the A/B path and widget-main are unaffected. (Function declarations
     // hoist, so calling it here, above its definition, is safe.)
+    //
+    // Cross-origin session handoff (Ello Anywhere → Shopify storefront):
+    // Anywhere host pages (e.g. atlasapparel.shop) and the Shopify storefront
+    // (atlasapparel.store) are DIFFERENT origins with separate localStorage,
+    // so a shopper who tried on at the host page arrived here under a brand-new
+    // session — the try-on and the purchase could never join (Atlas attributed
+    // revenue went dark 2026-07-26 for exactly this). ello-anywhere.js decorates
+    // outbound storefront links with ?ello_sid=<host session>; adopt it here
+    // BEFORE the mint so this origin continues the same session. Param absent
+    // (every non-Anywhere shopper) → this is a no-op.
+    try { elloAbAdoptHandoffSid(storeSlug); } catch (e) { /* never break the page */ }
     try { elloAbEnsureSessionId(storeSlug); } catch (e) { /* never break the page */ }
 
     // Fetch Supabase config from the server (env-aware — staging vs production auto-resolved)
@@ -346,7 +390,7 @@
             // Fallback to production if config endpoint is unreachable
             var fallback = {
                 supabaseUrl: 'https://rwmvgwnebnsqcyhhurti.supabase.co',
-                supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ3bXZnd25lYm5zcWN5aGh1cnRpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDg0MDc1MTgsImV4cCI6MjA2Mzk4MzUxOH0.OYTXiUBDN5IBlFYDHN3MyCwFUkSb8sgUOewBeSY01NY'
+                supabaseAnonKey: 'sb_publishable_JB8Gi0jDPOzInlaP_YaMRg_9crJr87T'
             };
             window.ELLO_SUPABASE_CONFIG = fallback;
             return fallback;
@@ -404,6 +448,15 @@
             inlineButtonColor: storeConfig.inline_button_color || null,
             inlineButtonTextColor: storeConfig.inline_button_text_color || null,
             inlineButtonHideWhenOos: storeConfig.inline_button_hide_when_oos === true,
+            // Border treatment on the inline try-on button ('halo' | 'gradient'
+            // | 'double' | 'shimmer'); anything else = none. Applied by
+            // widget-main so it rides Cloud Run deploys, not the theme block.
+            inlineButtonBorderStyle: (storeConfig.inline_button_border_style === 'halo' || storeConfig.inline_button_border_style === 'gradient' || storeConfig.inline_button_border_style === 'double' || storeConfig.inline_button_border_style === 'shimmer')
+                ? storeConfig.inline_button_border_style : null,
+            // Solid border color on the inline button (white-button-black-
+            // border storefronts). NULL = no border.
+            inlineButtonBorderColor: (typeof storeConfig.inline_button_border_color === 'string' && /^#[0-9a-fA-F]{6}$/.test(storeConfig.inline_button_border_color))
+                ? storeConfig.inline_button_border_color : null,
             // Default-off on PDP for new installs (inline button handles PDPs).
             // Migration preserves true for any pre-existing merchant.
             floatingWidgetPdpEnabled: storeConfig.floating_widget_pdp_enabled === true,
@@ -426,6 +479,11 @@
             // Complete the Look (outfit-upsell styling rail) — gated ON TOP of
             // pdpImageSwapEnabled. Explicit opt-in, OFF by default.
             completeTheLookEnabled: storeConfig.complete_the_look_enabled === true,
+            // CTL intro style — how the upsell first appears over the hero.
+            // 'pairing' | 'whisper' | 'drop'; anything else (incl. NULL) =
+            // legacy full-width card, so existing stores don't shift.
+            ctlIntroStyle: (storeConfig.ctl_intro_style === 'pairing' || storeConfig.ctl_intro_style === 'whisper' || storeConfig.ctl_intro_style === 'drop')
+                ? storeConfig.ctl_intro_style : null,
             // CTL proof test: suppress the upsell for the merchant-chosen
             // holdout slice so the dashboard can report causal AOV lift.
             // OFF by default.
@@ -440,7 +498,12 @@
             // both groups' conversions keep flowing through the pixel.
             abExperimentEnabled: storeConfig.ab_experiment_enabled === true,
             abExperimentId: storeConfig.ab_experiment_id || null,
-            abHoldoutPercent: typeof storeConfig.ab_holdout_percent === 'number' ? storeConfig.ab_holdout_percent : 10
+            abHoldoutPercent: typeof storeConfig.ab_holdout_percent === 'number' ? storeConfig.ab_holdout_percent : 10,
+            // Live Try-On (Decart realtime mirror) — explicit opt-in, OFF by
+            // default. The flag only SHOWS the entry points; every session is
+            // re-gated server-side by /api/live-token, so a spoofed true here
+            // can't mint a stream.
+            tryOnLiveEnabled: storeConfig.live_tryon_enabled === true
         };
     }
 
@@ -469,17 +532,21 @@
             inlineButtonColor: null,
             inlineButtonTextColor: null,
             inlineButtonHideWhenOos: false,
+            inlineButtonBorderStyle: null,
+            inlineButtonBorderColor: null,
             floatingWidgetPdpEnabled: false,
             floatingWidgetNonPdpEnabled: true,
             fittingRoomEnabled: true,
             pdpImageSwapEnabled: false,
             pdpImageSelector: null,
             completeTheLookEnabled: false,
+            ctlIntroStyle: null,
             ctlHoldoutEnabled: false,
             ctlHoldoutPercent: 50,
             abExperimentEnabled: false,
             abExperimentId: null,
-            abHoldoutPercent: 10
+            abHoldoutPercent: 10,
+            tryOnLiveEnabled: false
         };
     }
 
@@ -504,6 +571,10 @@
     // the widget and logs nothing.
     var ELLO_AB = { active: false, variant: null, bucket: null, experimentId: null, sessionId: null, override: null };
     window.__elloAbState = ELLO_AB;
+    // Once the product-page stamp lands for this pageview there is nothing left
+    // to watch for, so the retry schedule and the SPA hooks can all stand down.
+    var elloAbPdpStamped = false;
+    var elloAbPdpWatchBound = false;
 
     function elloAbFnvBucket(sessionIdStr, experimentIdStr) {
         var str = sessionIdStr + ':' + experimentIdStr;
@@ -562,6 +633,30 @@
         return sid;
     }
 
+    // Adopt a session id handed off from another origin (?ello_sid=...) — see
+    // the call site above the mint. Writes the same localStorage keys the mint
+    // reads (so elloAbEnsureSessionId reuses the adopted id) plus the cookie
+    // mirror for storage-blocked browsers, then strips the param from the URL
+    // so bookmarks/shares don't resurrect an old session later. Format-gated
+    // to the exact shape the cookie reader accepts; anything else is ignored.
+    function elloAbAdoptHandoffSid(slug) {
+        var sid = null;
+        try { sid = new URLSearchParams(window.location.search).get('ello_sid'); } catch (e) { return; }
+        if (!sid || !/^[A-Za-z0-9_-]{8,64}$/.test(sid)) return;
+        try {
+            window.localStorage.setItem('ello_session_id_' + slug, sid);
+            window.localStorage.setItem('ello_session_ts_' + slug, Date.now().toString());
+        } catch (e) { /* storage blocked — cookie below still carries it */ }
+        try {
+            document.cookie = 'ello_session_id=' + sid + '; path=/; max-age=' + (7 * 24 * 60 * 60) + '; SameSite=Lax';
+        } catch (e) { /* cookie blocked too — mint will fall back to a fresh id */ }
+        try {
+            var u = new URL(window.location.href);
+            u.searchParams.delete('ello_sid');
+            window.history.replaceState(window.history.state, '', u.toString());
+        } catch (e) { /* cosmetic only */ }
+    }
+
     function elloAbReadOverride() {
         try {
             var q = new URLSearchParams(window.location.search).get('ello_ab');
@@ -590,13 +685,124 @@
         }
     }
 
+    // ── Product-page detection for the proof test ───────────────────────────
+    // The A/B readout lives or dies on an honest product-page denominator. The
+    // original test — pathname contains '/products/' — is a SHOPIFY URL
+    // convention. Atlas moved to a custom storefront on 2026-07-19 and every
+    // real PDP immediately began reading as 'other': 0 of 1214 post-transfer
+    // sessions ever stamped saw_pdp, against 23 of 717 before. The PDP cohort
+    // was measuring the wrong population, and the site-wide denominator went
+    // ~98% non-product.
+    //
+    // Signals below, cheapest first; ANY hit means product page. Scope is
+    // deliberately narrow: this labels exposures ONLY. Bucket assignment
+    // (elloAbFnvBucket), the floating-bubble first-paint guard near the bottom
+    // of this file, and widget-main's own getPageContext (which feeds usage
+    // metering) are all untouched — so a detector mistake can move a number on
+    // the Proof page and nothing else.
+    function elloAbLdIsProduct(node, depth) {
+        if (!node || depth > 4) return false;
+        if (Object.prototype.toString.call(node) === '[object Array]') {
+            for (var i = 0; i < node.length && i < 50; i++) {
+                if (elloAbLdIsProduct(node[i], depth + 1)) return true;
+            }
+            return false;
+        }
+        if (typeof node !== 'object') return false;
+        var t = node['@type'];
+        if (t) {
+            var types = Object.prototype.toString.call(t) === '[object Array]' ? t : [t];
+            for (var j = 0; j < types.length; j++) {
+                var s = String(types[j]);
+                if (s === 'Product' || s === 'ProductModel') return true;
+                // A Product nested inside one of these is a LISTING entry, not
+                // the subject of the page — collection/search/breadcrumb markup
+                // routinely embeds them. Counting those would re-inflate the
+                // denominator this whole fix exists to clean up, so refuse the
+                // entire subtree rather than recursing into it.
+                if (s === 'ItemList' || s === 'CollectionPage' ||
+                    s === 'SearchResultsPage' || s === 'BreadcrumbList') return false;
+            }
+        }
+        if (node['@graph']) return elloAbLdIsProduct(node['@graph'], depth + 1);
+        return false;
+    }
+
+    function elloAbHasProductLd() {
+        try {
+            var nodes = document.querySelectorAll('script[type="application/ld+json"]');
+            for (var i = 0; i < nodes.length && i < 20; i++) {
+                var raw = nodes[i].textContent;
+                // Bounds: this runs on every pageview of every store. Skip the
+                // giant blobs some themes ship, and prefilter on a substring so
+                // the common case never reaches JSON.parse.
+                if (!raw || raw.length > 200000) continue;
+                if (raw.indexOf('Product') === -1) continue;
+                var data;
+                try { data = JSON.parse(raw); } catch (e) { continue; }
+                if (elloAbLdIsProduct(data, 0)) return true;
+            }
+        } catch (e) { /* detection must never break the page */ }
+        return false;
+    }
+
+    function elloAbIsPdp() {
+        try {
+            // 0. Explicit host-page override. Deterministic escape hatch for a
+            //    storefront the heuristics below get wrong; set it to a boolean
+            //    or a function returning one. Nothing sets this today.
+            var hint = window.ELLO_PDP_HINT;
+            if (typeof hint === 'function') { try { return !!hint(); } catch (e) { /* fall through */ } }
+            else if (typeof hint === 'boolean') return hint;
+
+            // 1. Shopify (and SFCC) path convention. FIRST so every existing
+            //    Shopify store keeps byte-identical behaviour to before.
+            if ((window.location.pathname || '').indexOf('/products/') !== -1) return true;
+
+            // 2. Ello Anywhere told us which product this view is. Set once the
+            //    adapter has resolved a handle for the current path.
+            try {
+                if (typeof window.ELLO_PLATFORM_URL_HANDLE === 'function' &&
+                    window.ELLO_PLATFORM_URL_HANDLE(window.location.href)) return true;
+            } catch (e) { /* fall through */ }
+
+            // 3. An Anywhere try-on control resolving to a specific product.
+            //    The host page putting a try-on control on screen IS the page
+            //    telling us a product view is open — on overlay storefronts it
+            //    is the ONLY such signal, since the URL never changes.
+            //
+            //    Handle resolution mirrors handleFromEl() in ello-anywhere.js,
+            //    and the href fallback is load-bearing, not defensive: Atlas
+            //    ships `data-ello-tryon` as a BARE attribute (verified against
+            //    the live site 2026-07-28 — getAttribute returns ""), with the
+            //    handle only in the href. Requiring a value in the attribute
+            //    detected nothing at all on the one store this fix is for.
+            //    Bare markers '1'/'true' still don't count on their own.
+            try {
+                var els = document.querySelectorAll('[data-ello-tryon]');
+                for (var k = 0; k < els.length && k < 10; k++) {
+                    var h = els[k].getAttribute('data-ello-tryon');
+                    if (h && h !== '1' && h !== 'true') return true;
+                    var href = els[k].getAttribute('href') || '';
+                    if (href.indexOf('/products/') !== -1) return true;
+                }
+            } catch (e) { /* fall through */ }
+
+            // 4. schema.org Product — generic signal for headless/custom builds
+            //    that ship neither of the above.
+            return elloAbHasProductLd();
+        } catch (e) {
+            return false;
+        }
+    }
+
     function elloAbLogExposure(state, cfg) {
         try {
             // Once per (experiment, session): marker stores the session id so a
             // rotated session re-fires; the server also dedupes on conflict.
             var marker = 'ello_ab_seen_' + state.experimentId;
             try { if (window.localStorage.getItem(marker) === state.sessionId) return; } catch (e) { }
-            var onPdp = window.location.pathname.indexOf('/products/') !== -1;
+            var onPdp = elloAbIsPdp();
             elloAbSendBeacon(JSON.stringify({
                 event_type: 'ab_exposure',
                 store_slug: cfg.storeSlug || storeSlug,
@@ -629,9 +835,13 @@
     // idempotent, so storage-blocked repeats are harmless.
     function elloAbMarkPdpSeen(state, cfg) {
         try {
-            if (window.location.pathname.indexOf('/products/') === -1) return;
+            if (elloAbPdpStamped) return;
+            if (!elloAbIsPdp()) return;
             var marker = 'ello_ab_pdp_' + state.experimentId;
-            try { if (window.localStorage.getItem(marker) === state.sessionId) return; } catch (e) { /* storage blocked — server dedupes */ }
+            try {
+                if (window.localStorage.getItem(marker) === state.sessionId) { elloAbPdpStamped = true; return; }
+            } catch (e) { /* storage blocked — server dedupes */ }
+            elloAbPdpStamped = true;
             elloAbSendBeacon(JSON.stringify({
                 event_type: 'ab_exposure',
                 store_slug: cfg.storeSlug || storeSlug,
@@ -645,6 +855,287 @@
             try { window.localStorage.setItem(marker, state.sessionId); } catch (e) { /* storage blocked — server dedupes */ }
         } catch (e) { /* pdp stamp must never break the page */ }
     }
+
+    // The product signal can arrive AFTER the first pass. Two ways that happens:
+    // the host page is still rendering when config resolves (signals 3 and 4 in
+    // elloAbIsPdp read the DOM), and overlay/SPA storefronts swap in a product
+    // view with no pageload at all — Atlas does exactly this, which is why the
+    // one-shot call under-counted the product cohort even before the URL
+    // convention broke.
+    //
+    // This lives in the LOADER, not widget-main.js, on purpose: holdout shoppers
+    // never load widget-main, so relying on its history patch would stamp the
+    // exposed arm and not the holdout arm — an asymmetric denominator, the same
+    // class of bug as the cart-attribute asymmetry documented below.
+    function elloAbWatchForPdp(state, cfg) {
+        if (elloAbPdpWatchBound) return;
+        elloAbPdpWatchBound = true;
+        var recheck = function () {
+            if (elloAbPdpStamped) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } return; }
+            try { elloAbMarkPdpSeen(state, cfg); } catch (e) { /* never break the page */ }
+            if (elloAbPdpStamped && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        };
+        // A 1Hz poll, matching the hub scanner's idiom in this same file, NOT a
+        // short decaying burst. Verified against the live Atlas storefront
+        // 2026-07-28: opening a product there changes no URL, fires no history
+        // event, and can happen minutes into a session — a ~7s burst caught
+        // none of it. The click trigger below can't cover the gap either,
+        // because holdout shoppers have their try-on controls CSS-hidden and so
+        // never click, which would stamp only the exposed arm.
+        //
+        // Cost is bounded three ways: the check is two querySelectorAll calls
+        // (~2µs), the interval clears the instant a stamp lands (immediately, on
+        // any product page), and it gives up after ~10 minutes so a parked tab
+        // never holds a timer forever.
+        var pollTimer = null;
+        var ticks = 0;
+        try {
+            pollTimer = setInterval(function () {
+                if (++ticks > 600 || elloAbPdpStamped) {
+                    clearInterval(pollTimer); pollTimer = null;
+                    return;
+                }
+                recheck();
+            }, 1000);
+        } catch (e) { /* no timers — the initial pass and the events below still run */ }
+        try {
+            // Match widget-main's idiom so the two never double-patch: it checks
+            // history.pushState.isElloPatched and dispatches these same event
+            // names, so whichever loads first wins and the other stands down.
+            if (window.history && window.history.pushState && !window.history.pushState.isElloPatched) {
+                var wrap = function (type) {
+                    var original = window.history[type];
+                    return function () {
+                        var result = original.apply(this, arguments);
+                        try {
+                            var ev = new Event(type);
+                            ev.arguments = arguments;
+                            window.dispatchEvent(ev);
+                        } catch (e) { /* Event ctor unavailable — popstate still covers back/forward */ }
+                        return result;
+                    };
+                };
+                window.history.pushState = wrap('pushState');
+                window.history.pushState.isElloPatched = true;
+                window.history.replaceState = wrap('replaceState');
+            }
+            window.addEventListener('popstate', recheck);
+            window.addEventListener('pushState', recheck);
+            window.addEventListener('replaceState', recheck);
+            // Opening a try-on is proof of a product view even when every other
+            // signal missed. Capture phase so a host handler calling
+            // stopPropagation can't suppress it.
+            document.addEventListener('click', function (e) {
+                try {
+                    var t = e.target;
+                    if (t && t.closest && t.closest('[data-ello-tryon], [data-tryon]')) recheck();
+                } catch (err) { /* never break the page */ }
+            }, true);
+        } catch (e) { /* watcher is best-effort; the initial pass already ran */ }
+    }
+
+    // ── Product-view events on non-Shopify surfaces ─────────────────────────
+    // product_view_events rows come from the Shopify web pixel, which only runs
+    // on Shopify-rendered pages (storefront + checkout). Atlas rebuilt their
+    // storefront off-Shopify on 2026-07-18 and pixel views collapsed ~90%
+    // overnight — by 07-30 the pixel logged 16 view sessions against 26
+    // PURCHASING sessions, an impossible funnel. The loader still runs on those
+    // pages, so on non-Shopify surfaces ONLY it emits the same 'view' beacon
+    // the pixel would have sent. Shopify storefronts are excluded
+    // (window.Shopify present): the pixel owns them — and even on overlap,
+    // record_product_view_event dedupes on (session_id, product_id), so a
+    // double source can never double-count.
+    //
+    // This lives in the LOADER, not widget-main.js, for the same reason as the
+    // saw_pdp stamp above: holdout shoppers never load widget-main, and a
+    // views denominator that only the exposed arm feeds would corrupt the A/B
+    // store-CR comparison.
+    //
+    // The funnel joins views to try-ons by PRODUCT ID, so a handle alone is
+    // not enough — handles resolve through /api/catalog-handles?include_ids=1
+    // (one in-memory fetch per pageload; the endpoint is CDN-cached). Products
+    // outside the try-on catalog resolve to null and are skipped — the funnel
+    // only ever joins views of try-on-able products anyway.
+    var elloViewSent = {};          // handle → true, this pageload
+    var elloViewPairs = null;       // handle → product gid, once fetched
+    var elloViewPending = [];
+    var elloViewFetching = false;
+    var elloViewTimer = null;
+    var elloViewTicks = 0;
+
+    function elloViewIsNonShopify() {
+        return window.ELLO_NO_SHOPIFY_CART === true || !window.Shopify;
+    }
+
+    // Same handle sources as elloAbIsPdp signals 1–3, in the same order. Note
+    // the [data-ello-tryon] scan intentionally mirrors that function's
+    // assumption (any try-on control on screen = a product view is open) — on
+    // overlay storefronts it is the ONLY signal, since the URL never changes.
+    function elloViewCurrentHandle() {
+        try {
+            var m = (window.location.pathname || '').match(/\/products\/([^/?#]+)/);
+            if (m) return decodeURIComponent(m[1]);
+            try {
+                if (typeof window.ELLO_PLATFORM_URL_HANDLE === 'function') {
+                    var h = window.ELLO_PLATFORM_URL_HANDLE(window.location.href);
+                    if (h) return String(h);
+                }
+            } catch (e) { /* fall through */ }
+            var els = document.querySelectorAll('[data-ello-tryon]');
+            for (var i = 0; i < els.length && i < 10; i++) {
+                var a = els[i].getAttribute('data-ello-tryon');
+                if (a && a !== '1' && a !== 'true') return a;
+                var hm = String(els[i].getAttribute('href') || '').match(/\/products\/([^/?#]+)/);
+                if (hm) return decodeURIComponent(hm[1]);
+            }
+        } catch (e) { /* detection must never break the page */ }
+        return null;
+    }
+
+    function elloViewResolveId(handle, cb) {
+        if (elloViewPairs) { cb(elloViewPairs[handle] || null); return; }
+        elloViewPending.push({ h: handle, cb: cb });
+        if (elloViewFetching) return;
+        elloViewFetching = true;
+        var slug = (window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.storeSlug) || storeSlug;
+        fetch(WIDGET_BASE_URL + '/api/catalog-handles?store_slug=' + encodeURIComponent(slug) + '&include_ids=1', { credentials: 'omit' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (j) {
+                var map = {};
+                var pairs = (j && j.pairs) || [];
+                for (var i = 0; i < pairs.length; i++) {
+                    if (pairs[i] && pairs[i].handle) map[pairs[i].handle] = pairs[i].id || null;
+                }
+                elloViewPairs = map;
+                var pending = elloViewPending; elloViewPending = [];
+                for (var k = 0; k < pending.length; k++) {
+                    try { pending[k].cb(map[pending[k].h] || null); } catch (e) { /* never break the page */ }
+                }
+            })
+            .catch(function () {
+                // Leave elloViewPairs null so the next NEW handle retries; the
+                // handles queued behind this failure are covered next pageview
+                // (the server dedupes, so nothing double-counts on retry).
+                elloViewFetching = false;
+                elloViewPending = [];
+            });
+    }
+
+    function elloViewEmit() {
+        try {
+            if (!elloViewIsNonShopify()) return;
+            var h = elloViewCurrentHandle();
+            if (!h || elloViewSent[h]) return;
+            elloViewSent[h] = true;   // mark first — the server dedupes cross-pageload repeats
+            elloViewResolveId(h, function (pid) {
+                if (!pid) return;
+                var sid = window.__elloLoaderSessionId || elloAbEnsureSessionId(storeSlug);
+                var slug = (window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.storeSlug) || storeSlug;
+                elloAbSendBeacon(JSON.stringify({
+                    event_type: 'view',
+                    store_slug: slug,
+                    session_id: sid,
+                    product_id: pid,
+                    variant_id: null
+                }));
+            });
+        } catch (e) { /* view emission must never break the page */ }
+    }
+
+    // Same watcher idiom (and the same cost bounds) as elloAbWatchForPdp above:
+    // overlay storefronts swap products in with no pageload, so a one-shot
+    // check misses everything after the landing view. Poll is skipped while
+    // the tab is hidden and gives up after ~10 minutes.
+    function elloViewStartWatch() {
+        if (elloViewTimer) return;
+        elloViewEmit();
+        try {
+            elloViewTimer = setInterval(function () {
+                if (++elloViewTicks > 600) { clearInterval(elloViewTimer); elloViewTimer = null; return; }
+                if (document.hidden) return;
+                elloViewEmit();
+            }, 1000);
+        } catch (e) { /* no timers — the initial pass and the events below still run */ }
+        try {
+            window.addEventListener('popstate', elloViewEmit);
+            window.addEventListener('pushState', elloViewEmit);
+            window.addEventListener('replaceState', elloViewEmit);
+            document.addEventListener('click', function (e) {
+                try {
+                    var t = e.target;
+                    if (t && t.closest && t.closest('[data-ello-tryon], [data-tryon]')) elloViewEmit();
+                } catch (err) { /* never break the page */ }
+            }, true);
+        } catch (e) { /* watcher is best-effort */ }
+    }
+
+    // Host-page add-to-cart tracking (non-Shopify surfaces ONLY — Shopify
+    // stores get cart events from the web pixel's product_added_to_cart, and
+    // this listener must never double-count them). Anywhere hosts run their
+    // own cart (window.ELLO_CART_HOOK); the widget's in-panel ATC already
+    // tracks, but the HOST's own "Add to cart" buttons — which most shoppers
+    // press — were invisible (Atlas try-on→ATC funnel read 2.6% while items
+    // landed in carts fine, 2026-08-05). Delegated capture listener: a real
+    // button-ish element whose text says "add to cart" → resolve the product
+    // from its own overlay/card context (a try-on control or /products/ link
+    // walking up ≤8 ancestors, mirroring handleFromEl in ello-anywhere.js),
+    // falling back to the on-screen product signal — then beacon through the
+    // same resolver + transport the view emitter uses. Handles outside the
+    // try-on catalog resolve to null and are skipped, same as views.
+    var elloHostAtcLast = { h: null, t: 0 };
+    function elloHostAtcHandleFor(btn) {
+        try {
+            var node = btn;
+            for (var i = 0; node && node !== document.body && i < 8; i++) {
+                if (node.querySelector) {
+                    var link = node.querySelector('[data-ello-tryon], a[href*="/products/"]');
+                    if (link) {
+                        var a = link.getAttribute('data-ello-tryon');
+                        if (a && a !== '1' && a !== 'true') return a;
+                        var m = String(link.getAttribute('href') || '').match(/\/products\/([^/?#]+)/);
+                        if (m) return decodeURIComponent(m[1]);
+                    }
+                }
+                node = node.parentElement;
+            }
+        } catch (e) { /* fall through */ }
+        return elloViewCurrentHandle();
+    }
+    function elloHostAtcListener(e) {
+        try {
+            if (!elloViewIsNonShopify()) return;
+            var t = e.target;
+            var btn = t && t.closest ? t.closest('button, a, [role="button"], input[type="submit"]') : null;
+            if (!btn) return;
+            if (btn.closest && btn.closest('#virtualTryonWidget, [id^="ello-"]')) return;   // widget's own ATC already tracks
+            var label = (btn.innerText || btn.value || '').trim();
+            if (!/add\s*to\s*cart/i.test(label) || label.length > 60) return;
+            var h = elloHostAtcHandleFor(btn);
+            if (!h) return;
+            var now = Date.now();
+            if (elloHostAtcLast.h === h && now - elloHostAtcLast.t < 2000) return;   // double-click guard
+            elloHostAtcLast = { h: h, t: now };
+            elloViewResolveId(h, function (pid) {
+                if (!pid) return;
+                var sid = window.__elloLoaderSessionId || elloAbEnsureSessionId(storeSlug);
+                var slug = (window.ELLO_STORE_CONFIG && window.ELLO_STORE_CONFIG.storeSlug) || storeSlug;
+                elloAbSendBeacon(JSON.stringify({
+                    event_type: 'cart',
+                    store_slug: slug,
+                    session_id: sid,
+                    product_id: pid,
+                    variant_id: null
+                }));
+            });
+        } catch (err) { /* tracking must never break the host page */ }
+    }
+    document.addEventListener('click', elloHostAtcListener, true);
+
+    // Start only on non-Shopify surfaces — a permanent 1 Hz timer has no
+    // business on every Shopify pageview fleet-wide. Second check catches the
+    // Anywhere adapter registering (ELLO_NO_SHOPIFY_CART) after this script.
+    if (elloViewIsNonShopify()) { elloViewStartWatch(); }
+    else { setTimeout(function () { if (elloViewIsNonShopify()) elloViewStartWatch(); }, 2500); }
 
     // Purchase attribution has two carriers: the ello_session_id cookie and the
     // ello_session_id cart attribute (the pixel falls back to the attribute when
@@ -730,6 +1221,7 @@
         if (!ELLO_AB.override) {
             elloAbLogExposure(ELLO_AB, cfg);
             elloAbMarkPdpSeen(ELLO_AB, cfg);
+            elloAbWatchForPdp(ELLO_AB, cfg);
         }
 
         if (variant === 'holdout') {
@@ -748,6 +1240,7 @@
             cfg.pdpImageSwapEnabled = false;
             cfg.completeTheLookEnabled = false;
             cfg.desktopPreviewEnabled = false;
+            cfg.tryOnLiveEnabled = false;
         }
         return cfg;
     }

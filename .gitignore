@@ -38,3 +38,8 @@ supabase/.temp/
 # OS junk
 .DS_Store
 **/.DS_Store
+
+# Generated billing statements: real client order data, never commit
+ello-statement-*.csv
+migrate_supabase_keys.sh
+recovered-2.13.1/

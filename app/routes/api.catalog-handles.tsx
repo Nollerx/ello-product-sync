@@ -2,11 +2,16 @@ import { type LoaderFunctionArgs } from "react-router";
 import { supabaseAdmin } from "../lib/supabase.server";
 import { createVersionedCache } from "../lib/widget-cache.server";
 
-// Per-instance cache of the resolved handles list, keyed by store + version.
-// Eliminates the multi-page Shopify crawl for every cache-missing shopper during a
-// spike. Safety net (default 5 min) forces a rebuild even if a webhook is dropped.
+// Per-instance cache of the resolved {id, handle} pairs, keyed by store +
+// version. Eliminates the multi-page Shopify crawl for every cache-missing
+// shopper during a spike. Safety net (default 5 min) forces a rebuild even if
+// a webhook is dropped. Pairs (not bare handles) are cached so
+// ?include_ids=1 — the widget-loader's handle→product-id resolver for
+// non-Shopify surfaces — shares the same cache entry as the handles list.
 const CATALOG_STALE_MS = Number(process.env.CATALOG_CACHE_STALE_MS || 300_000);
-const catalogCache = createVersionedCache<string[]>(CATALOG_STALE_MS);
+const catalogCache = createVersionedCache<Array<{ id: string; handle: string }>>(
+  CATALOG_STALE_MS,
+);
 
 // CORS for cross-origin widget loads (storefronts on merchant domains).
 // If-None-Match included so browsers/CDNs can do conditional revalidation.
@@ -58,6 +63,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const url = new URL(request.url);
   const shop = url.searchParams.get("shop");
   const storeSlug = url.searchParams.get("store_slug");
+  // Adds {pairs: [{id, handle}]} to the response — used by widget-loader's
+  // product-view emitter on non-Shopify surfaces, where the funnel needs a
+  // product ID but the page only exposes a handle. Opt-in so the default
+  // payload (inline-button gate, smart visibility) stays as small as before.
+  const includeIds = url.searchParams.get("include_ids") === "1";
 
   if (!shop && !storeSlug) {
     return jsonError(400, "Missing 'shop' or 'store_slug' query parameter");
@@ -93,8 +103,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
     if (!storeData) {
       // Store not found — return empty so the widget falls back gracefully.
       // Cache briefly to avoid hammering DB on misconfigured storefronts.
+      // pairs is always present here (harmless to legacy consumers, which
+      // read handles only) so the loader's resolver never special-cases.
       return new Response(
-        JSON.stringify({ handles: [], version: "0" }),
+        JSON.stringify({ handles: [], pairs: [], version: "0" }),
         {
           status: 200,
           headers: {
@@ -162,7 +174,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     //    catalog or settings change (products webhook / settings save / the
     //    Refresh-widget button), so real changes invalidate immediately; the cache's
     //    safety-net TTL covers a dropped webhook.
-    const handles: string[] = await catalogCache(slug, version, async () => {
+    const catalogPairs: Array<{ id: string; handle: string }> = await catalogCache(slug, version, async () => {
       if (populationType === "supabase") {
         // Match legacy semantics: active=null is treated as enabled. Only
         // products explicitly set to active=false are excluded.
@@ -178,10 +190,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
         // In supabase mode item_id is the handle (per loadClothingFromSupabase in
         // widget-main.js — sampleClothing[i].id is set to the same string used
-        // by detectCurrentProduct's URL handle match).
+        // by detectCurrentProduct's URL handle match). tryon_events.product_id
+        // carries that same string, so id = handle keeps the funnel join whole.
         return (data || [])
           .map((r) => (r as { item_id: string | null }).item_id)
-          .filter((h): h is string => Boolean(h));
+          .filter((h): h is string => Boolean(h))
+          .map((h) => ({ id: h, handle: h }));
       }
 
       // Shopify mode. Targeting mode decides which products are eligible:
@@ -212,21 +226,26 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
       const hiddenIds = await fetchHiddenShopifyIds(slug);
 
-      return pairs
-        .filter((p) => {
-          // item_id in clothing_items can be stored as either the full GID
-          // ("gid://shopify/Product/123") or the numeric portion ("123").
-          // Check both shapes — mirrors widget-main.js fetchHiddenProductIds.
-          const numericId = p.id.split("/").pop() || "";
-          if (hiddenIds.has(p.id)) return false;
-          if (hiddenIds.has(numericId)) return false;
-          return true;
-        })
-        .map((p) => p.handle)
-        .filter(Boolean);
+      return pairs.filter((p) => {
+        // item_id in clothing_items can be stored as either the full GID
+        // ("gid://shopify/Product/123") or the numeric portion ("123").
+        // Check both shapes — mirrors widget-main.js fetchHiddenProductIds.
+        const numericId = p.id.split("/").pop() || "";
+        if (hiddenIds.has(p.id)) return false;
+        if (hiddenIds.has(numericId)) return false;
+        return true;
+      });
     });
 
-    return new Response(JSON.stringify({ handles, version }), {
+    const handles = catalogPairs.map((p) => p.handle).filter(Boolean);
+
+    return new Response(
+      JSON.stringify(
+        includeIds
+          ? { handles, pairs: catalogPairs, version }
+          : { handles, version },
+      ),
+      {
       status: 200,
       headers: {
         "Content-Type": "application/json",

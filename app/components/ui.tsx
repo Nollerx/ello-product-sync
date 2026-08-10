@@ -6,6 +6,9 @@ import { Card, BlockStack, Text, Tooltip } from "@shopify/polaris";
 export const brand = {
   blue: "#3B63D4",
   blue700: "#2544A3",
+  blue500: "#4E77E4",
+  blue400: "#7A99F0",
+  blue300: "#A9BEF7",
   blue200: "#D2DDFB",
   blue100: "#E8EEFD",
   blue50: "#F4F7FE",
@@ -30,7 +33,35 @@ export const brand = {
   warningInk: "#8A6410",
   dangerBg: "#FBEAEA",
   dangerInk: "#A32D2D",
+  // Data-viz series accent (approved 2026-08-02, mirrored in Brand-Palette.md):
+  // a fashion-forward orchid for chart series that must read apart from both
+  // the revenue blue and the success green. Not a status color.
+  orchid: "#C95BB8",
 };
+
+// ─── Editorial Ledger type system (direction approved 2026-08-10) ───────────
+// Serif is a garnish, not a workhorse: Playfair Display appears ONLY at display
+// sizes — page titles and hero KPI numerals (>= 24px). Inter owns everything
+// data-bearing. The mono stack is the receipt layer: tiny uppercase metadata
+// footnotes under hero numbers ("90D · VERIFIED WINDOW"), never body copy.
+export const fonts = {
+  serif: "'Playfair Display', Georgia, 'Times New Roman', serif",
+  mono: "ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace",
+};
+
+// Receipt rules: solid hairline for card structure, dashed for line-item
+// separators inside a surface, and a solid ink rule above "totals". One motif
+// per surface — a card gets dashed dividers OR a mono footnote, never the
+// full receipt costume at once.
+export const ledger = {
+  hairline: `1px solid ${brand.ink100}`,
+  dashed: `1px dashed ${brand.ink200}`,
+  totalRule: `1px solid ${brand.ink}`,
+  radius: 10,
+};
+
+// Tabular lining figures wherever digits align or update in place.
+export const tnum = { fontVariantNumeric: "tabular-nums lining-nums" } as const;
 
 // ─── Semantic tone system ───────────────────────────────────────────────────
 // One vocabulary of meaning for the whole admin: color always says the SAME
@@ -97,6 +128,121 @@ export function Eyebrow({ children }: { children: ReactNode }) {
     >
       {children}
     </span>
+  );
+}
+
+// Receipt metadata line: letterspaced mono, the "printed at the bottom of the
+// till slip" register. Reserved for factual footnotes under hero numbers
+// ("90d · orders after a try-on"), timestamps, and record ids. 12px clears
+// Shopify's caption floor for App Store review; wraps rather than clipping so
+// longer hints survive narrow cards.
+export function MonoMeta({ children }: { children: ReactNode }) {
+  return (
+    <span
+      style={{
+        fontFamily: fonts.mono,
+        fontSize: 12,
+        lineHeight: 1.4,
+        letterSpacing: "0.04em",
+        textTransform: "uppercase",
+        color: brand.ink500,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+// ─── Editorial page header ──────────────────────────────────────────────────
+// Replaces the Polaris <Page title> heading on the four core admin pages: a
+// quiet uppercase kicker, a Playfair Display title (the serif's one sanctioned
+// home besides hero numbers), and an actions slot that keeps each page's
+// controls on the title line. `accent` italicizes one word in brand blue —
+// the signature heading move, used at most once per page.
+export function PageHeader({
+  kicker,
+  title,
+  accent,
+  actions,
+}: {
+  kicker?: string;
+  title: string;
+  accent?: string;
+  actions?: ReactNode;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+      <div style={{ minWidth: 0 }}>
+        {kicker && <div style={{ marginBottom: 3 }}><Eyebrow>{kicker}</Eyebrow></div>}
+        <h1
+          style={{
+            fontFamily: fonts.serif,
+            fontWeight: 500,
+            fontSize: 27,
+            lineHeight: 1.15,
+            letterSpacing: "-0.01em",
+            color: brand.ink,
+            margin: 0,
+          }}
+        >
+          {title}
+          {accent && (
+            <>
+              {" "}
+              <span style={{ fontStyle: "italic", color: brand.blue }}>{accent}</span>
+            </>
+          )}
+        </h1>
+      </div>
+      {actions && <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>{actions}</div>}
+    </div>
+  );
+}
+
+// Pill button in the brand language for in-body page actions (the Shopify
+// chrome's own buttons stay Polaris). `variant="primary"` = ink fill; default
+// is a quiet hairline pill.
+export function PillButton({
+  children,
+  onClick,
+  variant = "plain",
+  disabled,
+  ariaLabel,
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  variant?: "primary" | "plain";
+  disabled?: boolean;
+  ariaLabel?: string;
+}) {
+  const primary = variant === "primary";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      style={{
+        borderRadius: 999,
+        padding: "6px 15px",
+        fontSize: 12.5,
+        fontWeight: 600,
+        fontFamily: "inherit",
+        lineHeight: 1.4,
+        cursor: disabled ? "default" : "pointer",
+        border: primary ? `1px solid ${brand.ink}` : `1px solid ${brand.ink200}`,
+        background: primary ? brand.ink : brand.white,
+        color: primary ? brand.white : brand.ink700,
+        opacity: disabled ? 0.45 : 1,
+        // Let hover fall through to a wrapping Polaris Tooltip when disabled,
+        // matching Polaris button behavior (tooltips still show on disabled
+        // actions).
+        pointerEvents: disabled ? "none" : undefined,
+        transition: "background 120ms ease, border-color 120ms ease",
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -199,8 +345,9 @@ function whyTag(why: string) {
   );
 }
 
-// KPI / stat card — matches the Home dashboard style. The hero metric on a page
-// can set `accent` to render its value in brand blue.
+// KPI / stat card — Ledger anatomy: eyebrow label, Playfair hero numeral, mono
+// footnote. The hero metric on a page can set `accent` to render its value in
+// brand blue (one accented number per view).
 export function Stat({
   label,
   value,
@@ -215,11 +362,21 @@ export function Stat({
   return (
     <Card padding="500">
       <BlockStack gap="150">
-        <Text as="span" variant="bodySm" tone="subdued">{label}</Text>
-        <span style={{ fontSize: 30, fontWeight: 600, lineHeight: 1.1, color: accent ? brand.blue : brand.ink }}>
+        <Eyebrow>{label}</Eyebrow>
+        <span
+          style={{
+            fontFamily: fonts.serif,
+            fontSize: 32,
+            fontWeight: 500,
+            lineHeight: 1.12,
+            letterSpacing: "-0.01em",
+            color: accent ? brand.blue : brand.ink,
+            ...tnum,
+          }}
+        >
           {value}
         </span>
-        {hint && <Text as="span" variant="bodySm" tone="subdued">{hint}</Text>}
+        {hint && <MonoMeta>{hint}</MonoMeta>}
       </BlockStack>
     </Card>
   );

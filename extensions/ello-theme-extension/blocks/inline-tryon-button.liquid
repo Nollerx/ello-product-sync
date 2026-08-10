@@ -2,10 +2,18 @@
   Ello Try-On Button — inline placement.
 
   Merchants drag this block into their product-page section via Shopify's theme
-  editor. Renders a real <button> next to Add to Cart (or wherever they drop it)
-  that opens the same try-on popup as the floating widget. Shares the loader and
-  config plumbing with the floating block — `widget-loader.js`'s duplicate-init
-  guard handles the case where both blocks are installed.
+  editor. Renders a real <button> that opens the same try-on popup as the
+  floating widget. Shares the loader and config plumbing with the floating block
+  — `widget-loader.js`'s duplicate-init guard handles the case where both
+  blocks are installed.
+
+  Placement: by default the button relocates itself at runtime to sit directly
+  under the buy buttons (Add to Cart + Buy It Now), regardless of where the
+  block lands in the section — Shopify's addAppBlockId deep link can only
+  append to the END of the main section, and manual adds land wherever the
+  merchant clicked. The `placement` setting ("manual") opts out; the theme
+  editor (design mode) always shows the block where it was dropped so the
+  editor's drag/highlight UI keeps working.
 
   Schema settings are per-block OVERRIDES. The dashboard provides the merchant-
   wide defaults via vto_stores.inline_button_*. A non-empty override here beats
@@ -20,6 +28,17 @@
   "target": "section",
   "enabled_on": { "templates": ["product"] },
   "settings": [
+    {
+      "type": "select",
+      "id": "placement",
+      "label": "Position",
+      "options": [
+        { "value": "auto", "label": "Automatic — under buy buttons" },
+        { "value": "manual", "label": "Where placed in editor" }
+      ],
+      "default": "auto",
+      "info": "Automatic keeps the button directly under Add to Cart / Buy It Now on your live store, wherever this block sits in the editor."
+    },
     {
       "type": "text",
       "id": "button_text",
@@ -115,6 +134,7 @@
   data-variant-id="{{ variant.id }}"
   data-available="{{ initial_available }}"
   data-hide-when-oos="{{ block.settings.hide_when_oos }}"
+  data-placement="{{ block.settings.placement | default: 'auto' }}"
   data-default-text="{{ block_button_text | default: '' | escape }}"
   data-default-bg="{{ block_bg_color | default: '' | escape }}"
   data-default-fg="{{ block_text_color | default: '' | escape }}"
@@ -368,6 +388,54 @@
       return null;
     }
 
+    // Move the button so it sits directly under the buy buttons, no matter
+    // where the app block landed in the section. Shopify's addAppBlockId
+    // deep link can only APPEND to the main section (below description /
+    // collapsible rows / etc.), and manual adds land wherever the merchant
+    // clicked — so without this, placement is effectively random.
+    //
+    // We insert AFTER the product form rather than inside it: the form wraps
+    // both ATC and the dynamic-checkout (Buy It Now) wrapper in nearly all
+    // OS 2.0 themes, and variant-change partial re-renders (Dawn et al.)
+    // replace nodes INSIDE the form — as a following sibling we survive them.
+    //
+    // Skipped when: merchant chose "Where placed in editor", or we're in the
+    // theme editor (design mode), where moving the node out of its app-block
+    // wrapper would break the editor's drag/highlight UI.
+    function relocateUnderBuyButtons(btn, atc) {
+      if (btn.dataset.placement === 'manual') return;
+      if (window.Shopify && window.Shopify.designMode) return;
+
+      var anchor = null;
+      try { anchor = atc.closest('form[action*="/cart/add"]'); } catch (e) { /* old browser */ }
+      if (!anchor) anchor = atc;
+      if (anchor.contains(btn)) return; // we'd be inserting after our own ancestor
+
+      // A few themes render the payment button as a sibling AFTER the form —
+      // if the very next element IS the payment-button wrapper, hop below it
+      // so we end up under ALL the buy buttons.
+      var next = anchor.nextElementSibling;
+      if (next && next !== btn && next.classList && next.classList.contains('shopify-payment-button')) {
+        anchor = next;
+      }
+
+      if (anchor.nextElementSibling === btn) return; // already in place
+
+      // Shopify wraps every app block in <div id="shopify-block-…">. Once the
+      // button moves out, that wrapper is empty (just our executed scripts) —
+      // collapse it so themes that space product-info blocks with CSS `gap`
+      // don't show a stray double-gap where the block used to be.
+      var wrapper = null;
+      try { wrapper = btn.closest('[id^="shopify-block-"]'); } catch (e) { /* old browser */ }
+
+      try { anchor.insertAdjacentElement('afterend', btn); }
+      catch (e) { return; /* leave the button where it rendered — fail open */ }
+
+      if (wrapper && !wrapper.contains(btn)) {
+        wrapper.style.setProperty('display', 'none');
+      }
+    }
+
     function matchThemeButton() {
       var btn = document.querySelector('[data-ello-inline-btn="' + BLOCK_ID + '"]');
       if (!btn) return true; // nothing to do; stop retrying
@@ -375,6 +443,10 @@
 
       var atc = findAtcButton(btn);
       if (!atc) return false;
+
+      // Relocate before reveal — the button is still opacity: 0 here, so the
+      // move is invisible to the shopper (no layout flash).
+      relocateUnderBuyButtons(btn, atc);
 
       var cs;
       try { cs = window.getComputedStyle(atc); }

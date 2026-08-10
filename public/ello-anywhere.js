@@ -55,6 +55,12 @@
     }
     if (!backend) backend = 'https://widget.ellotryon.com';
     var floatingOn = (ds.floating || pre.floating) === 'on';
+    // Which <img> the PDP image-swap replaces on THIS host page (custom sites
+    // have galleries the auto-detector can't always resolve). Installed via
+    // data-pdp-selector on this script tag; scoped to this page only — never
+    // written to the store's saved config, so the Shopify storefront's own
+    // selector/auto-detection is untouched.
+    var pdpSelector = ds.pdpSelector || pre.pdpSelector || null;
 
     if (!storeSlug) {
         console.error('[ElloAnywhere] data-store-slug is required — widget not started.');
@@ -106,6 +112,24 @@
         return !!(window.__elloAbState && window.__elloAbState.variant === 'holdout');
     }
 
+    // ── Platform URL-handle hook ────────────────────────────────────────────
+    // widget-main's PDP-scoped features (PDP image swap, color-correct garment,
+    // variant previews) all guard on getProductIdFromUrl(location.pathname),
+    // which is null on non-Shopify URLs — so on Anywhere host pages those
+    // features silently no-op'd (verified on atlasapparel.shop 2026-07-24: the
+    // image swap never fired). Answer with the OPEN product's handle for the
+    // current page so the guards pass. Foreign URLs still return null.
+    var lastOpenedHandle = null;
+    // eslint-disable-next-line react/display-name -- plain JS hook, not a component (false positive)
+    window.ELLO_PLATFORM_URL_HANDLE = function (url) {
+        if (!lastOpenedHandle) return null;
+        try {
+            var path = /^https?:/i.test(url) ? new URL(url).pathname : String(url).split(/[?#]/)[0];
+            if (path === window.location.pathname) return lastOpenedHandle;
+        } catch (e) { /* fall through */ }
+        return null;
+    };
+
     // ── Open API ────────────────────────────────────────────────────────────
     function open(arg) {
         if (isHoldout()) return;   // proof-test integrity: holdout sees no Ello surface
@@ -116,6 +140,7 @@
             productId: ctx.productId || null,
             variantId: ctx.variantId || null
         };
+        if (payload.productHandle) lastOpenedHandle = String(payload.productHandle);
         if (window.Ello && typeof window.Ello.openTryOn === 'function') {
             window.Ello.openTryOn(payload);
         } else {
@@ -143,6 +168,38 @@
             return url + sep + 'attributes%5Bello_session_id%5D=' + encodeURIComponent(sid);
         }
     }
+
+    // ── Cross-origin session handoff (link decoration) ──────────────────────
+    // This host page and the Shopify storefront are different origins with
+    // separate localStorage: a shopper who tries on HERE and buys THERE lands
+    // in two unrelated sessions, and try-on → purchase attribution can never
+    // join (Atlas attributed revenue went dark 2026-07-26 for exactly this).
+    // At click time, stamp outbound storefront-shaped links with the current
+    // session (?ello_sid=…) — widget-loader.js on the destination adopts it
+    // before minting, so the SAME session continues across the hop. Cart
+    // permalinks (/cart/VID:QTY go straight to checkout, no storefront page
+    // runs the loader) additionally get the attributes[ello_session_id]
+    // carrier the pixel already reads at checkout. Capture-phase + href
+    // mutation: navigation reads the href after handlers run, and it works
+    // for target=_blank too. auxclick covers middle-click open-in-new-tab.
+    function decorateOutboundLink(e) {
+        try {
+            var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+            if (!a) return;
+            var sid = sessionId();
+            if (!sid) return;
+            var u = new URL(a.getAttribute('href'), window.location.href);
+            if (u.origin === window.location.origin) return;
+            if (u.protocol !== 'https:' && u.protocol !== 'http:') return;
+            // Storefront-shaped destinations only — never social/external links.
+            if (!/(^\/products\/|^\/collections\/|^\/cart(\/|$)|^\/pages\/|^\/$)/.test(u.pathname)) return;
+            if (u.searchParams.get('ello_sid') !== sid) u.searchParams.set('ello_sid', sid);
+            if (/^\/cart\/./.test(u.pathname)) u.searchParams.set('attributes[ello_session_id]', sid);
+            a.href = u.toString();
+        } catch (err) { /* decoration must never break navigation */ }
+    }
+    document.addEventListener('click', decorateOutboundLink, true);
+    document.addEventListener('auxclick', decorateOutboundLink, true);
 
     // ── Delegated click binding ─────────────────────────────────────────────
     document.addEventListener('click', function (e) {
@@ -177,6 +234,50 @@
         }
         if (++gateTries < 24) setTimeout(holdoutGate, 500);
     })();
+
+    // ── Host-page pdpImageSelector (applied to the LIVE config only) ────────
+    // The loader dispatches 'ello:config-resolved' with the resolved store
+    // config; overlay the page-scoped selector on it so the swap resolver's
+    // merchant-selector pass finds this site's hero. Also applied immediately
+    // when config already resolved (late adapter injection).
+    function applyPdpSelector() {
+        if (!pdpSelector) return;
+        if (window.ELLO_STORE_CONFIG) window.ELLO_STORE_CONFIG.pdpImageSelector = pdpSelector;
+    }
+    window.addEventListener('ello:config-resolved', applyPdpSelector);
+    applyPdpSelector();
+
+    // ── Swap persistence on overlay-style hosts ─────────────────────────────
+    // Shopify PDPs restore a saved try-on onto the hero at page load. Overlay
+    // hosts re-render their product view without a page load, re-creating the
+    // hero <img> and wiping the swap (Andrew, atlasapparel.shop 2026-07-24).
+    // Watch for a try-on control (re)appearing — the overlay is open — recover
+    // the product handle from it, and ask the widget to repaint the saved look.
+    var restoreDeb = null;
+    function handleFromEl(el) {
+        var h = el.getAttribute('data-ello-tryon');
+        if (h && h !== '1' && h !== 'true') return h;
+        var m = String(el.getAttribute('href') || '').match(/\/products\/([^/?#]+)/);
+        return m ? decodeURIComponent(m[1]) : null;
+    }
+    function maybeRestore() {
+        if (restoreDeb) return;
+        restoreDeb = setTimeout(function () {
+            restoreDeb = null;
+            try {
+                var el = document.querySelector('[data-ello-tryon], [data-tryon]');
+                if (!el) return;
+                var h = handleFromEl(el);
+                if (!h) return;
+                lastOpenedHandle = h;   // URL-handle hook now answers for this page
+                if (typeof window.elloPdpRestoreForHost === 'function') window.elloPdpRestoreForHost();
+            } catch (e) { /* best-effort */ }
+        }, 400);
+    }
+    try {
+        new MutationObserver(maybeRestore).observe(document.documentElement, { childList: true, subtree: true });
+    } catch (e) { /* no MutationObserver — restore still runs on open() */ }
+    maybeRestore();
 
     // ── Public API ──────────────────────────────────────────────────────────
     window.ElloAnywhere = {

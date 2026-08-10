@@ -9,19 +9,17 @@ import {
   InlineStack,
   InlineGrid,
   Text,
-  Badge,
   Banner,
   Box,
   Button,
-  DataTable,
   Divider,
   Popover,
   ActionList,
-  Tabs,
 } from "@shopify/polaris";
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { authenticate } from "../shopify.server";
 import { resolveStorefront } from "../lib/storefront-names.server";
-import { SectionHeading, brand } from "../components/ui";
+import { SectionHeading, StatusPill, brand, ledger, tnum, PageHeader } from "../components/ui";
 import {
   LineSeries,
   TrendChart,
@@ -29,21 +27,13 @@ import {
   Heatmap,
   HeadlineStrip,
   InsightsList,
+  KpiBand,
   KpiTile,
   LockedCard,
   TimeRangeSelector,
   verdictFromDelta,
 } from "../components/analytics";
-import {
-  CashDollarIcon,
-  TargetIcon,
-  ViewIcon,
-  CameraIcon,
-  CursorIcon,
-  XCircleIcon,
-  OrderRepeatIcon,
-} from "@shopify/polaris-icons";
-import { parseRange, pctDelta, rangeWindow } from "../lib/timerange";
+import { parseRange, pctDelta, rangeWindow, RANGE_DAYS } from "../lib/timerange";
 import {
   buildInsights,
   buildSessions,
@@ -295,13 +285,16 @@ export default function Analytics() {
 
   if (!data.hasStore) {
     return (
-      <Page title="Analytics">
-        <Card padding="500">
-          <BlockStack gap="200">
-            <SectionHeading eyebrow="Analytics" title="No store data yet" />
-            <Text as="p" tone="subdued">Finish onboarding to connect your store, then your try-on analytics appear here.</Text>
-          </BlockStack>
-        </Card>
+      <Page>
+        <BlockStack gap="500">
+          <PageHeader kicker="The data behind the try-on" title="Analytics" />
+          <Card padding="500">
+            <BlockStack gap="200">
+              <SectionHeading eyebrow="Analytics" title="No store data yet" />
+              <Text as="p" tone="subdued">Finish onboarding to connect your store, then your try-on analytics appear here.</Text>
+            </BlockStack>
+          </Card>
+        </BlockStack>
       </Page>
     );
   }
@@ -353,28 +346,34 @@ export default function Analytics() {
   ];
 
   return (
-    <Page title="Analytics" fullWidth>
+    <Page fullWidth>
       <BlockStack gap="400">
-        {/* Controls row */}
-        <InlineStack align="space-between" blockAlign="center">
-          <TimeRangeSelector />
-          <Popover
-            active={exportOpen}
-            onClose={() => setExportOpen(false)}
-            activator={
-              <Button onClick={() => setExportOpen((o) => !o)} disclosure loading={exporting}>
-                Export CSV
-              </Button>
-            }
-          >
-            <ActionList
-              items={EXPORT_CATEGORIES.map((c) => ({
-                content: c.label,
-                onAction: () => downloadCsv(c.key),
-              }))}
-            />
-          </Popover>
-        </InlineStack>
+        {/* Title line carries the page controls — one row, no floating toolbar. */}
+        <PageHeader
+          kicker="The data behind the try-on"
+          title="Analytics"
+          actions={
+            <>
+              <TimeRangeSelector />
+              <Popover
+                active={exportOpen}
+                onClose={() => setExportOpen(false)}
+                activator={
+                  <Button onClick={() => setExportOpen((o) => !o)} disclosure loading={exporting}>
+                    Export CSV
+                  </Button>
+                }
+              >
+                <ActionList
+                  items={EXPORT_CATEGORIES.map((c) => ({
+                    content: c.label,
+                    onAction: () => downloadCsv(c.key),
+                  }))}
+                />
+              </Popover>
+            </>
+          }
+        />
 
         {/* Headline TL;DR — the two-second read above everything else. */}
         {(revenue > 0 || data.totalTryons > 0) && (
@@ -388,43 +387,39 @@ export default function Analytics() {
           </HeadlineStrip>
         )}
 
-        {/* KPI row — visible on every plan. Blue chips = money metrics, ink chips
-            = volume; the pill carries the trend verdict (vs the prior period). */}
-        <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
-          <KpiTile
-            label="Attributed revenue"
-            value={money(t?.revenue ?? 0)}
-            delta={data.deltas.revenue}
-            accent
-            icon={CashDollarIcon}
-            iconTone="money"
-            status={verdictFromDelta(data.deltas.revenue)}
-          />
-          <KpiTile
-            label="Buy rate after try-on"
-            value={t?.purchaseConversionPct != null ? `${t.purchaseConversionPct}%` : "—"}
-            hint="Sessions that bought"
-            icon={TargetIcon}
-            iconTone="money"
-          />
-          <KpiTile
-            label="Shoppers who opened it"
-            value={data.widgetOpens.toLocaleString()}
-            delta={data.deltas.opens}
-            icon={ViewIcon}
-            iconTone="neutral"
-            status={verdictFromDelta(data.deltas.opens)}
-          />
-          <KpiTile
-            label="Total try-ons"
-            value={data.totalTryons.toLocaleString()}
-            delta={data.deltas.tryons}
-            hint={`${data.successCount.toLocaleString()} successful`}
-            icon={CameraIcon}
-            iconTone="neutral"
-            status={verdictFromDelta(data.deltas.tryons)}
-          />
-        </InlineGrid>
+        {/* KPI band — one flat card, dashed receipt dividers, the money as the
+            single accented (and serif-hero) number; pills carry the trend
+            verdict vs the prior period. */}
+        <KpiBand
+          tiles={[
+            {
+              label: "Attributed revenue",
+              value: money(t?.revenue ?? 0),
+              delta: data.deltas.revenue,
+              accent: true,
+              status: verdictFromDelta(data.deltas.revenue),
+              hint: `${RANGE_DAYS[data.range]}d · orders after a try-on`,
+            },
+            {
+              label: "Buy rate after try-on",
+              value: t?.purchaseConversionPct != null ? `${t.purchaseConversionPct}%` : "—",
+              hint: "sessions that bought",
+            },
+            {
+              label: "Shoppers who opened it",
+              value: data.widgetOpens.toLocaleString(),
+              delta: data.deltas.opens,
+              status: verdictFromDelta(data.deltas.opens),
+            },
+            {
+              label: "Total try-ons",
+              value: data.totalTryons.toLocaleString(),
+              delta: data.deltas.tryons,
+              hint: `${data.successCount.toLocaleString()} successful`,
+              status: verdictFromDelta(data.deltas.tryons),
+            },
+          ]}
+        />
 
         {/* Complete the Look — the proof layer. Only shown once there's any
             upsell signal, and every number is a real computed aggregate with
@@ -433,15 +428,17 @@ export default function Analytics() {
           <CtlProofCard ctl={data.ctl} money={money} />
         )}
 
-        <Tabs tabs={tabs} selected={selectedTab} onSelect={onTabSelect} />
+        <LedgerTabs tabs={tabs} selected={selectedTab} onSelect={onTabSelect} />
 
-        {TAB_KEYS[selectedTab] === "funnel" && <FunnelTab data={data} money={money} />}
-        {TAB_KEYS[selectedTab] === "performance" &&
-          (adv ? <PerformanceTab data={data} money={money} /> : <BasicPerformance data={data} money={money} />)}
-        {TAB_KEYS[selectedTab] === "engagement" &&
-          (adv ? <EngagementTab data={data} /> : <LockedCard feature="Engagement analytics" />)}
-        {TAB_KEYS[selectedTab] === "preview" &&
-          (adv ? <PreviewTab data={data} /> : <LockedCard feature="Preview widget analytics" />)}
+        <div role="tabpanel" id="analytics-tabpanel" aria-labelledby={`analytics-tab-${TAB_KEYS[selectedTab]}`}>
+          {TAB_KEYS[selectedTab] === "funnel" && <FunnelTab data={data} money={money} />}
+          {TAB_KEYS[selectedTab] === "performance" &&
+            (adv ? <PerformanceTab data={data} money={money} /> : <BasicPerformance data={data} money={money} />)}
+          {TAB_KEYS[selectedTab] === "engagement" &&
+            (adv ? <EngagementTab data={data} /> : <LockedCard feature="Engagement analytics" />)}
+          {TAB_KEYS[selectedTab] === "preview" &&
+            (adv ? <PreviewTab data={data} /> : <LockedCard feature="Preview widget analytics" />)}
+        </div>
       </BlockStack>
     </Page>
   );
@@ -450,6 +447,137 @@ export default function Analytics() {
 type LoaderData = Awaited<ReturnType<typeof loader>>;
 type PageData = Extract<LoaderData, { hasStore: true }>;
 type Money = (n: number) => string;
+
+// ─── Ledger tab strip ───────────────────────────────────────────────────────
+// Editorial underline tabs on a shared hairline: the active tab is ink with a
+// 2px ink rule; the rest stay quiet. Same index-based select contract Polaris
+// Tabs had.
+function LedgerTabs({
+  tabs,
+  selected,
+  onSelect,
+}: {
+  tabs: Array<{ id: string; content: string }>;
+  selected: number;
+  onSelect: (index: number) => void;
+}) {
+  // Roving tabindex + arrow keys, per the ARIA tabs pattern (keyboard parity
+  // with the Polaris Tabs this replaced).
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    const next = (selected + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    onSelect(next);
+    document.getElementById(`analytics-tab-${tabs[next].id}`)?.focus();
+  };
+  return (
+    <div
+      role="tablist"
+      aria-label="Analytics sections"
+      style={{ display: "flex", gap: 22, borderBottom: ledger.hairline }}
+    >
+      {tabs.map((t, i) => {
+        const active = i === selected;
+        return (
+          <button
+            key={t.id}
+            id={`analytics-tab-${t.id}`}
+            role="tab"
+            aria-selected={active}
+            aria-controls="analytics-tabpanel"
+            tabIndex={active ? 0 : -1}
+            type="button"
+            onKeyDown={onKeyDown}
+            onClick={() => onSelect(i)}
+            style={{
+              background: "transparent",
+              border: "none",
+              borderBottom: active ? `2px solid ${brand.ink}` : "2px solid transparent",
+              marginBottom: -1,
+              padding: "6px 2px 9px",
+              fontSize: 13,
+              fontWeight: active ? 650 : 500,
+              fontFamily: "inherit",
+              color: active ? brand.ink : brand.ink500,
+              cursor: active ? "default" : "pointer",
+              transition: "color 120ms ease, border-color 120ms ease",
+            }}
+          >
+            {t.content}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Ledger table ───────────────────────────────────────────────────────────
+// Replaces Polaris DataTable: eyebrow-style column headers over hairline rows,
+// tabular figures, numeric columns right-aligned. First column is the entity
+// (left), everything after it is a number (right) unless `aligns` overrides.
+function LedgerTable({
+  headings,
+  rows,
+  aligns,
+}: {
+  headings: string[];
+  rows: ReactNode[][];
+  aligns?: Array<"left" | "right">;
+}) {
+  const alignFor = (col: number) => aligns?.[col] ?? (col === 0 ? "left" : "right");
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            {headings.map((h, col) => (
+              <th
+                key={h}
+                scope="col"
+                style={{
+                  textAlign: alignFor(col),
+                  padding: "0 10px 7px",
+                  fontSize: 10.5,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: brand.ink500,
+                  borderBottom: `1px solid ${brand.ink200}`,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={ri}>
+              {row.map((cell, col) => (
+                <td
+                  key={col}
+                  style={{
+                    textAlign: alignFor(col),
+                    padding: "9px 10px",
+                    fontSize: 13,
+                    fontWeight: col === 0 ? 500 : 550,
+                    color: col === 0 ? brand.ink700 : brand.ink,
+                    borderBottom: ri === rows.length - 1 ? "none" : ledger.hairline,
+                    whiteSpace: col === 0 ? undefined : "nowrap",
+                    ...(col === 0 ? {} : tnum),
+                  }}
+                >
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 // ─── Funnel tab ─────────────────────────────────────────────────────────────
 function FunnelTab({ data, money }: { data: PageData; money: Money }) {
@@ -594,8 +722,7 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
                           <MiniMetric label="Failures" value={adv.friction.failures.toLocaleString()} />
                         </InlineGrid>
                         {adv.friction.byDevice.length > 0 && (
-                          <DataTable
-                            columnContentTypes={["text", "numeric", "numeric"]}
+                          <LedgerTable
                             headings={["Device", "Uploads", "Success rate"]}
                             rows={adv.friction.byDevice.map((d) => [
                               capitalize(d.device),
@@ -668,8 +795,7 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
                     {adv.paths.every((p) => p.sessions === 0) ? (
                       <Text as="p" tone="subdued">No setup sessions yet.</Text>
                     ) : (
-                      <DataTable
-                        columnContentTypes={["text", "numeric", "numeric", "numeric"]}
+                      <LedgerTable
                         headings={["Path", "Sessions", "Tried on", "Carted"]}
                         rows={adv.paths.map((p) => [
                           p.label,
@@ -689,8 +815,7 @@ function FunnelTab({ data, money }: { data: PageData; money: Money }) {
                     {adv.devices.length === 0 ? (
                       <Text as="p" tone="subdued">No sessions yet.</Text>
                     ) : (
-                      <DataTable
-                        columnContentTypes={["text", "numeric", "numeric", "numeric"]}
+                      <LedgerTable
                         headings={["Device", "Opens", "Try-ons", "Cart rate"]}
                         rows={adv.devices.map((d) => [
                           capitalize(d.device),
@@ -729,8 +854,7 @@ function TopProductsCard({ data, money }: { data: PageData; money: Money }) {
         {data.topProducts.length === 0 ? (
           <Box paddingBlock="400"><Text as="p" tone="subdued">No products have been tried on yet.</Text></Box>
         ) : (
-          <DataTable
-            columnContentTypes={["text", "numeric", "numeric", "numeric"]}
+          <LedgerTable
             headings={["Product", "Try-ons", "Conversion", "Revenue"]}
             rows={data.topProducts.map((p) => [
               p.name,
@@ -767,8 +891,7 @@ function PerformanceTab({ data, money }: { data: PageData; money: Money }) {
                 {adv.pages.length === 0 ? (
                   <Text as="p" tone="subdued">No page data yet.</Text>
                 ) : (
-                  <DataTable
-                    columnContentTypes={["text", "numeric", "numeric", "numeric"]}
+                  <LedgerTable
                     headings={["Page type", "Opens", "Try-on sessions", "Cart sessions"]}
                     rows={adv.pages.map((p) => [
                       PAGE_TYPE_LABELS[p.pageType] ?? capitalize(p.pageType),
@@ -792,8 +915,7 @@ function PerformanceTab({ data, money }: { data: PageData; money: Money }) {
                 {adv.skuTable.length === 0 ? (
                   <Box paddingBlock="400"><Text as="p" tone="subdued">No products have been tried on yet.</Text></Box>
                 ) : (
-                  <DataTable
-                    columnContentTypes={["text", "numeric", "numeric", "numeric", "numeric"]}
+                  <LedgerTable
                     headings={["Product", "Try-ons", "Cart adds", "Conversion", "Revenue"]}
                     rows={adv.skuTable.map((p) => [
                       p.name,
@@ -819,11 +941,20 @@ function PerformanceTab({ data, money }: { data: PageData; money: Money }) {
                   <Text as="p" tone="subdued">No try-ons yet.</Text>
                 ) : (
                   <BlockStack gap="200">
-                    {placementEntries.map(([src, count]) => (
-                      <InlineStack key={src} align="space-between" blockAlign="center">
-                        <Text as="span" variant="bodySm">{SURFACE_LABELS[src] ?? src}</Text>
-                        <Badge>{count.toLocaleString()}</Badge>
-                      </InlineStack>
+                    {placementEntries.map(([src, count], i) => (
+                      <div
+                        key={src}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          paddingBottom: i === placementEntries.length - 1 ? 0 : 8,
+                          borderBottom: i === placementEntries.length - 1 ? "none" : ledger.dashed,
+                        }}
+                      >
+                        <span style={{ fontSize: 13, color: brand.ink700 }}>{SURFACE_LABELS[src] ?? src}</span>
+                        <span style={{ fontSize: 13, fontWeight: 650, color: brand.ink, ...tnum }}>{count.toLocaleString()}</span>
+                      </div>
                     ))}
                   </BlockStack>
                 )}
@@ -845,7 +976,7 @@ function PerformanceTab({ data, money }: { data: PageData; money: Money }) {
                     {adv.misfits.map((m) => (
                       <InlineStack key={m.productId} align="space-between" blockAlign="center">
                         <Text as="span" variant="bodySm">{m.name}</Text>
-                        <Badge tone="warning">{`${m.tryons} try-ons · ${m.conversionPct ?? 0}%`}</Badge>
+                        <StatusPill label={`${m.tryons} try-ons · ${m.conversionPct ?? 0}%`} tone="watch" />
                       </InlineStack>
                     ))}
                   </BlockStack>
@@ -860,8 +991,7 @@ function PerformanceTab({ data, money }: { data: PageData; money: Money }) {
                 {adv.categoryBreakdown.length === 0 ? (
                   <Text as="p" tone="subdued">No category data yet.</Text>
                 ) : (
-                  <DataTable
-                    columnContentTypes={["text", "numeric", "numeric"]}
+                  <LedgerTable
                     headings={["Category", "Try-ons", "Revenue"]}
                     rows={adv.categoryBreakdown.map((c) => [
                       capitalize(c.category),
@@ -890,22 +1020,16 @@ function EngagementTab({ data }: { data: PageData }) {
         <KpiTile
           label="Open → try-on rate"
           value={adv.engagement.openToTryonPct != null ? `${adv.engagement.openToTryonPct}%` : "—"}
-          hint="Sessions that tried something on"
-          icon={TargetIcon}
-          iconTone="neutral"
+          hint="tried something on"
         />
         <KpiTile
           label="Avg try-ons per session"
           value={adv.engagement.avgTryonsPerSession != null ? String(adv.engagement.avgTryonsPerSession) : "—"}
-          icon={CameraIcon}
-          iconTone="neutral"
         />
         <KpiTile
           label="Multi-try sessions"
           value={adv.engagement.multiTryPct != null ? `${adv.engagement.multiTryPct}%` : "—"}
-          hint="Tried 2+ items"
-          icon={OrderRepeatIcon}
-          iconTone="neutral"
+          hint="tried 2+ items"
         />
       </InlineGrid>
 
@@ -958,10 +1082,10 @@ function PreviewTab({ data }: { data: PageData }) {
   return (
     <BlockStack gap="500">
       <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
-        <KpiTile label="Impressions" value={p.impressions.toLocaleString()} hint="Preview popups shown" icon={ViewIcon} iconTone="neutral" />
-        <KpiTile label="Engagement" value={`${pct(p.engagements)}%`} hint={`${p.engagements.toLocaleString()} clicks`} icon={CursorIcon} iconTone="money" />
-        <KpiTile label="Try-ons completed" value={p.tryonCompleted.toLocaleString()} hint={p.tryonFailed > 0 ? `${p.tryonFailed} failed` : undefined} icon={CameraIcon} iconTone="good" />
-        <KpiTile label="Dismissed forever" value={`${pct(p.dismissedForever)}%`} hint={`${p.dismissedForever.toLocaleString()} shoppers`} icon={XCircleIcon} iconTone="neutral" />
+        <KpiTile label="Impressions" value={p.impressions.toLocaleString()} hint="preview popups shown" />
+        <KpiTile label="Engagement" value={`${pct(p.engagements)}%`} hint={`${p.engagements.toLocaleString()} clicks`} />
+        <KpiTile label="Try-ons completed" value={p.tryonCompleted.toLocaleString()} hint={p.tryonFailed > 0 ? `${p.tryonFailed} failed` : undefined} />
+        <KpiTile label="Dismissed forever" value={`${pct(p.dismissedForever)}%`} hint={`${p.dismissedForever.toLocaleString()} shoppers`} />
       </InlineGrid>
 
       <Layout>
@@ -1007,9 +1131,28 @@ function MiniMetric({
   tone?: "critical";
 }) {
   return (
-    <div style={{ border: `1px solid ${brand.ink100}`, borderRadius: 12, background: brand.offwhite, padding: "12px 14px" }}>
-      <div style={{ fontSize: 12, color: brand.ink500, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 600, color: tone === "critical" ? brand.danger : accent ? brand.blue : brand.ink }}>
+    <div style={{ border: ledger.hairline, borderRadius: ledger.radius, background: brand.offwhite, padding: "12px 14px" }}>
+      <div
+        style={{
+          fontSize: 10.5,
+          fontWeight: 600,
+          letterSpacing: "0.07em",
+          textTransform: "uppercase",
+          color: brand.ink500,
+          marginBottom: 5,
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: 19,
+          fontWeight: 650,
+          letterSpacing: "-0.01em",
+          color: tone === "critical" ? brand.dangerInk : accent ? brand.blue : brand.ink,
+          ...tnum,
+        }}
+      >
         {value}
       </div>
     </div>
@@ -1054,7 +1197,7 @@ function CtlProofCard({
             title="Outfit upsell — proof"
             description="Every number below is computed from your store's real attributed orders."
           />
-          {ctl.holdoutActive && <Badge tone="attention">Proof test running</Badge>}
+          {ctl.holdoutActive && <StatusPill label="Proof test running" tone="watch" />}
         </InlineStack>
 
         <InlineGrid columns={{ xs: 2, md: 4 }} gap="300">
@@ -1079,7 +1222,7 @@ function CtlProofCard({
                 {" · "}without: <Text as="span" fontWeight="semibold">{ctl.aovWithoutLook != null ? money(ctl.aovWithoutLook) : "—"}</Text>
               </Text>
               {splitLift != null ? (
-                <Badge tone={splitLift >= 0 ? "success" : "critical"}>{`${splitLift >= 0 ? "+" : ""}${splitLift}% AOV`}</Badge>
+                <StatusPill label={`${splitLift >= 0 ? "+" : ""}${splitLift}% AOV`} tone={splitLift >= 0 ? "good" : "bad"} />
               ) : (
                 <Text as="span" variant="bodySm" tone="subdued">
                   Small sample — comparison appears at {CTL_MIN_ORDERS_SPLIT}+ orders on each side.

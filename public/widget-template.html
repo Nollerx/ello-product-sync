@@ -21,14 +21,39 @@
             height: 100%;
             background: linear-gradient(135deg, #ffffff 0%, #f9fafb 100%);
             z-index: 10001;
-            /* Flex center the inner wrapper */
+            /* Centre the inner wrapper via `margin:auto` on the CHILD, not
+               `align-items:center` here. A centred flex item that is taller than
+               its container overflows EQUALLY in both directions and the top
+               half becomes unreachable — no scrollbar can ever get to it. On an
+               iPhone SE (375x553 with Safari's chrome up) the 580px-tall card
+               lost 42px off the top AND 42px off the bottom, which cut the hero
+               photo and the "you agree to our Terms & Privacy Policy" consent
+               line clean off the screen. `flex-start` + `margin:auto` keeps it
+               centred when it fits and scrollable when it doesn't. */
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: center;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
             padding: 0;
             opacity: 0;
             pointer-events: none;
             transition: opacity 0.4s ease;
+        }
+
+        /* At <=768px .widget-header is position:sticky with z-index 10001, so it
+           paints OVER this overlay — and it has to, because .fro-dismiss-btn is
+           display:none below 600px, making the header's × the only way out of
+           the intro. The cost was that the header's 85px silently ate the top of
+           the intro card: 49px of the product hero on an iPhone 13, 61px on an
+           SE, so the shopper's first look at the garment was decapitated.
+           Reserve the header's real height instead (measured at show time by
+           checkOnboarding(), which sets --ello-intro-header-offset). */
+        @media (max-width: 768px) {
+            #virtual-tryon-widget-container .first-run-overlay{
+                padding-top: var(--ello-intro-header-offset, 86px);
+            }
         }
 
         #virtual-tryon-widget-container .first-run-overlay.active{
@@ -40,7 +65,12 @@
         #virtual-tryon-widget-container .onboarding-inner{
             width: 90%;
             max-width: 420px;
-            margin: 0 auto;
+            /* `auto` on all four sides — this is what centres the card inside
+               .first-run-overlay (see the note there). Unlike align-items:center
+               it collapses to 0 instead of going negative once the card is
+               taller than the overlay, so nothing is ever clipped out of reach. */
+            margin: auto;
+            flex: 0 0 auto;
             /* Padding for balanced spacing */
             padding: 24px 20px 16px;
             text-align: center;
@@ -287,6 +317,108 @@
             display: none;
         }
 
+        /* SHORT viewports — the axis the width breakpoints above never covered.
+           An iPhone SE is 375x667 on paper but only ~553px tall with Safari's
+           URL bar up, which is the state a shopper is actually in when they tap
+           "Try it on". At full size the intro card is ~580px tall, so it did not
+           fit and the hero photo + consent line were cut off. Scale the card
+           down so everything fits without scrolling; the overlay can still
+           scroll as a backstop on truly tiny screens. */
+        @media (max-height: 740px) {
+            #virtual-tryon-widget-container .onboarding-inner{
+                padding: 16px 20px 12px;
+            }
+
+            #virtual-tryon-widget-container .onboarding-strip{
+                margin-bottom: 14px;
+            }
+
+            #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-step.item-card .fro-media{
+                width: 124px !important;
+            }
+
+            #virtual-tryon-widget-container .fro-headline{
+                font-size: 19px;
+                margin-bottom: 8px;
+            }
+
+            #virtual-tryon-widget-container .fro-subtext{
+                font-size: 13px;
+                margin-bottom: 14px;
+            }
+
+            #virtual-tryon-widget-container .onboarding-ctas{
+                gap: 9px;
+            }
+
+            #virtual-tryon-widget-container .fro-btn{
+                padding: 13px 0;
+            }
+
+            #virtual-tryon-widget-container .fro-legal{
+                margin-top: 9px;
+            }
+        }
+
+        @media (max-height: 610px) {
+            #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-step.item-card .fro-media{
+                width: 96px !important;
+            }
+
+            #virtual-tryon-widget-container .onboarding-strip{
+                margin-bottom: 10px;
+            }
+
+            #virtual-tryon-widget-container .fro-headline{
+                font-size: 17px;
+                margin-bottom: 6px;
+            }
+
+            #virtual-tryon-widget-container .fro-subtext{
+                font-size: 12.5px;
+                margin-bottom: 10px;
+            }
+
+            #virtual-tryon-widget-container .fro-btn{
+                padding: 11px 0;
+                font-size: 14px;
+            }
+        }
+
+        /* iPhone SE / SE2 with Safari's URL bar up (553px) and anything shorter.
+           Last tier — squeeze the remaining ~30px so both CTAs and the consent
+           line land above the fold without a scroll. */
+        @media (max-height: 560px) {
+            #virtual-tryon-widget-container .onboarding-inner{
+                padding: 12px 18px 6px;
+            }
+
+            #virtual-tryon-widget-container .first-run-overlay.fro-product-aware .fro-step.item-card .fro-media{
+                width: 84px !important;
+            }
+
+            #virtual-tryon-widget-container .onboarding-strip{
+                margin-bottom: 8px;
+            }
+
+            #virtual-tryon-widget-container .fro-subtext{
+                margin-bottom: 8px;
+            }
+
+            #virtual-tryon-widget-container .onboarding-ctas{
+                gap: 8px;
+            }
+
+            #virtual-tryon-widget-container .fro-btn{
+                padding: 10px 0;
+            }
+
+            #virtual-tryon-widget-container .fro-legal{
+                margin-top: 7px;
+            }
+        }
+
+
         /* Passive ToS/Privacy notice (2026-07-13): the intro overlay is the ONE
            consent point — every upload path passes through it first (Andrew's
            call: two notices looked cluttered). The tips modal is opt-in via the
@@ -520,27 +652,32 @@
             transition: all 0.5s ease;
         }
 
+        /* Desktop toast — Ello-branded: clean white card, hairline border,
+           bright-green check chip. (Replaced the 2024-era green gradient
+           banner — Andrew 2026-08-03: "mostly white, bright green check,
+           minimal".) Solid white + border/shadow reads correctly over any
+           merchant theme, light or dark. */
         .ello-notification{
             position: fixed;
             top: 20px;
             right: 20px;
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            color: white;
-            padding: 16px 24px;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(16, 185, 129, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1);
+            background: #ffffff;
+            color: #111111;
+            padding: 14px 16px;
+            border-radius: 14px;
+            border: 1px solid rgba(17, 17, 17, 0.07);
+            box-shadow: 0 2px 6px rgba(17, 17, 17, 0.05), 0 18px 44px rgba(17, 17, 17, 0.14);
             z-index: 2147483647;
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             gap: 12px;
-            font-weight: var(--ello-fw-600, 600);
+            font-weight: var(--ello-fw-500, 500);
             font-size: 14px;
-            max-width: 350px;
-            transform: translateY(-100px) scale(0.8);
+            max-width: 360px;
+            transform: translateY(-14px) scale(0.98);
             opacity: 0;
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: opacity 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+            overflow: hidden;
         }
 
         /* Ensure widget works when injected — zero-height so it causes
@@ -569,7 +706,7 @@
         }
 
         .ello-notification.hide{
-            transform: translateY(-50px) scale(0.9);
+            transform: translateY(-10px) scale(0.98);
             opacity: 0;
         }
 
@@ -588,17 +725,38 @@
             position: fixed !important;
         }
 
+        /* Bright-green check chip — the one accent on the white card. */
         .ello-notification-icon{
-            width: 24px;
-            height: 24px;
-            background: rgba(255, 255, 255, 0.2);
+            width: 26px;
+            height: 26px;
+            background: #22c55e;
+            color: #ffffff;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 12px;
             flex-shrink: 0;
-            animation: successPulse 0.6s ease;
+            margin-top: 1px;
+            box-shadow: 0 3px 10px rgba(34, 197, 94, 0.35);
+            animation: elloNotifPop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+        }
+
+        .ello-notification-icon svg{
+            width: 13px;
+            height: 13px;
+            display: block;
+        }
+
+        @keyframes elloNotifPop {
+            from {
+                transform: scale(0.4);
+                opacity: 0;
+            }
+
+            to {
+                transform: scale(1);
+                opacity: 1;
+            }
         }
 
         .ello-notification-content{
@@ -607,21 +765,24 @@
         }
 
         .ello-notification-title{
-            font-weight: var(--ello-fw-700, 700);
+            font-weight: var(--ello-fw-600, 600);
             margin-bottom: 2px;
-            font-size: 15px;
+            font-size: 14px;
+            color: #111111;
+            letter-spacing: -0.01em;
         }
 
         .ello-notification-subtitle{
-            opacity: 0.9;
-            font-size: 13px;
+            font-size: 12.5px;
             font-weight: var(--ello-fw-500, 500);
+            color: #6f6f6f;
+            line-height: 1.45;
         }
 
         .ello-notification-close{
             background: none;
             border: none;
-            color: white;
+            color: #a3a3a3;
             cursor: pointer;
             padding: 4px;
             border-radius: 50%;
@@ -630,15 +791,16 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            opacity: 0.7;
             transition: all 0.2s ease;
-            font-size: 16px;
+            font-size: 15px;
+            line-height: 1;
             flex-shrink: 0;
+            margin: -2px -4px 0 0;
         }
 
         .ello-notification-close:hover{
-            opacity: 1;
-            background: rgba(255, 255, 255, 0.1);
+            color: #111111;
+            background: rgba(17, 17, 17, 0.06);
         }
 
         /* Free-plan monthly limit reached */
@@ -733,7 +895,10 @@
         /* Mobile responsive */
         @media (max-width: 768px) {
             .ello-notification{
-                top: 10px;
+                /* safe-area so the toast clears the notch / Dynamic Island when
+                   the store is opened in an in-app browser or installed PWA,
+                   where there is no Safari chrome above it. */
+                top: calc(10px + env(safe-area-inset-top, 0px));
                 right: 10px;
                 left: 10px;
                 max-width: none;
@@ -756,14 +921,23 @@
             }
         }
 
-        /* Progress bar for auto-dismiss */
+        /* Progress bar for auto-dismiss — bright-green hairline (the card has
+           overflow:hidden, so no radius juggling needed).
+           Selector is doubled up, not ID-prefixed: toasts mount on document.body,
+           outside #virtual-tryon-widget-container. Two classes (0,2,0) still
+           outrank Dawn's `div:empty{display:none}` (0,1,1) — see the note on
+           .tryon-generation-progress-fill. */
+        .ello-notification .ello-notification-progress{
+            display: block;
+        }
+
         .ello-notification-progress{
             position: absolute;
             bottom: 0;
             left: 0;
-            height: 3px;
-            background: rgba(255, 255, 255, 0.3);
-            border-radius: 0 0 12px 12px;
+            height: 2px;
+            background: #22c55e;
+            opacity: 0.85;
             width: 100%;
             transform-origin: left;
             animation: progressShrink 4s linear;
@@ -817,6 +991,16 @@
             left: auto;
             width: 420px;
             height: 650px;
+            /* Never taller than the screen. The mobile block below only kicks in
+               at max-width:768px, so a PHONE IN LANDSCAPE (iPhone 13 = 844x390,
+               Pro Max = 932x430) fell through to this desktop rule and rendered
+               650px tall inside a ~320-390px viewport — anchored bottom:20px,
+               that put the header and its close button ~350px ABOVE the top of
+               the screen, with no way to dismiss the panel. Clamping here fixes
+               phone landscape and short desktop windows in one rule.
+               vh first, svh second: browsers without svh keep the vh value. */
+            max-height: calc(100vh - 40px);
+            max-height: calc(100svh - 40px);
             background: linear-gradient(135deg, #ffffff 0%, #f8f8f8 100%);
             color: #1a1a1a;
             border-radius: 8px;
@@ -1483,7 +1667,12 @@
             overflow: hidden;
         }
 
+        /* Dawn's base.css ships `div:empty{display:none}`, and every childless
+           bar/skeleton/tile we paint with pure CSS matches it. The four rules
+           carrying this note declare display so the theme reset can't erase
+           them — see also .ello-focus-img in widget-main.js. */
         #virtual-tryon-widget-container .tryon-generation-progress-fill{
+            display: block;
             width: 0%;
             height: 100%;
             border-radius: inherit;
@@ -3405,6 +3594,13 @@
             color: #333;
         }
 
+        /* Same 16px iOS anti-zoom floor as .browser-search. */
+        @media (max-width: 768px) {
+            #virtual-tryon-widget-container .message-input{
+                font-size: 16px;
+            }
+        }
+
         #virtual-tryon-widget-container .message-input:focus{
             border-color: #ccc;
             background: #ffffff;
@@ -4050,6 +4246,7 @@
             left: 0;
             width: 100vw;
             height: 100vh;
+            height: 100dvh; /* dvh tracks iOS Safari's collapsing URL bar; plain 100vh is the LARGE viewport, so the bottom ~99px of this overlay sat under the browser chrome */
             background: rgba(0, 0, 0, 0.7);
             display: none;
             align-items: center;
@@ -4110,7 +4307,9 @@
             overflow: hidden;
         }
 
+        /* display: see the Dawn `div:empty` note above. */
         #virtual-tryon-widget-container .tryon-loading-progress-bar{
+            display: block;
             height: 100%;
             background: linear-gradient(90deg, #333 0%, #666 100%);
             border-radius: 2px;
@@ -4212,6 +4411,7 @@
             left: 0;
             width: 100vw;
             height: 100vh;
+            height: 100dvh; /* dvh tracks iOS Safari's collapsing URL bar; plain 100vh is the LARGE viewport, so the bottom ~99px of this overlay sat under the browser chrome */
             background: rgba(0, 0, 0, 0.5);
             display: none;
             z-index: 15000;
@@ -4228,6 +4428,7 @@
             left: 0;
             width: 100vw;
             height: 100vh;
+            height: 100dvh; /* dvh tracks iOS Safari's collapsing URL bar; plain 100vh is the LARGE viewport, so the bottom ~99px of this overlay sat under the browser chrome */
             display: none;
             align-items: center;
             justify-content: center;
@@ -4245,6 +4446,7 @@
             left: 0;
             width: 100vw;
             height: 100vh;
+            height: 100dvh; /* dvh tracks iOS Safari's collapsing URL bar; plain 100vh is the LARGE viewport, so the bottom ~99px of this overlay sat under the browser chrome */
             display: none;
             align-items: center;
             justify-content: center;
@@ -4267,27 +4469,29 @@
             border: 1px solid #e0e0e0;
         }
 
+        /* Flat modern header — kept in lockstep with .browser-header so the
+           hub's Collection/Wardrobe tabs sit on one consistent surface. */
         #virtual-tryon-widget-container .wardrobe-header{
-            background: linear-gradient(135deg, #f8f8f8 0%, #f0f0f0 50%, #e8e8e8 100%);
-            color: #333;
-            padding: 20px;
+            background: #fff;
+            color: #111418;
+            padding: 16px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #e0e0e0;
+            border-bottom: 1px solid #ececef;
         }
 
         @media (max-width: 480px) {
             #virtual-tryon-widget-container .wardrobe-header{
-                padding: 15px;
+                padding: 13px 15px;
             }
         }
 
         #virtual-tryon-widget-container .wardrobe-title{
-            font-size: 20px;
+            font-size: 17px;
             font-weight: var(--ello-fw-600, 600);
-            text-transform: uppercase;
-            letter-spacing: 1px;
+            letter-spacing: -0.01em;
+            text-transform: none;
         }
 
         @media (max-width: 480px) {
@@ -4297,18 +4501,20 @@
         }
 
         #virtual-tryon-widget-container .wardrobe-close{
-            background: rgba(0, 0, 0, 0.1);
-            border: 1px solid #ccc;
-            color: #333;
+            background: #f1f2f4;
+            border: none;
+            color: #3f4450;
             font-size: 20px;
             cursor: pointer;
-            padding: 5px;
-            border-radius: 4px;
-            width: 36px;
-            height: 36px;
+            padding: 0;
+            border-radius: 50%;
+            width: 34px;
+            height: 34px;
+            flex: none;
             display: flex;
             align-items: center;
             justify-content: center;
+            transition: background .15s ease, color .15s ease;
             -webkit-tap-highlight-color: transparent;
         }
 
@@ -4321,7 +4527,8 @@
         }
 
         #virtual-tryon-widget-container .wardrobe-close:hover{
-            background: rgba(0, 0, 0, 0.2);
+            background: #e6e7eb;
+            color: #111418;
         }
 
         #virtual-tryon-widget-container .wardrobe-body{
@@ -4771,6 +4978,7 @@
             overflow: hidden;
             box-shadow: 0 25px 80px rgba(0, 0, 0, 0.2);
             border: 1px solid #e0e0e0;
+            position: relative; /* anchors the floating back-to-top pill */
         }
 
         /* Best Practices Modal */
@@ -5374,27 +5582,29 @@
             }
         }
 
+        /* Flat modern header — the old gray gradient + uppercase tracking read
+           two generations older than the rest of the widget. */
         #virtual-tryon-widget-container .browser-header{
-            background: linear-gradient(135deg, #f8f8f8 0%, #f0f0f0 50%, #e8e8e8 100%);
-            color: #333;
-            padding: 20px;
+            background: #fff;
+            color: #111418;
+            padding: 16px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 1px solid #e0e0e0;
+            border-bottom: 1px solid #ececef;
         }
 
         @media (max-width: 480px) {
             #virtual-tryon-widget-container .browser-header{
-                padding: 15px;
+                padding: 13px 15px;
             }
         }
 
         #virtual-tryon-widget-container .browser-title{
-            font-size: 20px;
+            font-size: 17px;
             font-weight: var(--ello-fw-600, 600);
-            text-transform: uppercase;
-            letter-spacing: 1px;
+            letter-spacing: -0.01em;
+            text-transform: none;
         }
 
         @media (max-width: 480px) {
@@ -5404,18 +5614,20 @@
         }
 
         #virtual-tryon-widget-container .browser-close{
-            background: rgba(0, 0, 0, 0.1);
-            border: 1px solid #ccc;
-            color: #333;
+            background: #f1f2f4;
+            border: none;
+            color: #3f4450;
             font-size: 20px;
             cursor: pointer;
-            padding: 5px;
-            border-radius: 4px;
-            width: 36px;
-            height: 36px;
+            padding: 0;
+            border-radius: 50%;
+            width: 34px;
+            height: 34px;
+            flex: none;
             display: flex;
             align-items: center;
             justify-content: center;
+            transition: background .15s ease, color .15s ease;
             -webkit-tap-highlight-color: transparent;
         }
 
@@ -5428,7 +5640,8 @@
         }
 
         #virtual-tryon-widget-container .browser-close:hover{
-            background: rgba(0, 0, 0, 0.2);
+            background: #e6e7eb;
+            color: #111418;
         }
 
         #virtual-tryon-widget-container .browser-body{
@@ -5449,10 +5662,97 @@
             }
         }
 
+        /* Clothing browser only (the model picker shares .browser-body but has
+           no sticky controls): the top padding moves onto .epc-controls, which
+           is position:sticky at top:0 — a padded scroll container would leave
+           a strip above it where grid content scrolls by uncovered. */
+        #virtual-tryon-widget-container #clothingBrowserModal .browser-body{
+            padding-top: 0;
+        }
+
+        /* Sticky controls: with infinite scroll, a shopper 60 products deep
+           still has search + chips one glance away. Sticks to the top of the
+           .browser-body scrollport; .is-stuck (toggled by the scroll handler)
+           adds the depth shadow only once content actually slides beneath. */
+        #virtual-tryon-widget-container .epc-controls{
+            position: sticky;
+            top: 0;
+            z-index: 6;
+            flex: 0 0 auto;
+            background: #fff;
+            /* Carries the scroll area's top padding (see .browser-body). */
+            padding-top: 20px;
+            transition: box-shadow .18s ease;
+        }
+        @media (max-width: 480px) {
+            #virtual-tryon-widget-container .epc-controls{ padding-top: 15px; }
+        }
+        #virtual-tryon-widget-container .epc-controls.is-stuck{
+            box-shadow: 0 10px 14px -12px rgba(17, 20, 24, 0.30);
+        }
+        #virtual-tryon-widget-container .theme-cream .epc-controls{ background: #fdf6ee; }
+        #virtual-tryon-widget-container.theme-black .epc-controls{ background: #181a1b; }
+        #virtual-tryon-widget-container.theme-black .epc-controls.is-stuck{
+            box-shadow: 0 10px 14px -12px rgba(0, 0, 0, 0.85);
+        }
+
         #virtual-tryon-widget-container .browser-search-container{
             flex: 0 0 auto;   /* same flex-column squash guard as the chip bar */
-            margin-bottom: 16px;
+            display: flex;
+            align-items: stretch;
+            gap: 8px;
+            margin-bottom: 12px;
         }
+
+        /* Compact sort pill next to the search field. A styled native select:
+           phones get the OS picker for free, and no dropdown code can break. */
+        #virtual-tryon-widget-container .epc-sort-wrap{
+            position: relative;
+            flex: 0 0 auto;
+            display: flex;
+        }
+        #virtual-tryon-widget-container select.epc-sort{
+            appearance: none;
+            -webkit-appearance: none;
+            height: 100%;
+            min-height: 44px;
+            padding: 0 32px 0 14px;
+            border: 1.5px solid #e6e7eb;
+            border-radius: 12px;
+            background: #fff;
+            color: #1f2430;
+            font: inherit;
+            font-size: 13.5px;
+            font-weight: var(--ello-fw-600, 600);
+            line-height: 1.2;
+            cursor: pointer;
+            outline: none;
+            transition: border-color .15s ease, box-shadow .15s ease;
+        }
+        #virtual-tryon-widget-container select.epc-sort:focus{
+            border-color: #111418;
+            box-shadow: 0 0 0 3px rgba(17, 20, 24, 0.08);
+        }
+        #virtual-tryon-widget-container .epc-sort-chev{
+            position: absolute;
+            right: 11px;
+            top: 50%;
+            margin-top: -7px;
+            width: 14px;
+            height: 14px;
+            color: #9aa0a6;
+            pointer-events: none;
+        }
+        /* 16px floor mirrors the search field — stops iOS Safari auto-zoom. */
+        @media (max-width: 768px) {
+            #virtual-tryon-widget-container select.epc-sort{ font-size: 16px; }
+        }
+        #virtual-tryon-widget-container.theme-black select.epc-sort{
+            background: rgba(255, 255, 255, 0.06);
+            border-color: rgba(255, 255, 255, 0.18);
+            color: #fff;
+        }
+        #virtual-tryon-widget-container.theme-black .epc-sort-chev{ color: rgba(255, 255, 255, 0.55); }
 
         #virtual-tryon-widget-container .browser-search{
             width: 100%;
@@ -5469,7 +5769,11 @@
             appearance: none;
         }
 
-        @media (max-width: 480px) {
+        /* 768px, not 480px: the 16px floor is what stops iOS Safari auto-zooming
+           the page on focus, and it never zooms back out. The old 480px cutoff
+           left every 481-768px touch device (iPad mini 744, iPad 768, larger
+           Androids, phone landscape) zooming on every search tap. */
+        @media (max-width: 768px) {
             #virtual-tryon-widget-container .browser-search{
                 padding: 10px 14px;
                 font-size: 16px;
@@ -5492,6 +5796,8 @@
             position: relative;
             display: flex;
             align-items: center;
+            flex: 1 1 auto;
+            min-width: 0; /* let the field shrink beside the sort pill */
         }
         #virtual-tryon-widget-container .epc-search-icon{
             position: absolute;
@@ -5570,8 +5876,22 @@
             margin: 0;
             scrollbar-width: none;
             -webkit-overflow-scrolling: touch;
+            /* Without this, swiping the chip row past its last chip hands the
+               gesture to the browser and triggers iOS Safari's back-swipe —
+               the shopper leaves the product page mid-browse. */
+            overscroll-behavior-x: contain;
         }
         #virtual-tryon-widget-container .epc-category-bar::-webkit-scrollbar{ display: none; }
+
+        /* Category chips render 31px tall at the desktop padding. This bar is a
+           phone-first control (it is how a shopper filters the collection), so
+           give it a real touch height. */
+        @media (max-width: 768px) {
+            #virtual-tryon-widget-container .epc-chip{
+                min-height: 40px;
+                padding: 10px 16px;
+            }
+        }
         #virtual-tryon-widget-container .epc-chip{
             flex: none;
             padding: 8px 16px;
@@ -5906,7 +6226,10 @@
             contain-intrinsic-size: auto 270px;
         }
 
+        /* display: see the Dawn `div:empty` note above — .epc-media is childless
+           while the browse grid renders its loading skeleton. */
         #virtual-tryon-widget-container .epc-media{
+            display: block;
             position: relative;
             width: 100%;
             aspect-ratio: 3 / 4;
@@ -6088,6 +6411,17 @@
             background: #fff;
             transform: scale(1.07);
         }
+        /* This is the only way into the full-size viewer for a saved try-on, and
+           the wardrobe is a phone-first surface — 32px is too small to hit
+           reliably with a thumb. */
+        @media (max-width: 768px) {
+            #virtual-tryon-widget-container .ewc-zoom{
+                width: 40px;
+                height: 40px;
+                right: 6px;
+                bottom: 6px;
+            }
+        }
         #virtual-tryon-widget-container .ewc-photo .epc-media{ background: #eef0f3; }
         #virtual-tryon-widget-container .ewc-photo-empty{
             position: absolute;
@@ -6231,20 +6565,140 @@
         }
 
         #virtual-tryon-widget-container .search-results-count{
-            margin-bottom: 12px;
-            color: #666;
+            flex: 0 0 auto;
+            margin: 2px 0 12px;
+            color: #6b7280;
             font-size: 13px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
         }
 
+        /* No-results recovery panel: message + one obvious way out + popular
+           picks below it — a zero-result search must redirect, never dead-end. */
         #virtual-tryon-widget-container .no-results{
+            flex: 0 0 auto;
             text-align: center;
-            padding: 40px;
-            color: #999;
+            padding: 18px 12px 4px;
+            color: #6b7280;
             font-size: 14px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+        }
+        #virtual-tryon-widget-container .epc-empty-title{
+            font-size: 15.5px;
+            font-weight: var(--ello-fw-600, 600);
+            color: #1f2430;
+            overflow-wrap: anywhere; /* long queries can't blow the layout */
+        }
+        #virtual-tryon-widget-container .epc-empty-sub{
+            font-size: 13px;
+            color: #6b7280;
+            margin-top: 5px;
+        }
+        #virtual-tryon-widget-container .epc-empty-clear{
+            margin-top: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 20px;
+            min-height: 40px;
+            border: none;
+            border-radius: 999px;
+            background: #111418;
+            color: #fff;
+            font: inherit;
+            font-size: 13.5px;
+            font-weight: var(--ello-fw-600, 600);
+            line-height: 1;
+            cursor: pointer;
+            transition: background .15s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #virtual-tryon-widget-container .epc-empty-clear:hover{ background: #2a2f3a; }
+        #virtual-tryon-widget-container .epc-empty-picks-label{
+            margin: 26px 0 2px;
+            font-size: 13px;
+            font-weight: var(--ello-fw-600, 600);
+            color: #1f2430;
+            text-align: left;
+        }
+        #virtual-tryon-widget-container.theme-black .epc-empty-title{ color: #fff !important; }
+        #virtual-tryon-widget-container.theme-black .epc-empty-sub{ color: rgba(255, 255, 255, 0.6) !important; }
+        #virtual-tryon-widget-container.theme-black .epc-empty-clear{ background: #fff; color: #111418; }
+        #virtual-tryon-widget-container.theme-black .epc-empty-clear:hover{ background: rgba(255, 255, 255, 0.85); }
+        #virtual-tryon-widget-container.theme-black .epc-empty-picks-label{ color: #fff !important; }
+
+        /* Skeleton grid while the catalog fetch is in flight — media boxes
+           reuse the card shimmer, these are the two text placeholder bars. */
+        #virtual-tryon-widget-container .epc-skel{ pointer-events: none; }
+        #virtual-tryon-widget-container .epc-skel-line{
+            display: block;
+            height: 11px;
+            width: 72%;
+            border-radius: 6px;
+            background: #eef0f2;
+            margin-top: 9px;
+        }
+        #virtual-tryon-widget-container .epc-skel-line--short{ width: 42%; margin-top: 7px; }
+        #virtual-tryon-widget-container.theme-black .epc-skel-line{ background: rgba(255, 255, 255, 0.10); }
+
+        /* Sold-out pill on grid cards. Only rendered when every variant says
+           available:false — see __epcIsSoldOut. */
+        #virtual-tryon-widget-container .epc-badge-soldout{
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            z-index: 3; /* above the shimmer overlay (z2) and the image (z1) */
+            padding: 5px 10px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.92);
+            color: #3f4450;
+            font-size: 11px;
+            font-weight: var(--ello-fw-600, 600);
+            letter-spacing: .01em;
+            line-height: 1;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.10);
+            backdrop-filter: blur(4px);
+            -webkit-backdrop-filter: blur(4px);
+        }
+        #virtual-tryon-widget-container .epc-card.is-soldout .epc-img.is-loaded{ opacity: .62; }
+        #virtual-tryon-widget-container.theme-black .epc-badge-soldout{
+            background: rgba(24, 26, 27, 0.88);
+            color: #fff;
+        }
+
+        /* Back-to-top pill — the standard escape hatch for infinite scroll.
+           Anchored to .clothing-browser-content so it floats over the grid. */
+        #virtual-tryon-widget-container .epc-top-btn{
+            position: absolute;
+            left: 50%;
+            bottom: 18px;
+            z-index: 8;
+            transform: translateX(-50%) translateY(12px);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 18px;
+            min-height: 40px;
+            border: none;
+            border-radius: 999px;
+            background: #111418;
+            color: #fff;
+            font: inherit;
+            font-size: 13px;
+            font-weight: var(--ello-fw-600, 600);
+            line-height: 1;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
+            cursor: pointer;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .2s ease, transform .2s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #virtual-tryon-widget-container .epc-top-btn.visible{
+            opacity: 1;
+            pointer-events: auto;
+            transform: translateX(-50%) translateY(0);
+        }
+        #virtual-tryon-widget-container.theme-black .epc-top-btn{
+            background: #fff;
+            color: #111418;
         }
 
         /* Image Modal */
@@ -6254,6 +6708,7 @@
             left: 0;
             width: 100vw;
             height: 100vh;
+            height: 100dvh; /* dvh tracks iOS Safari's collapsing URL bar; plain 100vh is the LARGE viewport, so the bottom ~99px of this overlay sat under the browser chrome */
             background: rgba(0, 0, 0, 0.9);
             display: none;
             align-items: center;
@@ -6404,6 +6859,135 @@
         }
         #virtual-tryon-widget-container .ewv-actions{ display: flex; gap: 8px; flex: none; }
         #virtual-tryon-widget-container .ewv-actions .ewc-btn{ width: auto; padding: 10px 14px; }
+        /* Take-off state with every piece off: cart button parks until a piece is back on */
+        #virtual-tryon-widget-container .ewv-actions .ewc-btn:disabled{ opacity: .55; cursor: default; pointer-events: none; }
+
+        /* ─── Outfit editing v2 (per-store flag) ─────────────────────────────
+           Coach mark: fires once per shopper ever, ~9s, any tap kills it.
+           Toast-family white card (Andrew 2026-08-05: the full-width black bar
+           read badly on desktop) — compact, centered, icon chip + two lines. */
+        #virtual-tryon-widget-container #ello-outfit-coach{
+            position: absolute;
+            left: 50%;
+            bottom: 22px;
+            width: min(360px, calc(100% - 32px));
+            z-index: 60;
+            display: flex;
+            align-items: flex-start;
+            gap: 11px;
+            background: #fff;
+            color: #111418;
+            border: 1px solid #ececec;
+            border-radius: 14px;
+            padding: 13px 15px;
+            box-shadow: 0 14px 44px rgba(0, 0, 0, .18);
+            opacity: 0;
+            transform: translateX(-50%) translateY(10px);
+            transition: opacity .32s ease, transform .32s ease;
+            pointer-events: none; /* taps pass through to the wardrobe (and dismiss it) */
+        }
+        #virtual-tryon-widget-container #ello-outfit-coach.on{ opacity: 1; transform: translateX(-50%) translateY(0); }
+        #virtual-tryon-widget-container #ello-outfit-coach .eoc-ic{
+            flex: 0 0 auto;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            background: #111418;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #virtual-tryon-widget-container #ello-outfit-coach .eoc-ic svg{ width: 12px; height: 12px; }
+        #virtual-tryon-widget-container #ello-outfit-coach .eoc-body{ min-width: 0; }
+        #virtual-tryon-widget-container #ello-outfit-coach .eoc-t{ font-size: 13px; font-weight: var(--ello-fw-600, 700); line-height: 1.3; }
+        #virtual-tryon-widget-container #ello-outfit-coach .eoc-b{ font-size: 11.5px; color: #6b7280; margin-top: 2px; line-height: 1.4; }
+        #virtual-tryon-widget-container.theme-black #ello-outfit-coach{ background: #1c1c1e; border-color: #2c2c2e; color: #fff; }
+        #virtual-tryon-widget-container.theme-black #ello-outfit-coach .eoc-b{ color: #a1a1a6; }
+        #virtual-tryon-widget-container.theme-black #ello-outfit-coach .eoc-ic{ background: #fff; color: #111418; }
+        /* Soft ring on the outfit card the coach is talking about */
+        #virtual-tryon-widget-container .ello-coach-ring{ position: relative; }
+        #virtual-tryon-widget-container .ello-coach-ring::after{
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border-radius: 16px;
+            border: 2px solid rgba(17, 20, 24, 0);
+            pointer-events: none;
+            animation: elloCoachPulse 1.6s ease-out 2;
+        }
+        #virtual-tryon-widget-container.theme-black .ello-coach-ring::after{ animation-name: elloCoachPulseDark; }
+        @keyframes elloCoachPulse{
+            0%{ border-color: rgba(17, 20, 24, .5); transform: scale(.99); }
+            70%{ border-color: rgba(17, 20, 24, 0); transform: scale(1.015); }
+            100%{ border-color: rgba(17, 20, 24, 0); transform: scale(1.015); }
+        }
+        @keyframes elloCoachPulseDark{
+            0%{ border-color: rgba(255, 255, 255, .55); transform: scale(.99); }
+            70%{ border-color: rgba(255, 255, 255, 0); transform: scale(1.015); }
+            100%{ border-color: rgba(255, 255, 255, 0); transform: scale(1.015); }
+        }
+        @media (prefers-reduced-motion: reduce){
+            #virtual-tryon-widget-container .ello-coach-ring::after{ animation: none; border-color: rgba(17, 20, 24, .35); }
+            #virtual-tryon-widget-container #ello-outfit-coach{ transition: opacity .3s ease; transform: translateX(-50%); }
+        }
+
+        /* "Completing your look" bar — Browse Collection opened from the CTL
+           pick-your-own line or the wardrobe swap pill. */
+        #virtual-tryon-widget-container #ello-browse-basebar{
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            margin: 0 0 12px;
+            background: #f6f5f3;
+            border: 1px solid #ececec;
+            border-radius: 11px;
+            padding: 9px 12px;
+        }
+        #virtual-tryon-widget-container #ello-browse-basebar .ebb-ic{
+            flex: 0 0 auto;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #111418;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #virtual-tryon-widget-container #ello-browse-basebar .ebb-ic svg{ width: 11px; height: 11px; }
+        #virtual-tryon-widget-container #ello-browse-basebar .ebb-txt{
+            font-size: 12px;
+            color: #57534e;
+            line-height: 1.35;
+            min-width: 0;
+        }
+        #virtual-tryon-widget-container #ello-browse-basebar .ebb-txt b{ color: #111418; font-weight: var(--ello-fw-600, 600); }
+        #virtual-tryon-widget-container.theme-black #ello-browse-basebar{ background: #1c1c1e; border-color: #2c2c2e; }
+        #virtual-tryon-widget-container.theme-black #ello-browse-basebar .ebb-txt{ color: #a1a1a6; }
+        #virtual-tryon-widget-container.theme-black #ello-browse-basebar .ebb-txt b{ color: #fff; }
+        #virtual-tryon-widget-container.theme-black #ello-browse-basebar .ebb-ic{ background: #fff; color: #111418; }
+
+        /* ─── Swap flow: clean fitting room (outfit editing v2) ──────────────
+           From the wardrobe's "Try a different …" pill the widget renders the
+           rebuilt look on WHATEVER page the shopper is on — so the
+           page-product workspace, focused stage/head, doors, and catalog
+           chrome all hide; progress + result + look rail own the panel.
+           ID-prefixed + !important: same armor as the inline-mode hides, so
+           the template's mobile "ensure visible" rules can't leak them back. */
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .try-on-workspace,
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .ello-focus-stage,
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .ello-focus-head,
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .featured-section,
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .quick-picks-section,
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .browse-all-btn,
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .wardrobe-btn,
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .mode-tabs,
+        #virtual-tryon-widget-container .virtual-tryon-widget.ello-swap-session .section-title{ display: none !important; }
+        /* Outrank the hub-mode door restores (they carry one more class and
+           live in a later-injected sheet — match their chain + swap class). */
+        #virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub.ello-swap-session .browse-all-btn,
+        #virtual-tryon-widget-container .virtual-tryon-widget.inline-mode.ello-pdp-hub.ello-swap-session .wardrobe-btn{ display: none !important; }
         #virtual-tryon-widget-container .ewv-nav{
             display: none;
             position: absolute;
@@ -6451,8 +7035,10 @@
             #virtual-tryon-widget-container .image-modal.wardrobe-view .modal-content{
                 width: 100vw;
                 height: 100vh;
+                height: 100dvh; /* dvh tracks iOS Safari's collapsing URL bar; plain 100vh is the LARGE viewport, so the bottom ~99px of this overlay sat under the browser chrome */
                 max-width: 100vw;
                 max-height: 100vh;
+                max-height: 100dvh;
                 justify-content: center;
                 padding: 12px;
                 gap: 12px;
@@ -6460,6 +7046,9 @@
             #virtual-tryon-widget-container .image-modal.wardrobe-view .modal-image{
                 max-width: 94vw;
                 max-height: 66vh;
+                /* dvh so the image shrinks with the URL bar instead of pushing
+                   the action footer under it */
+                max-height: 66dvh;
             }
             #virtual-tryon-widget-container .image-modal.wardrobe-view .ewv-nav{ display: none; }
             #virtual-tryon-widget-container .image-modal.wardrobe-view .ewv-footer{
@@ -6508,17 +7097,101 @@
             }
         }
 
-        /* Add error notification style */
+        /* Error variant — same clean white card, red accent instead of a red
+           banner (the chip + progress line carry the meaning). */
         .ello-notification.error{
-            background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
-            color: white;
-            box-shadow: 0 10px 40px rgba(239, 68, 68, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-color: rgba(239, 68, 68, 0.25);
         }
 
-        .ello-notification-icon{
-            color: white;
-            font-size: 16px;
+        .ello-notification.error .ello-notification-icon{
+            background: #ef4444;
+            box-shadow: 0 3px 10px rgba(239, 68, 68, 0.35);
+        }
+
+        .ello-notification.error .ello-notification-progress{
+            background: #ef4444;
+        }
+
+        /* ── Mobile toast: small bottom pill, not a full-width banner ──
+           Applied by widget-main.js (class, not a media query, so the JS
+           `isMobile` verdict and the styling can never disagree — including a
+           phone held in landscape, where innerWidth is well over 768px).
+           On mobile only failures ever reach here: success/info toasts return
+           early and never render at all. Must sit AFTER `.ello-notification.error`
+           so the muted background wins on source order. */
+        .ello-notification.ello-notification--compact{
+            top: auto !important;
+            bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+            left: 50% !important;
+            right: auto !important;
+            /* The toast mounts on document.body, outside
+               #virtual-tryon-widget-container, so it never inherits that
+               container's `box-sizing: border-box` — without this, max-width
+               is content-only and the pill renders 32px wider than asked,
+               touching both edges on a 320px phone. */
+            box-sizing: border-box;
+            width: max-content;
+            max-width: min(300px, calc(100vw - 32px));
+            padding: 9px 14px;
+            gap: 0;
+            border-radius: 10px;
+            background: rgba(23, 23, 23, 0.94);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+            /* never intercept a tap meant for the store underneath */
+            pointer-events: none;
+            transform: translate(-50%, 14px) scale(0.98);
+            transition: opacity 0.22s ease, transform 0.22s ease;
+        }
+
+        .ello-notification.ello-notification--compact.show{
+            transform: translate(-50%, 0) scale(1);
+        }
+
+        .ello-notification.ello-notification--compact.hide{
+            transform: translate(-50%, 8px) scale(0.98);
+        }
+
+        .ello-notification.ello-notification--compact .ello-notification-title{
+            font-size: 12.5px;
+            font-weight: var(--ello-fw-600, 600);
+            margin-bottom: 1px;
+            line-height: 1.3;
+        }
+
+        .ello-notification.ello-notification--compact .ello-notification-subtitle{
+            font-size: 11.5px;
+            font-weight: var(--ello-fw-500, 500);
+            opacity: 0.78;
+            line-height: 1.35;
+        }
+
+        /* Failure state keeps its meaning via a thin accent, not a red banner */
+        .ello-notification.ello-notification--compact.error{
+            background: rgba(23, 23, 23, 0.94);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-left: 3px solid #ef4444;
+        }
+
+        /* The mobile "modal is open" rules above pin the toast to `top: 80px
+           !important` with 3-class specificity, which would otherwise stretch
+           the pill from 80px down to its own `bottom`. Re-pin it here at 4. */
+        .wardrobe-modal.active~.ello-notification.ello-notification--compact,
+        .clothing-browser-modal.active~.ello-notification.ello-notification--compact,
+        .image-modal.active~.ello-notification.ello-notification--compact,
+        .modal-backdrop.active~.ello-notification.ello-notification--compact{
+            top: auto !important;
+            bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+        }
+
+        /* Defensive: these are not rendered in compact markup, but keep any
+           stray copy from re-inflating the pill. */
+        .ello-notification.ello-notification--compact .ello-notification-icon,
+        .ello-notification.ello-notification--compact .ello-notification-close,
+        .ello-notification.ello-notification--compact .ello-notification-progress{
+            display: none !important;
         }
 
         /* THEME: White (default) */
@@ -6753,9 +7426,9 @@
         }
 
         #virtual-tryon-widget-container.theme-black .browser-header{
-            background: linear-gradient(135deg, #23272f 0%, #181a1b 100%) !important;
+            background: #181a1b !important;
             color: #fff !important;
-            border-bottom: 1px solid #fff !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
         }
 
         #virtual-tryon-widget-container.theme-black .browser-title{
@@ -6763,14 +7436,13 @@
         }
 
         #virtual-tryon-widget-container.theme-black .browser-close{
-            background: #23272f !important;
-            border: 1px solid #fff !important;
+            background: rgba(255, 255, 255, 0.10) !important;
+            border: none !important;
             color: #fff !important;
         }
 
         #virtual-tryon-widget-container.theme-black .browser-close:hover{
-            background: #181a1b !important;
-            border-color: #fff !important;
+            background: rgba(255, 255, 255, 0.18) !important;
         }
 
         #virtual-tryon-widget-container.theme-black .browser-body{
@@ -6779,14 +7451,14 @@
         }
 
         #virtual-tryon-widget-container.theme-black .browser-search{
-            background: #23272f !important;
-            border: 1px solid #fff !important;
+            background: rgba(255, 255, 255, 0.06) !important;
+            border: 1.5px solid rgba(255, 255, 255, 0.18) !important;
             color: #fff !important;
         }
 
         #virtual-tryon-widget-container.theme-black .browser-search:focus{
-            background: #181a1b !important;
-            border-color: #fff !important;
+            background: rgba(255, 255, 255, 0.06) !important;
+            border-color: rgba(255, 255, 255, 0.6) !important;
             box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1) !important;
         }
 
@@ -6811,11 +7483,11 @@
         }
 
         #virtual-tryon-widget-container.theme-black .search-results-count{
-            color: #fff !important;
+            color: rgba(255, 255, 255, 0.65) !important;
         }
 
         #virtual-tryon-widget-container.theme-black .no-results{
-            color: #fff !important;
+            color: rgba(255, 255, 255, 0.65) !important;
         }
 
         /* Pagination Theme Support */
@@ -6867,9 +7539,9 @@
         }
 
         #virtual-tryon-widget-container.theme-black .wardrobe-header{
-            background: linear-gradient(135deg, #23272f 0%, #181a1b 100%) !important;
+            background: #181a1b !important;
             color: #fff !important;
-            border-bottom: 1px solid #fff !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
         }
 
         #virtual-tryon-widget-container.theme-black .wardrobe-title{
@@ -6877,14 +7549,13 @@
         }
 
         #virtual-tryon-widget-container.theme-black .wardrobe-close{
-            background: #23272f !important;
-            border: 1px solid #fff !important;
+            background: rgba(255, 255, 255, 0.10) !important;
+            border: none !important;
             color: #fff !important;
         }
 
         #virtual-tryon-widget-container.theme-black .wardrobe-close:hover{
-            background: #181a1b !important;
-            border-color: #fff !important;
+            background: rgba(255, 255, 255, 0.18) !important;
         }
 
         #virtual-tryon-widget-container.theme-black .wardrobe-body{
@@ -7475,6 +8146,156 @@
         #virtual-tryon-widget-container .loader-dots span:nth-child(2){
             animation-delay: -0.16s;
         }
+
+        /* ─── Live Try-On (realtime mirror) ──────────────────────────────
+           Full-viewport overlay cloned from the .image-modal pattern (fixed,
+           dvh-aware, above everything). Deliberately brand-neutral dark so it
+           reads as a mirror on any storefront. */
+        #virtual-tryon-widget-container .elive-overlay{
+            position: fixed; inset: 0; width: 100vw;
+            height: 100vh; height: 100dvh;
+            background: #0b0d10; display: none; flex-direction: column;
+            z-index: 26000; font-family: inherit;
+        }
+        #virtual-tryon-widget-container .elive-overlay.active{ display: flex; }
+        #virtual-tryon-widget-container .elive-topbar{
+            display: flex; align-items: center; gap: 10px;
+            padding: calc(env(safe-area-inset-top, 0px) + 14px) 16px 10px;
+            color: #fff; flex: 0 0 auto;
+        }
+        #virtual-tryon-widget-container .elive-title{
+            font-size: 14px; font-weight: var(--ello-fw-600, 600); letter-spacing: .02em;
+            display: flex; align-items: center; gap: 7px; opacity: .92;
+        }
+        #virtual-tryon-widget-container .elive-live-dot{
+            width: 8px; height: 8px; border-radius: 50%; background: #ef4444;
+            animation: elivePulse 1.6s ease-in-out infinite;
+        }
+        @keyframes elivePulse{ 0%,100%{ opacity: 1 } 50%{ opacity: .35 } }
+        #virtual-tryon-widget-container .elive-countdown{
+            margin-left: auto; font-variant-numeric: tabular-nums;
+            font-size: 13px; font-weight: var(--ello-fw-600, 600);
+            background: rgba(255,255,255,.14); border-radius: 999px; padding: 4px 12px;
+        }
+        #virtual-tryon-widget-container .elive-close{
+            background: rgba(255,255,255,.14); border: none; color: #fff;
+            width: 34px; height: 34px; border-radius: 50%; font-size: 20px; line-height: 1;
+            cursor: pointer; flex: 0 0 auto;
+        }
+        #virtual-tryon-widget-container .elive-close:hover{ background: rgba(255,255,255,.25); }
+        #virtual-tryon-widget-container .elive-panel{
+            flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; position: relative; padding: 0 18px;
+        }
+        #virtual-tryon-widget-container .elive-panel[hidden]{ display: none; }
+        #virtual-tryon-widget-container .elive-card{
+            background: #14171c; border: 1px solid rgba(255,255,255,.08);
+            border-radius: 16px; padding: 26px 22px; max-width: 360px; width: 100%;
+            color: #fff; text-align: center; display: flex; flex-direction: column; gap: 12px;
+        }
+        #virtual-tryon-widget-container .elive-card h3{
+            margin: 0; font-size: 19px; font-weight: var(--ello-fw-600, 600); color: #fff;
+        }
+        #virtual-tryon-widget-container .elive-card p{
+            margin: 0; font-size: 13.5px; line-height: 1.55; color: rgba(255,255,255,.75);
+        }
+        #virtual-tryon-widget-container .elive-card-icon{ font-size: 30px; line-height: 1; }
+        #virtual-tryon-widget-container .elive-primary{
+            border: none; border-radius: 12px; padding: 13px 18px; font-size: 15px;
+            font-weight: var(--ello-fw-600, 600); background: #fff; color: #0b0d10; cursor: pointer;
+        }
+        #virtual-tryon-widget-container .elive-primary:hover{ opacity: .92; }
+        #virtual-tryon-widget-container .elive-ghost{
+            border: none; border-radius: 12px; padding: 11px 18px; font-size: 14px;
+            background: transparent; color: rgba(255,255,255,.65); cursor: pointer;
+        }
+        #virtual-tryon-widget-container .elive-ghost:hover{ color: #fff; }
+        #virtual-tryon-widget-container .elive-legal{
+            font-size: 11px; color: rgba(255,255,255,.45); line-height: 1.5;
+        }
+        #virtual-tryon-widget-container .elive-legal a{
+            color: rgba(255,255,255,.65); text-decoration: underline;
+        }
+        #virtual-tryon-widget-container .elive-video{
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            object-fit: cover; background: #0b0d10;
+        }
+        #virtual-tryon-widget-container .elive-video.elive-mirrored{ transform: scaleX(-1); }
+        #virtual-tryon-widget-container .elive-status{
+            position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+            z-index: 2; color: #fff; font-size: 13px; font-weight: var(--ello-fw-500, 500);
+            background: rgba(11,13,16,.72); border-radius: 999px; padding: 7px 16px;
+            backdrop-filter: blur(6px); white-space: nowrap;
+        }
+        #virtual-tryon-widget-container .elive-status[hidden]{ display: none; }
+        #virtual-tryon-widget-container .elive-bottombar{
+            position: absolute; left: 0; right: 0;
+            bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+            z-index: 2; display: flex; align-items: center; justify-content: center; gap: 18px;
+        }
+        #virtual-tryon-widget-container .elive-garment-thumb{
+            width: 52px; height: 52px; border-radius: 12px; object-fit: cover;
+            border: 2px solid rgba(255,255,255,.85); background: #fff;
+        }
+        #virtual-tryon-widget-container .elive-rec-pill{
+            display: flex; align-items: center; gap: 8px; color: #fff;
+            font-size: 12.5px; font-weight: var(--ello-fw-500, 500);
+            background: rgba(11,13,16,.72); border-radius: 999px; padding: 9px 15px;
+            backdrop-filter: blur(6px); max-width: calc(100vw - 110px);
+        }
+        #virtual-tryon-widget-container .elive-rec-pill[hidden]{ display: none; }
+        #virtual-tryon-widget-container .elive-rec-dot{
+            width: 8px; height: 8px; border-radius: 50%; background: #ef4444;
+            flex: 0 0 auto; animation: elivePulse 1.2s ease-in-out infinite;
+        }
+        /* Replay stage: the recorded try-on, full-bleed with native controls so
+           shoppers can scrub back to any angle (the whole point of the replay). */
+        #virtual-tryon-widget-container .elive-replay-video{
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            object-fit: contain; background: #0b0d10;
+        }
+        #virtual-tryon-widget-container .elive-replay-bar{
+            position: absolute; left: 0; right: 0; top: 6px;
+            z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 10px;
+            pointer-events: none;
+        }
+        #virtual-tryon-widget-container .elive-replay-title{
+            color: #fff; font-size: 13px; font-weight: var(--ello-fw-600, 600);
+            background: rgba(11,13,16,.72); border-radius: 999px; padding: 7px 16px;
+            backdrop-filter: blur(6px);
+        }
+        #virtual-tryon-widget-container .elive-replay-done{
+            position: absolute; left: 50%; transform: translateX(-50%);
+            bottom: calc(env(safe-area-inset-bottom, 0px) + 64px);
+            z-index: 2; border: none; border-radius: 999px; padding: 12px 34px;
+            font-size: 14.5px; font-weight: var(--ello-fw-600, 600);
+            background: #fff; color: #0b0d10; cursor: pointer;
+        }
+        #virtual-tryon-widget-container .elive-error-box{
+            position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 104px);
+            transform: translateX(-50%); z-index: 4; max-width: 320px; width: calc(100% - 36px);
+            background: rgba(180,38,30,.92); color: #fff; font-size: 13px; line-height: 1.45;
+            border-radius: 12px; padding: 12px 14px; text-align: center;
+        }
+        #virtual-tryon-widget-container .elive-error-box[hidden]{ display: none; }
+        /* Secondary "Try on live" action next to the primary Try On button.
+           Hidden by default; shown only when the store flag + device support
+           line up (elloLiveSyncEntryButtons). */
+        #virtual-tryon-widget-container .btn-live{
+            display: flex; align-items: center; justify-content: center; gap: 7px;
+            border: 1.5px solid #d3d7df; background: #fff; color: #1a1f29;
+            border-radius: var(--ello-btn-radius, 10px); padding: 12px 16px;
+            font-size: 14.5px; font-weight: var(--ello-fw-600, 600); cursor: pointer; width: 100%;
+        }
+        #virtual-tryon-widget-container .btn-live:hover{ border-color: #9aa3b2; }
+        /* "See it live" chip injected under a finished static result. */
+        #virtual-tryon-widget-container .elive-result-chip{
+            display: inline-flex; align-items: center; gap: 7px; margin: 10px auto 2px;
+            border: 1.5px solid #d3d7df; background: #fff; color: #1a1f29;
+            border-radius: 999px; padding: 9px 16px; font-size: 13.5px;
+            font-weight: var(--ello-fw-600, 600); cursor: pointer;
+        }
+        #virtual-tryon-widget-container .elive-result-chip:hover{ border-color: #9aa3b2; }
     </style>
 </head>
 
@@ -7826,6 +8647,12 @@
                     <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="#ffd66b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path><path d="M19 14l.7 2.1L22 17l-2.3.9L19 20l-.7-2.1L16 17l2.3-.9z"></path></svg>
                     Try On
                 </button>
+                <button class="btn-live" id="liveTryOnBtn" style="display:none" type="button"
+                    onclick="__elloWidget.startLiveTryOn('workspace_button')"
+                    aria-label="Try on live with your camera">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0"><path d="M23 7l-7 5 7 5V7z"></path><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                    Try on live
+                </button>
                 <!-- Rich Loading State -->
                 <div id="tryOnLoadingBar" class="tryon-loading-bar-container" style="display: none;" aria-live="polite">
                     <div class="tryon-generation-loader">
@@ -7871,26 +8698,41 @@
                 <button class="browser-close" onclick="__elloWidget.closeClothingBrowser()">&times;</button>
             </div>
             <div class="browser-body">
-                <div class="browser-search-container">
-                    <div class="epc-search-wrap">
-                        <svg class="epc-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3-3"></path></svg>
-                        <input type="text" class="browser-search epc-search" id="browserSearch" autocomplete="off"
-                            placeholder="Search by name, color, or category" oninput="__elloWidget.handleBrowserSearch()">
-                        <button type="button" class="epc-search-clear" aria-label="Clear search"
-                            onclick="var i=document.getElementById('browserSearch');i.value='';i.dispatchEvent(new Event('input'));i.focus();">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>
-                        </button>
+                <div class="epc-controls">
+                    <div class="browser-search-container">
+                        <div class="epc-search-wrap">
+                            <svg class="epc-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3-3"></path></svg>
+                            <input type="text" class="browser-search epc-search" id="browserSearch" autocomplete="off"
+                                enterkeyhint="search" aria-label="Search products"
+                                placeholder="Search by name, color, or category" oninput="__elloWidget.handleBrowserSearch()"
+                                onkeydown="__elloWidget.epcSearchKeydown(event)">
+                            <button type="button" class="epc-search-clear" aria-label="Clear search"
+                                onclick="var i=document.getElementById('browserSearch');i.value='';i.dispatchEvent(new Event('input'));i.focus();">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg>
+                            </button>
+                        </div>
+                        <div class="epc-sort-wrap">
+                            <select id="browserSort" class="epc-sort" aria-label="Sort products"
+                                onchange="__elloWidget.handleBrowserSortChange(this.value)">
+                                <option value="featured" selected>Featured</option>
+                                <option value="price-asc">Price &#8593;</option>
+                                <option value="price-desc">Price &#8595;</option>
+                            </select>
+                            <svg class="epc-sort-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                        </div>
                     </div>
+                    <div id="epcCategoryBar" class="epc-category-bar" style="display:none;"></div>
                 </div>
-                <div id="epcCategoryBar" class="epc-category-bar" style="display:none;"></div>
-                <div id="searchResultsCount" class="search-results-count"></div>
+                <div id="searchResultsCount" class="search-results-count" aria-live="polite"></div>
+                <div id="noResultsMessage" class="no-results" style="display: none;"></div>
                 <div id="browserGrid" class="epc-grid">
                     <!-- Clothing items will be populated here -->
                 </div>
-                <div id="noResultsMessage" class="no-results" style="display: none;">
-                    No items found. Try a different search term.
-                </div>
             </div>
+            <button type="button" id="epcTopBtn" class="epc-top-btn" aria-label="Back to top">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>
+                Top
+            </button>
             <div id="browserPagination" class="browser-pagination">
                 <!-- Pagination controls will be populated here -->
             </div>
@@ -7929,6 +8771,49 @@
         <button type="button" class="ewv-nav ewv-next" id="elloViewerNext" aria-label="Next look" hidden>
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
         </button>
+    </div>
+
+    <!-- Live Try-On (realtime mirror) overlay -->
+    <div id="elloLiveOverlay" class="elive-overlay" role="dialog" aria-modal="true" aria-label="Live try-on mirror">
+        <div class="elive-topbar">
+            <div class="elive-title"><span class="elive-live-dot" aria-hidden="true"></span>Live mirror</div>
+            <div id="elloLiveCountdown" class="elive-countdown" hidden>60s</div>
+            <button class="elive-close" onclick="__elloWidget.closeLiveTryOn()" aria-label="Close live try-on">&times;</button>
+        </div>
+        <div id="elloLiveConsent" class="elive-panel">
+            <div class="elive-card">
+                <div class="elive-card-icon" aria-hidden="true">🪞</div>
+                <h3>See it on you, live</h3>
+                <p>Your camera turns on and streams securely to our AI partner to show
+                    <b id="elloLiveGarmentName">this piece</b> on you, in motion. Your try-on is
+                    recorded so you can replay it — the replay stays on your device and
+                    disappears when you close the mirror.</p>
+                <button class="elive-primary" onclick="__elloWidget.beginLiveTryOn()">Start mirror</button>
+                <button class="elive-ghost" onclick="__elloWidget.closeLiveTryOn()">Not now</button>
+                <div class="elive-legal">AI-generated live preview. By starting, you agree to our
+                    <a href="https://ello.services/legal?tab=terms" target="_blank" rel="noopener">Terms</a> &amp;
+                    <a href="https://ello.services/legal?tab=privacy" target="_blank" rel="noopener">Privacy Policy</a>.</div>
+            </div>
+        </div>
+        <div id="elloLiveStage" class="elive-panel" hidden>
+            <video id="elloLiveVideo" class="elive-video" autoplay playsinline muted></video>
+            <div id="elloLiveStatus" class="elive-status">Warming up the mirror&hellip;</div>
+            <div id="elloLiveErrorBox" class="elive-error-box" hidden></div>
+            <div class="elive-bottombar">
+                <img id="elloLiveGarmentThumb" class="elive-garment-thumb" src="" alt="Selected garment">
+                <div id="elloLiveRecPill" class="elive-rec-pill" hidden>
+                    <span class="elive-rec-dot" aria-hidden="true"></span>
+                    Recording &mdash; turn around, check the back
+                </div>
+            </div>
+        </div>
+        <div id="elloLiveEnded" class="elive-panel" hidden>
+            <video id="elloLiveReplay" class="elive-replay-video" autoplay loop playsinline muted controls></video>
+            <div class="elive-replay-bar">
+                <div class="elive-replay-title">Your try-on, replayed</div>
+            </div>
+            <button class="elive-replay-done" onclick="__elloWidget.closeLiveTryOn()">Done</button>
+        </div>
     </div>
 
     <!-- Best Practices Modal -->

@@ -17,7 +17,8 @@
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
     "typecheck": "react-router typegen && tsc --noEmit",
-    "postbuild": "node scripts/minify-widget.mjs"
+    "postbuild": "node scripts/minify-widget.mjs",
+    "build:live-sdk": "esbuild dev/live-sdk-entry.mjs --bundle --format=iife --global-name=__elloDecartSDK --minify --outfile=public/ello-live-sdk.js"
   },
   "type": "module",
   "engines": {
@@ -44,6 +45,7 @@
     "vite-tsconfig-paths": "^5.1.4"
   },
   "devDependencies": {
+    "@decartai/sdk": "^0.1.17",
     "@shopify/api-codegen-preset": "^1.2.0",
     "@shopify/polaris-types": "^1.0.1",
     "@types/eslint": "^9.6.1",

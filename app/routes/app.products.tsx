@@ -12,6 +12,7 @@ import {
   Button,
   Tag,
   Banner,
+  Tooltip,
 } from "@shopify/polaris";
 import {
   ProductListIcon,
@@ -23,7 +24,7 @@ import {
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
 import { resolveStorefront, fetchStorefrontProducts } from "../lib/storefront-names.server";
-import { SectionHeading, brand, IconChip, type IconSource } from "../components/ui";
+import { SectionHeading, brand, IconChip, PageHeader, PillButton, type IconSource } from "../components/ui";
 
 type Mode = "all" | "products" | "collections";
 interface ProductItem {
@@ -554,22 +555,25 @@ export default function Products() {
         : `Try-on shows on products in ${collections.length} collection${collections.length === 1 ? "" : "s"}.`;
 
   return (
-    <Page
-      title="Products"
-      subtitle="Choose where Try-On appears and which photo each product renders from."
-      primaryAction={{ content: "Save changes", onAction: handleSave, loading: saving, disabled: !dirty }}
-      secondaryActions={[
-        {
-          content: "Refresh widget",
-          onAction: refreshWidget,
-          loading: refreshing,
-          disabled: !initial.hasStore,
-          helpText: "Push catalog & settings changes to your storefront right now",
-        },
-      ]}
-    >
+    <Page>
       <div style={{ maxWidth: 760, margin: "0 auto", width: "100%" }}>
         <BlockStack gap="500">
+          <PageHeader
+            kicker="Choose where Try-On appears"
+            title="Products"
+            actions={
+              <>
+                <Tooltip content="Push catalog & settings changes to your storefront right now">
+                  <PillButton onClick={refreshWidget} disabled={refreshing || !initial.hasStore}>
+                    {refreshing ? "Refreshing…" : "Refresh widget"}
+                  </PillButton>
+                </Tooltip>
+                <PillButton variant="primary" onClick={handleSave} disabled={!dirty || saving}>
+                  {saving ? "Saving…" : "Save changes"}
+                </PillButton>
+              </>
+            }
+          />
           {refreshed && <Banner tone="success">Widget refreshed. Your storefront picks up the latest catalog and settings within a few seconds.</Banner>}
           {saved && !dirty && <Banner tone="success">Saved. Your storefront updates within about 30 seconds.</Banner>}
           {saveError && <Banner tone="critical">{saveError}</Banner>}

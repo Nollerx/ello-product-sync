@@ -12,6 +12,17 @@ type SessionRow = {
   access_token: string | null;
 };
 
+// Short-lived row cache + in-flight dedupe. Every loader on a navigation calls
+// authenticate.admin → loadSession, so a single /app view loads the same session
+// row 2-3 times in parallel. Caching the ROW (rebuilding a fresh Session object
+// per call, so callers can't mutate shared state) removes those round trips.
+// Writes and deletes update the cache in place; TTL bounds staleness to 60s on
+// this instance (token exchange always goes through storeSession, which updates
+// the cache synchronously).
+const SESSION_CACHE_TTL_MS = 60_000;
+const sessionRowCache = new Map<string, { at: number; row: SessionRow | null }>();
+const sessionLoadInflight = new Map<string, Promise<SessionRow | null>>();
+
 /**
  * Persistent Shopify session storage backed by Supabase.
  * Replaces SQLiteSessionStorage which is ephemeral in Cloud Run.
@@ -20,25 +31,24 @@ type SessionRow = {
 export class SupabaseSessionStorage implements SessionStorage {
   async storeSession(session: Session): Promise<boolean> {
     try {
+      const row: SessionRow = {
+        id: session.id,
+        shop: session.shop,
+        state: session.state,
+        is_online: session.isOnline,
+        scope: session.scope ?? null,
+        expires: session.expires?.toISOString() ?? null,
+        access_token: session.accessToken ?? null,
+      };
       const { error } = await supabaseAdmin
         .from("shopify_sessions")
-        .upsert(
-          {
-            id: session.id,
-            shop: session.shop,
-            state: session.state,
-            is_online: session.isOnline,
-            scope: session.scope ?? null,
-            expires: session.expires?.toISOString() ?? null,
-            access_token: session.accessToken ?? null,
-          },
-          { onConflict: "id" }
-        );
+        .upsert(row, { onConflict: "id" });
 
       if (error) {
         console.error("[SessionStorage] storeSession error:", error.message);
         return false;
       }
+      sessionRowCache.set(session.id, { at: Date.now(), row });
       return true;
     } catch (err) {
       console.error("[SessionStorage] storeSession exception:", err);
@@ -48,14 +58,36 @@ export class SupabaseSessionStorage implements SessionStorage {
 
   async loadSession(id: string): Promise<Session | undefined> {
     try {
-      const { data, error } = await supabaseAdmin
-        .from("shopify_sessions")
-        .select("*")
-        .eq("id", id)
-        .maybeSingle();
+      const cached = sessionRowCache.get(id);
+      if (cached && Date.now() - cached.at <= SESSION_CACHE_TTL_MS) {
+        return cached.row ? this.rowToSession(cached.row) : undefined;
+      }
 
-      if (error || !data) return undefined;
-      return this.rowToSession(data as SessionRow);
+      let pending = sessionLoadInflight.get(id);
+      if (!pending) {
+        pending = (async (): Promise<SessionRow | null> => {
+          const { data, error } = await supabaseAdmin
+            .from("shopify_sessions")
+            .select("*")
+            .eq("id", id)
+            .maybeSingle();
+          if (error) {
+            console.error("[SessionStorage] loadSession error:", error.message);
+            return null;
+          }
+          return (data as SessionRow | null) ?? null;
+        })();
+        sessionLoadInflight.set(id, pending);
+      }
+
+      let row: SessionRow | null;
+      try {
+        row = await pending;
+      } finally {
+        sessionLoadInflight.delete(id);
+      }
+      sessionRowCache.set(id, { at: Date.now(), row });
+      return row ? this.rowToSession(row) : undefined;
     } catch (err) {
       console.error("[SessionStorage] loadSession exception:", err);
       return undefined;
@@ -68,6 +100,7 @@ export class SupabaseSessionStorage implements SessionStorage {
         .from("shopify_sessions")
         .delete()
         .eq("id", id);
+      if (!error) sessionRowCache.delete(id);
       return !error;
     } catch {
       return false;
@@ -80,6 +113,7 @@ export class SupabaseSessionStorage implements SessionStorage {
         .from("shopify_sessions")
         .delete()
         .in("id", ids);
+      if (!error) for (const id of ids) sessionRowCache.delete(id);
       return !error;
     } catch {
       return false;

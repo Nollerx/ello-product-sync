@@ -31,7 +31,9 @@ const ORIGIN = "https://ello-vto-public-13593516897-u5htiuxfrq-uc.a.run.app";
 const DAY = 86400;
 const TEN_MIN = 600;
 
-const LONG_CACHE = new Set(["/widget-main.js", "/widget.html"]);
+// ello-live-sdk.js: vendored Decart realtime SDK (~900KB), lazy-loaded only
+// when a shopper starts Live Try-On; version-busted via ?v= like widget-main.
+const LONG_CACHE = new Set(["/widget-main.js", "/widget.html", "/ello-live-sdk.js"]);
 const SHORT_CACHE = new Set(["/widget-loader.js", "/model-images.js"]);
 
 function cacheTtlFor(request, path) {

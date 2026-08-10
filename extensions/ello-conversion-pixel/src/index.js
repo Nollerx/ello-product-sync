@@ -88,16 +88,36 @@ register(({ analytics, browser, settings }) => {
     }
     if (!sessionId) return;
 
-    // line_price = finalLinePrice: the discounted total for the whole line
-    // (unit price × quantity, after discounts, before shipping/taxes). This is
-    // the billing basis for Qualified Revenue — attribution sums ONLY the
-    // tried-on lines, never the order total.
+    // line_price = finalLinePrice: unit price × quantity after LINE-level
+    // discounts, before shipping/taxes.
+    //
+    // CAUTION (Atlas audit 2026-07-31): finalLinePrice does NOT reflect
+    // order-level discount codes (sitewide "10% off" etc.) — those only reduce
+    // subtotalPrice and show up per line in discountAllocations. Billing on
+    // line_price alone overstated Qualified Revenue ~21% on a store that runs
+    // sitewide codes on most orders. So each line also carries line_discount =
+    // the sum of its discountAllocations. The SQL basis cascade
+    // (20260731_qualified_revenue_discount_netting.sql) uses it only when every
+    // line has it AND Σ(line_price − line_discount) reconciles to
+    // subtotal_price within $0.05 — so if a Pixels API version ever makes
+    // finalLinePrice allocation-inclusive (double-count risk), the reconcile
+    // check fails closed and billing falls back to proportional netting
+    // against subtotal_price.
+    //
+    // line_discount is null (not 0) when the API doesn't expose allocations,
+    // so SQL can tell "no discount" from "no data".
     const lineItems =
       checkout.lineItems?.map((li) => ({
         product_id: li.variant?.product?.id ?? null,
         variant_id: li.variant?.id ?? null,
         quantity: li.quantity ?? 1,
         line_price: li.finalLinePrice?.amount ?? null,
+        line_discount: Array.isArray(li.discountAllocations)
+          ? li.discountAllocations.reduce(
+              (sum, d) => sum + (Number(d?.amount?.amount) || 0),
+              0,
+            )
+          : null,
         title: li.title ?? null,
       })) ?? [];
 

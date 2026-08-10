@@ -125,6 +125,15 @@
           ]
         });
       }
+      // A SECOND product, so the gear panel's "Upsell item" picker has a real
+      // handle to resolve (paste http://<host>/products/ribbed-knit-beanie).
+      if (/\/products\/ribbed-knit-beanie\.js/.test(url)) {
+        return json({
+          id: 9064563671229, handle: 'ribbed-knit-beanie', title: 'Ribbed Knit Beanie', product_type: 'Hat',
+          available: true, featured_image: VARIANT_IMG.Sunset,
+          variants: [{ id: 45452857606333, title: 'One Size', options: ['One Size'], available: true, price: 2400, featured_image: { src: VARIANT_IMG.Sunset } }]
+        });
+      }
       if (/\/cart\/add(\.js)?($|\?)/.test(url)) { count++; return json({ id: 1, quantity: 1, sections: {} }); }
       if (/\/cart(\.js)?($|\?)/.test(url)) return json({ item_count: count, items: [] });
       return realFetch(input, init);

@@ -5,7 +5,19 @@
       "name": "vite",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "vite"],
-      "port": 5173
+      "port": 3000
+    },
+    {
+      "name": "sfcc-harness",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["dev/sfcc-harness.mjs"],
+      "port": 8912
+    },
+    {
+      "name": "ledger-playground",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--root", "dev/ledger-playground", "--port", "8787", "--strictPort"],
+      "port": 8787
     }
   ]
 }

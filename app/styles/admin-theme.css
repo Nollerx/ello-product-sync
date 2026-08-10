@@ -1,0 +1,22 @@
+/* Ello admin — Editorial Ledger theme assets.
+ * Playfair Display (variable 400–700, normal + italic) self-hosted from
+ * /public/fonts so the embedded admin never depends on a third-party font CDN.
+ * Usage rule (Brand direction, approved 2026-08-10): serif ONLY at display
+ * sizes — page titles and hero KPI numerals (>= 24px). Inter owns every table,
+ * label, control, and axis. */
+
+@font-face {
+  font-family: "Playfair Display";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/playfair-var.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Playfair Display";
+  font-style: italic;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/playfair-var-italic.woff2") format("woff2");
+}

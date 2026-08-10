@@ -40,13 +40,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     : new Date(to.getTime() - RANGE_DAYS * 24 * 60 * 60 * 1000);
   const receipts = await getReceipts(store.slug, from, to, 500);
 
+  // `order_total_gross` is deliberately NOT called order_value: it is the whole
+  // order including untried items, shipping and tax, which is the right number
+  // for judging proof and the WRONG number for a bill. Summing this column does
+  // not produce an invoice — /app/statement/export is the billing surface, and
+  // it exports the attributed lines only.
   const header = [
     "order_id",
     "product_id",
     "tried_on_at",
     "purchased_at",
     "hours_to_purchase",
-    "order_value",
+    "order_total_gross",
     "currency",
   ].join(",");
   const rows = receipts.map((r) =>

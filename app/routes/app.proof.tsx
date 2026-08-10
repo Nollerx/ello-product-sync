@@ -1203,7 +1203,8 @@ export default function ProofPage() {
               purchased it (30-day window, order values gross of returns, order-deduplicated). Shopper = 7-day
               sliding session. The Order value column shows the whole order; the Tracked sales number above
               counts only the tried-on lines within those orders, so the two won&apos;t match — by design.
-              Lift comes only from the holdout test — never from attribution.
+              Lift comes only from the holdout test — never from attribution. For the figures behind an
+              invoice, use Billing statement: it counts the tried-on lines only, net of returns.
             </Text>
           </BlockStack>
         </Card>

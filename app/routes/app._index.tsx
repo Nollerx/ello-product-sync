@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import type { FunctionComponent, ReactNode, SVGProps } from "react";
 import type { LoaderFunctionArgs } from "react-router";
-import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "react-router";
+import { Await, useFetcher, useLoaderData, useNavigate, useRevalidator } from "react-router";
 import {
   Page,
   Layout,
@@ -19,7 +19,11 @@ import {
 } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { supabaseAdmin } from "../lib/supabase.server";
-import { getThemeWidgetStatus, persistThemeStatus } from "../lib/theme-status.server";
+import {
+  getThemeWidgetStatus,
+  persistThemeStatus,
+  type ThemeWidgetStatus,
+} from "../lib/theme-status.server";
 import { getAppEmbedEditorUrl, getInlineTryOnBlockEditorUrl } from "../lib/onboarding.server";
 import { InlineButtonPlacementHelp } from "../components/inline-placement-help";
 import { getPlanConfig } from "../lib/shopify-billing.server";
@@ -29,8 +33,6 @@ import {
   CameraIcon,
   CartSaleIcon,
   CartUpIcon,
-  CashDollarIcon,
-  ChartFunnelIcon,
   CheckIcon,
   ClipboardChecklistIcon,
   ClockIcon,
@@ -42,28 +44,33 @@ import {
   ProductIcon,
   SettingsIcon,
   StoreOnlineIcon,
-  TargetIcon,
   ThemeIcon,
   ToggleOnIcon,
   ViewIcon,
 } from "@shopify/polaris-icons";
-import { brand } from "../components/ui";
+import { brand, fonts, tnum, Eyebrow, MonoMeta, PageHeader } from "../components/ui";
 import {
+  DailyPerformanceCard,
+  DailyPerformanceSkeleton,
+  Delta,
   FunnelBar,
   HeadlineStrip,
   IconChip,
-  KpiTile,
   StatusPill,
   TimeRangeSelector,
-  verdictFromDelta,
   type Tone,
 } from "../components/analytics";
 import { parseRange, pctDelta, rangeWindow, RANGE_DAYS } from "../lib/timerange";
 import {
   buildSessions,
+  countWidgetOpens,
+  dailySeries,
   fetchCoreEvents,
+  fetchEventDates,
   getConversionSummary,
+  getDailyRevenue,
   getPrevCounts,
+  getShopTimezone,
   recentSessions,
   type RecentSession,
 } from "../lib/analytics.server";
@@ -76,57 +83,120 @@ const MAX_ACTIVATION_REFRESH_ATTEMPTS = 5;
 const REVIEW_URL = "https://apps.shopify.com/ello-virtual-try-on#modal-show=ReviewListingModal";
 const SUPPORT_EMAIL = "support@ello.services";
 
+// ─── Streamed loader payloads ───────────────────────────────────────────────
+type DailyPoint = { day: string; value: number };
+
+type HomeMetrics = {
+  attributedRevenue: number;
+  purchaseConversionPct: number | null;
+  cartConversionPct: number | null;
+  totalTryons: number;
+  totalCartAdds: number;
+  widgetOpens: number;
+  revenueDelta: number | null;
+  tryonsDelta: number | null;
+  cartsDelta: number | null;
+  currencyCode: string;
+  dailyRevenue: DailyPoint[];
+  dailyTryons: DailyPoint[];
+  dailyCarts: DailyPoint[];
+};
+
+type HomeRecent = {
+  recent: RecentSession[];
+  recentProductNames: Record<string, string>;
+  currencyCode: string;
+};
+
+// Last-known theme placement state persisted in vto_stores — paints the
+// storefront card and checklist instantly while the live read streams in.
+type ThemeCacheSnapshot = {
+  appEmbedEnabled: boolean | null;
+  inlineButtonAdded: boolean | null;
+  reason: string | null;
+};
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const url = new URL(request.url);
+  // eslint-disable-next-line no-undef
   const apiKey = process.env.SHOPIFY_API_KEY;
+  const range = parseRange(url.searchParams.get("range"));
+  const win = rangeWindow(range);
 
-  // Read the LIVE published theme to learn whether our placements are actually
-  // on (source of truth — the old `widget_enabled` flag never reflected this).
-  // Kicked off here so it runs in parallel with the metrics queries below.
-  const themeStatusPromise = getThemeWidgetStatus(admin);
+  // Live theme read (2 sequential Shopify GraphQL calls, sometimes a file
+  // download) — kicked off first so it overlaps everything, and STREAMED to the
+  // client instead of blocking first paint. Bounded so a stuck Shopify API can
+  // never hold the stream open; the fallback renders the "couldn't read" state.
+  const theme: Promise<ThemeWidgetStatus> = (async () => {
+    const fallback: ThemeWidgetStatus = {
+      ok: false,
+      themeId: null,
+      themeName: null,
+      appEmbedEnabled: null,
+      appEmbedPresentButDisabled: false,
+      inlineButtonAdded: null,
+      productTemplateParseable: false,
+      reason: "graphql_error",
+      checkedAt: new Date().toISOString(),
+    };
+    try {
+      const status = await Promise.race([
+        getThemeWidgetStatus(admin),
+        new Promise<ThemeWidgetStatus>((resolve) => setTimeout(() => resolve(fallback), 8000)),
+      ]);
+      // Cache so the NEXT load paints the storefront card instantly.
+      persistThemeStatus(session.shop, status).catch((e) =>
+        console.warn("[Dashboard] theme status cache write failed:", e),
+      );
+      return status;
+    } catch (err) {
+      console.error("[Dashboard] theme read failed (non-fatal):", err);
+      return fallback;
+    }
+  })();
 
-  // Step 1: Store data
+  // ── Critical path: two fast indexed reads, then the shell renders. ──
   const { data: storeData } = await supabaseAdmin
     .from("vto_stores")
-    .select("store_slug, account_id, widget_enabled, storefront_token, shop_domain")
+    .select(
+      "store_slug, account_id, storefront_token, shop_domain, app_embed_enabled, inline_button_added, theme_status_reason",
+    )
     .eq("shop_domain", session.shop)
     .maybeSingle();
 
   const accountId = storeData?.account_id ?? null;
+  const slug = storeData?.store_slug ?? null;
+  const shopDomain = (storeData?.shop_domain as string | undefined) ?? null;
+  const storefrontToken = (storeData?.storefront_token as string | undefined) ?? null;
 
-  // Step 2: Active subscription
-  const subResult = accountId
-    ? await supabaseAdmin
-        .from("vto_subscriptions")
-        .select("id, plan_id, billing_interval, shopify_subscription_id")
-        .eq("account_id", accountId)
-        .eq("status", "active")
-        .order("shopify_subscription_id", { ascending: false, nullsFirst: false })
-        .limit(1)
-        .maybeSingle()
-    : { data: null };
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sub = (subResult as any).data as { id: string; plan_id: string; billing_interval: string } | null;
-
-  // Step 3: Current usage period (sequential — depends on subscription id)
+  // Active subscription + its current usage period in ONE embedded query
+  // (was two sequential round trips). The embedded filter keeps only the
+  // period containing `now`, newest first — overlap-proof like the old query.
+  const nowIso = new Date().toISOString();
+  let sub: { id: string; plan_id: string } | null = null;
   let usagePeriod: { tryons_used: number; period_end: string } | null = null;
-  if (sub) {
-    const now = new Date().toISOString();
-    // Most recent period containing `now`. maybeSingle() alone throws (and
-    // zeros the Home usage card) when two periods overlap — a reinstall /
-    // plan-change edge case. order+limit(1) is overlap-proof.
-    const { data } = await supabaseAdmin
-      .from("vto_usage_periods")
-      .select("tryons_used, period_end")
-      .eq("subscription_id", sub.id)
-      .lte("period_start", now)
-      .gte("period_end", now)
-      .order("period_start", { ascending: false })
+  if (accountId) {
+    const { data: subRow } = await supabaseAdmin
+      .from("vto_subscriptions")
+      .select("id, plan_id, vto_usage_periods(tryons_used, period_end)")
+      .eq("account_id", accountId)
+      .eq("status", "active")
+      .lte("vto_usage_periods.period_start", nowIso)
+      .gte("vto_usage_periods.period_end", nowIso)
+      .order("shopify_subscription_id", { ascending: false, nullsFirst: false })
+      .order("period_start", { referencedTable: "vto_usage_periods", ascending: false })
       .limit(1)
+      .limit(1, { referencedTable: "vto_usage_periods" })
       .maybeSingle();
-    usagePeriod = data;
+    if (subRow) {
+      sub = { id: subRow.id as string, plan_id: subRow.plan_id as string };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const periods = (subRow as any).vto_usage_periods as
+        | Array<{ tryons_used: number; period_end: string }>
+        | null;
+      usagePeriod = periods?.[0] ?? null;
+    }
   }
 
   // Resolve plan display name and included_tryons from PLAN_CONFIG
@@ -143,68 +213,101 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Step 4: Dashboard metrics over the selected range (?range=7d|30d|90d),
-  // with deltas vs the previous window. Graceful — failures just show zeros.
-  const range = parseRange(url.searchParams.get("range"));
-  const win = rangeWindow(range);
+  // ── Streamed: dashboard metrics + daily chart series over ?range. ──
+  // Every branch fails soft so these promises NEVER reject (a rejection would
+  // error the Suspense boundary); worst case the cards show zeros.
+  const emptyMetrics: HomeMetrics = {
+    attributedRevenue: 0,
+    purchaseConversionPct: null,
+    cartConversionPct: null,
+    totalTryons: 0,
+    totalCartAdds: 0,
+    widgetOpens: 0,
+    revenueDelta: null,
+    tryonsDelta: null,
+    cartsDelta: null,
+    currencyCode: "USD",
+    dailyRevenue: [],
+    dailyTryons: [],
+    dailyCarts: [],
+  };
 
-  let attributedRevenue = 0;
-  let purchaseConversionPct: number | null = null;
-  let cartConversionPct: number | null = null;
-  let totalTryons = 0;
-  let totalCartAdds = 0;
-  let widgetOpens = 0;
-  let revenueDelta: number | null = null;
-  let tryonsDelta: number | null = null;
-  let cartsDelta: number | null = null;
-  let recent: RecentSession[] = [];
-  let recentProductNames: Record<string, string> = {};
-  let currencyCode = "USD";
-  const slug = storeData?.store_slug ?? null;
-  if (slug) {
-    // Recent sessions always look at the last 7 days so the table stays fresh
-    // and the Home loader stays light even on the 90-day range.
-    const recentWin = rangeWindow("7d");
-    const [summary, counts, prevCounts, recentCore] = await Promise.all([
-      getConversionSummary(slug, win.from, win.to),
-      getPrevCounts(slug, win.from, win.to),
-      getPrevCounts(slug, win.prevFrom, win.prevTo),
-      fetchCoreEvents(slug, recentWin.from, recentWin.to),
-    ]);
-    attributedRevenue = summary?.revenue ?? 0;
-    purchaseConversionPct = summary?.purchaseConversionPct ?? null;
-    cartConversionPct =
-      summary && summary.tryonSessions > 0
-        ? Math.round((summary.addedToCart / summary.tryonSessions) * 100)
-        : null;
-    totalTryons = counts.tryons;
-    totalCartAdds = counts.carts;
-    widgetOpens = counts.opens;
-    revenueDelta = pctDelta(attributedRevenue, prevCounts.revenue);
-    tryonsDelta = pctDelta(counts.tryons, prevCounts.tryons);
-    cartsDelta = pctDelta(counts.carts, prevCounts.carts);
-    recent = recentSessions(buildSessions(recentCore), 8);
+  const metrics: Promise<HomeMetrics> = !slug
+    ? Promise.resolve(emptyMetrics)
+    : (async () => {
+        try {
+          const tz = await getShopTimezone(admin, session.shop);
+          const [summary, prevCounts, dailyRevenue, tryonDates, cartDates, widgetOpens, sfMeta] =
+            await Promise.all([
+              getConversionSummary(slug, win.from, win.to),
+              getPrevCounts(slug, win.prevFrom, win.prevTo),
+              getDailyRevenue(slug, win.from, win.to, tz),
+              fetchEventDates("tryon_events", slug, win.from, win.to),
+              fetchEventDates("cart_events", slug, win.from, win.to),
+              countWidgetOpens(slug, win.from, win.to),
+              // ids=[] → currency-only Storefront lookup for the money formatter
+              resolveStorefront(shopDomain, storefrontToken, []),
+            ]);
+          const attributedRevenue = summary?.revenue ?? 0;
+          const totalTryons = tryonDates.length;
+          const totalCartAdds = cartDates.length;
+          return {
+            attributedRevenue,
+            purchaseConversionPct: summary?.purchaseConversionPct ?? null,
+            cartConversionPct:
+              summary && summary.tryonSessions > 0
+                ? Math.round((summary.addedToCart / summary.tryonSessions) * 100)
+                : null,
+            totalTryons,
+            totalCartAdds,
+            widgetOpens,
+            revenueDelta: pctDelta(attributedRevenue, prevCounts.revenue),
+            tryonsDelta: pctDelta(totalTryons, prevCounts.tryons),
+            cartsDelta: pctDelta(totalCartAdds, prevCounts.carts),
+            currencyCode: sfMeta.currencyCode,
+            dailyRevenue,
+            dailyTryons: dailySeries(tryonDates, tz, win.from, win.to).map((d) => ({
+              day: d.day,
+              value: d.count,
+            })),
+            dailyCarts: dailySeries(cartDates, tz, win.from, win.to).map((d) => ({
+              day: d.day,
+              value: d.count,
+            })),
+          };
+        } catch (err) {
+          console.error("[Dashboard] metrics failed (non-fatal):", err);
+          return emptyMetrics;
+        }
+      })();
 
-    const recentIds = Array.from(new Set(recent.flatMap((s) => s.products)));
-    const idToGid = (raw: string): string => (raw.startsWith("gid://") ? raw : `gid://shopify/Product/${raw}`);
-    const meta = await resolveStorefront(
-      storeData?.shop_domain ?? null,
-      storeData?.storefront_token ?? null,
-      recentIds.map(idToGid),
-    );
-    currencyCode = meta.currencyCode;
-    recentProductNames = Object.fromEntries(
-      recentIds.map((id) => [id, meta.titles.get(idToGid(id)) ?? id]),
-    );
-  }
+  // ── Streamed: recent shopper sessions (always last 7 days, newest page only). ──
+  const emptyRecent: HomeRecent = { recent: [], recentProductNames: {}, currencyCode: "USD" };
+  const recentData: Promise<HomeRecent> = !slug
+    ? Promise.resolve(emptyRecent)
+    : (async () => {
+        try {
+          const recentWin = rangeWindow("7d");
+          const core = await fetchCoreEvents(slug, recentWin.from, recentWin.to, { rowCap: 1000 });
+          const recent = recentSessions(buildSessions(core), 8);
+          const recentIds = Array.from(new Set(recent.flatMap((s) => s.products)));
+          const idToGid = (raw: string): string =>
+            raw.startsWith("gid://") ? raw : `gid://shopify/Product/${raw}`;
+          const meta = await resolveStorefront(shopDomain, storefrontToken, recentIds.map(idToGid));
+          return {
+            recent,
+            recentProductNames: Object.fromEntries(
+              recentIds.map((id) => [id, meta.titles.get(idToGid(id)) ?? id]),
+            ),
+            currencyCode: meta.currencyCode,
+          };
+        } catch (err) {
+          console.error("[Dashboard] recent sessions failed (non-fatal):", err);
+          return emptyRecent;
+        }
+      })();
 
-  // Resolve the live theme read (kicked off at the top) and cache it so other
-  // surfaces can show last-known state without their own theme call.
-  const themeStatus = await themeStatusPromise;
-  persistThemeStatus(session.shop, themeStatus).catch((e) =>
-    console.warn("[Dashboard] theme status cache write failed:", e),
-  );
-
+  // eslint-disable-next-line no-undef
   const skipBilling = process.env.SKIP_BILLING === "true";
   const billingActivationPending = url.searchParams.get("billing") === "activating";
   const pendingPlanKey = url.searchParams.get("plan");
@@ -216,15 +319,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shop: session.shop,
     apiKey,
     storeSlug: slug,
-    // Live theme-derived status (source of truth) — see theme-status.server.ts.
-    themeStatusOk: themeStatus.ok,
-    themeStatusReason: themeStatus.reason,
-    appEmbedEnabled: themeStatus.appEmbedEnabled,
-    appEmbedPresentButDisabled: themeStatus.appEmbedPresentButDisabled,
-    inlineButtonAdded: themeStatus.inlineButtonAdded,
+    themeCache: {
+      appEmbedEnabled: (storeData?.app_embed_enabled as boolean | null) ?? null,
+      inlineButtonAdded: (storeData?.inline_button_added as boolean | null) ?? null,
+      reason: (storeData?.theme_status_reason as string | null) ?? null,
+    } satisfies ThemeCacheSnapshot,
     appEmbedDeepLink: getAppEmbedEditorUrl(session.shop),
     inlineButtonDeepLink: getInlineTryOnBlockEditorUrl(session.shop),
-    storeConnected: !!(storeData?.storefront_token),
+    storeConnected: !!storefrontToken,
     hasPlan: !!planDisplayName,
     planDisplayName,
     planKey,
@@ -235,18 +337,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     billingActivationPending,
     pendingPlanDisplayName,
     range,
-    attributedRevenue,
-    purchaseConversionPct,
-    cartConversionPct,
-    totalTryons,
-    totalCartAdds,
-    widgetOpens,
-    revenueDelta,
-    tryonsDelta,
-    cartsDelta,
-    recent,
-    recentProductNames,
-    currencyCode,
+    // Streamed (Suspense/Await on the client):
+    metrics,
+    recentData,
+    theme,
   };
 };
 
@@ -254,40 +348,82 @@ export const action = async () => {
   return null;
 };
 
+// ─── Theme view: one shape for both the cached snapshot and the live read ───
+// `live: false` = painting from the persisted snapshot while the real theme
+// read streams in; warning banners are suppressed until the live result lands.
+type ThemeView = {
+  live: boolean;
+  ok: boolean;
+  appEmbedEnabled: boolean | null;
+  appEmbedPresentButDisabled: boolean;
+  inlineButtonAdded: boolean | null;
+  scopeMissing: boolean;
+};
+
+function viewFromCache(cache: ThemeCacheSnapshot): ThemeView {
+  return {
+    live: false,
+    // The snapshot is only ever persisted from successful reads, so a stored
+    // reason means the last live read was ok.
+    ok: cache.reason != null,
+    appEmbedEnabled: cache.appEmbedEnabled,
+    appEmbedPresentButDisabled: false,
+    inlineButtonAdded: cache.inlineButtonAdded,
+    scopeMissing: false,
+  };
+}
+
+function viewFromLive(status: ThemeWidgetStatus): ThemeView {
+  return {
+    live: true,
+    ok: status.ok,
+    appEmbedEnabled: status.appEmbedEnabled,
+    appEmbedPresentButDisabled: status.appEmbedPresentButDisabled,
+    inlineButtonAdded: status.inlineButtonAdded,
+    scopeMissing: status.reason === "missing_scope",
+  };
+}
+
+const storefrontLiveFor = (v: ThemeView) =>
+  v.appEmbedEnabled === true || v.inlineButtonAdded === true;
+
 export default function Index() {
   const navigate = useNavigate();
   const {
-    themeStatusOk, themeStatusReason,
-    appEmbedEnabled, appEmbedPresentButDisabled, inlineButtonAdded,
-    appEmbedDeepLink, inlineButtonDeepLink,
-    storeConnected, hasPlan,
-    planDisplayName, planKey, includedTryons, tryonsUsed, periodEnd,
-    skipBilling, billingActivationPending, pendingPlanDisplayName,
-    range, attributedRevenue, purchaseConversionPct, cartConversionPct,
-    totalTryons, totalCartAdds, widgetOpens,
-    revenueDelta, tryonsDelta, cartsDelta,
-    recent, recentProductNames, currencyCode,
+    themeCache,
+    appEmbedDeepLink,
+    inlineButtonDeepLink,
+    storeConnected,
+    hasPlan,
+    planDisplayName,
+    planKey,
+    includedTryons,
+    tryonsUsed,
+    periodEnd,
+    skipBilling,
+    billingActivationPending,
+    pendingPlanDisplayName,
+    range,
+    metrics,
+    recentData,
+    theme,
   } = useLoaderData<typeof loader>();
 
-  // Derived live-status booleans. null = couldn't read the theme (e.g. the
-  // read_themes scope isn't granted yet, or a vintage .liquid product template).
-  const appEmbedOn = appEmbedEnabled === true;
-  const inlineOn = inlineButtonAdded === true;
-  // The storefront is "live" once at least one placement is actually on.
-  const storefrontLive = appEmbedOn || inlineOn;
-  const themeUnreadable = !themeStatusOk;
-  const scopeMissing = themeStatusReason === "missing_scope";
+  const cacheView = viewFromCache(themeCache);
 
   const syncFetcher = useFetcher();
   const [hasAutoSynced, setHasAutoSynced] = useState(false);
   const [activationRefreshCount, setActivationRefreshCount] = useState(0);
 
+  // Self-heal the storefront connection — but only when it's actually broken.
+  // (The old unconditional auto-sync POSTed on every visit and its completion
+  // revalidated every loader: the whole dashboard silently loaded twice.)
   useEffect(() => {
-    if (syncFetcher.state === "idle" && !syncFetcher.data && !hasAutoSynced) {
+    if (!storeConnected && syncFetcher.state === "idle" && !syncFetcher.data && !hasAutoSynced) {
       syncFetcher.submit(null, { method: "POST", action: "/api/sync-token" });
       setHasAutoSynced(true);
     }
-  }, [syncFetcher.state, hasAutoSynced, syncFetcher.data]);
+  }, [storeConnected, syncFetcher.state, hasAutoSynced, syncFetcher.data]);
 
   // Theme-editor deep links: one opens the App embeds panel with our embed
   // pre-selected; the other drops the inline button onto the product template.
@@ -295,8 +431,8 @@ export default function Index() {
   const openInlineSetup = () => window.open(inlineButtonDeepLink, "_blank", "noopener");
 
   // Re-read the live theme status when the merchant returns from the editor
-  // tab. Lightweight — revalidate re-runs the loader (which reads the theme),
-  // no full page reload.
+  // tab. Revalidation runs inside a React transition, so the streamed sections
+  // keep their current content while fresh data loads (no skeleton flash).
   const statusRevalidator = useRevalidator();
   useEffect(() => {
     function onFocus() {
@@ -335,20 +471,8 @@ export default function Index() {
     ? new Date(periodEnd).toLocaleDateString("en-US", { month: "short", day: "numeric" })
     : null;
 
-  const money = (n: number) =>
-    new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: currencyCode || "USD",
-      maximumFractionDigits: 0,
-    }).format(n);
-
-  // Onboarding checklist: show until all 3 steps complete
   const effectiveHasPlan = hasPlan || skipBilling;
   const showBillingActivationPending = billingActivationPending && !hasPlan && !skipBilling;
-  const allOnboarded = effectiveHasPlan && storeConnected && storefrontLive;
-  const checklistTotal = skipBilling ? 2 : 3;
-  const checklistDone =
-    (skipBilling ? 0 : hasPlan ? 1 : 0) + (storeConnected ? 1 : 0) + (storefrontLive ? 1 : 0);
   const activationRefreshLimitReached =
     showBillingActivationPending && activationRefreshCount >= MAX_ACTIVATION_REFRESH_ATTEMPTS;
   const pendingPlanLabel = pendingPlanDisplayName ? `${pendingPlanDisplayName} plan` : "your plan";
@@ -382,98 +506,31 @@ export default function Index() {
     return () => window.clearTimeout(timeoutId);
   }, [showBillingActivationPending]);
 
-  // ── Live storefront placement rows (inline button + floating embed) ──
-  // The app embed is the engine — it powers every try-on, so it leads (see embedRow).
-  const inlineRow: PlacementRowProps = inlineOn
-    ? {
-        tone: "on",
-        label: "Inline Try-On button is on your product page",
-        actionLabel: "Open editor",
-        onAction: openInlineSetup,
-      }
-    : inlineButtonAdded === false
-      ? {
-          tone: "off",
-          label: "Inline Try-On button isn't on your product page",
-          helper: "Your main conversion placement — one click adds it.",
-          actionLabel: "Add button",
-          onAction: openInlineSetup,
-        }
-      : {
-          tone: "unknown",
-          label: "Inline Try-On button — couldn't verify",
-          helper: scopeMissing
-            ? "Reload above so Ello can verify your theme."
-            : "We can't auto-detect it on this theme. Use the button to add it if it isn't there.",
-          actionLabel: "Add button",
-          onAction: openInlineSetup,
-        };
+  const checklistProps = {
+    effectiveHasPlan,
+    hasPlan,
+    skipBilling,
+    storeConnected,
+    showBillingActivationPending,
+    isLoading,
+    onChoosePlan: () => navigate("/app/billing"),
+    onRetrySync: handleRetrySync,
+    onOpenAppEmbed: openAppEmbed,
+  };
 
-  // The Ello app embed is the engine: it loads the widget on your storefront
-  // and powers every try-on (the inline button included). So it leads, and its
-  // CTA reassures merchants the only step is Save.
-  const embedRow: PlacementRowProps = appEmbedOn
-    ? {
-        tone: "on",
-        label: "Ello widget is on — powering try-ons across your store",
-        actionLabel: "Open theme editor",
-        onAction: openAppEmbed,
-      }
-    : appEmbedPresentButDisabled
-      ? {
-          tone: "off",
-          label: "Ello widget is turned off in your theme",
-          helper: "Click Turn on — we re-enable it for you, then just click Save in the editor.",
-          actionLabel: "Turn on",
-          onAction: openAppEmbed,
-        }
-      : appEmbedEnabled === false
-        ? {
-            tone: "off",
-            label: "Ello widget isn't turned on yet",
-            helper: "This powers every try-on. Click Turn on — we switch it on for you, then just click Save.",
-            actionLabel: "Turn on",
-            onAction: openAppEmbed,
-          }
-        : {
-            tone: "unknown",
-            label: "Couldn't check if the Ello widget is on",
-            helper: scopeMissing
-              ? "Reload above so Ello can verify your theme."
-              : "We couldn't read your theme just now — reload to retry.",
-            actionLabel: "Turn on",
-            onAction: openAppEmbed,
-          };
-
-  // Status banner for sync card
-  let statusBanner = <Banner tone="info">Checking connection status...</Banner>;
-  if (isLoading) {
-    statusBanner = <Banner tone="info">Syncing credentials...</Banner>;
-  } else if (syncFetcher.data) {
-    const result = syncFetcher.data as { success: boolean; message?: string; error?: string; retryable?: boolean; requestId?: string };
-    if (result.success) {
-      statusBanner = <Banner tone="success">Store Connected Successfully</Banner>;
-    } else {
-      const isRetryable = result.retryable !== false;
-      statusBanner = (
-        <Banner tone="critical" title={isRetryable ? "Connection Failed (Retrying...)" : "Connection Failed"}>
-          <p>{result.message || result.error}</p>
-          <div style={{ marginTop: "8px" }}>
-            {isRetryable && (
-              <Button onClick={handleRetrySync} variant="plain" tone="critical">Try Again</Button>
-            )}
-          </div>
-          {result.requestId && (
-            <p style={{ marginTop: "0.5rem", fontSize: "11px", opacity: 0.8 }}>Ref: {result.requestId}</p>
-          )}
-        </Banner>
-      );
-    }
-  }
+  const storefrontProps = {
+    storeConnected,
+    isLoading,
+    onOpenAppEmbed: openAppEmbed,
+    onOpenInlineSetup: openInlineSetup,
+    onRetrySync: handleRetrySync,
+    syncData: syncFetcher.data as SyncResult | undefined,
+  };
 
   return (
-    <Page title="Dashboard">
+    <Page>
       <BlockStack gap="500">
+        <PageHeader kicker="Ello Virtual Try-On" title="Dashboard" />
 
         {showBillingActivationPending && (
           <Banner title="Plan activation in progress" tone="info">
@@ -495,71 +552,13 @@ export default function Index() {
           </Banner>
         )}
 
-        {/* ── Onboarding checklist (hidden once all steps done) ── */}
-        {!allOnboarded && (
-          <Card>
-            <BlockStack gap="400">
-              <InlineStack align="space-between" blockAlign="center">
-                <InlineStack gap="300" blockAlign="center">
-                  <IconChip source={ClipboardChecklistIcon} tone="money" size={34} />
-                  <BlockStack gap="050">
-                    <Text as="h2" variant="headingMd">Getting started</Text>
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Complete these steps to go live with virtual try-on.
-                    </Text>
-                  </BlockStack>
-                </InlineStack>
-                <StatusPill
-                  label={`${checklistDone} of ${checklistTotal} done`}
-                  tone={checklistDone === checklistTotal ? "good" : "neutral"}
-                />
-              </InlineStack>
-              <ProgressBar
-                progress={Math.round((checklistDone / checklistTotal) * 100)}
-                tone="highlight"
-                size="small"
-              />
-              <BlockStack gap="300">
-                {!skipBilling && (
-                  <ChecklistStep
-                    state={hasPlan ? "done" : showBillingActivationPending ? "waiting" : "pending"}
-                    icon={CreditCardIcon}
-                    label={showBillingActivationPending ? "Plan activation in progress" : "Choose a plan"}
-                    action={
-                      !hasPlan && !showBillingActivationPending ? (
-                        <Button onClick={() => navigate("/app/billing")} size="slim" variant="primary">Choose plan</Button>
-                      ) : undefined
-                    }
-                  />
-                )}
-
-                <ChecklistStep
-                  state={storeConnected ? "done" : "pending"}
-                  icon={ConnectIcon}
-                  label="Connect your store"
-                  action={
-                    !storeConnected ? (
-                      <Button onClick={handleRetrySync} size="slim" loading={isLoading}>Reconnect</Button>
-                    ) : undefined
-                  }
-                />
-
-                <ChecklistStep
-                  state={storefrontLive ? "done" : "pending"}
-                  icon={ToggleOnIcon}
-                  label="Turn on the Ello widget"
-                  action={
-                    !storefrontLive ? (
-                      <Button onClick={openAppEmbed} size="slim">
-                        {themeUnreadable ? "Set up" : "Turn on Ello"}
-                      </Button>
-                    ) : undefined
-                  }
-                />
-              </BlockStack>
-            </BlockStack>
-          </Card>
-        )}
+        {/* ── Onboarding checklist: instant from the cached theme snapshot,
+               then live-updated when the real theme read streams in ── */}
+        <Suspense fallback={<GettingStartedCard view={cacheView} {...checklistProps} />}>
+          <Await resolve={theme}>
+            {(t) => <GettingStartedCard view={viewFromLive(t)} {...checklistProps} />}
+          </Await>
+        </Suspense>
 
         {/* ── Free-plan upgrade CTA ── */}
         {isFreePlan && (
@@ -596,23 +595,29 @@ export default function Index() {
         )}
 
         {/* ── Plain-English TL;DR (only once there's signal) ── */}
-        {widgetOpens > 0 && (
-          <HeadlineStrip>
-            Shoppers opened Ello <strong>{widgetOpens.toLocaleString()}</strong> times and ran{" "}
-            <strong>{totalTryons.toLocaleString()}</strong> try-on{totalTryons === 1 ? "" : "s"}
-            {totalCartAdds > 0 && (
-              <>
-                , adding <strong>{totalCartAdds.toLocaleString()}</strong> item{totalCartAdds === 1 ? "" : "s"} to cart
-              </>
-            )}
-            {attributedRevenue > 0 && (
-              <>
-                {" "}— <strong>{money(attributedRevenue)}</strong> in attributed sales
-              </>
-            )}{" "}
-            over the last {RANGE_DAYS[range]} days.
-          </HeadlineStrip>
-        )}
+        <Suspense fallback={<HeadlineSkeleton />}>
+          <Await resolve={metrics}>
+            {(m) =>
+              m.widgetOpens > 0 ? (
+                <HeadlineStrip>
+                  Shoppers opened Ello <strong>{m.widgetOpens.toLocaleString()}</strong> times and ran{" "}
+                  <strong>{m.totalTryons.toLocaleString()}</strong> try-on{m.totalTryons === 1 ? "" : "s"}
+                  {m.totalCartAdds > 0 && (
+                    <>
+                      , adding <strong>{m.totalCartAdds.toLocaleString()}</strong> item{m.totalCartAdds === 1 ? "" : "s"} to cart
+                    </>
+                  )}
+                  {m.attributedRevenue > 0 && (
+                    <>
+                      {" "}— <strong>{money(m.attributedRevenue, m.currencyCode)}</strong> in attributed sales
+                    </>
+                  )}{" "}
+                  over the last {RANGE_DAYS[range]} days.
+                </HeadlineStrip>
+              ) : null
+            }
+          </Await>
+        </Suspense>
 
         {/* ── Controls row ── */}
         <InlineStack align="space-between" blockAlign="center">
@@ -621,72 +626,68 @@ export default function Index() {
         </InlineStack>
 
         {/* ── Revenue hero + widget-to-cart journey ── */}
-        <Card padding="500">
-          <InlineGrid columns={{ xs: "1fr", md: "1fr 1fr" }} gap="500">
-            <BlockStack gap="200">
-              <InlineStack gap="200" blockAlign="center">
-                <IconChip source={CashDollarIcon} tone="money" />
-                <Text as="span" variant="bodySm" tone="subdued">Attributed revenue</Text>
-              </InlineStack>
-              <span style={{ fontSize: 42, fontWeight: 650, lineHeight: 1.05, color: "#3B63D4", letterSpacing: "-0.01em" }}>
-                {money(attributedRevenue)}
-              </span>
-              <InlineStack gap="200" blockAlign="center">
-                {revenueDelta != null && (
-                  <span style={{ fontSize: 12, fontWeight: 600, color: revenueDelta >= 0 ? "#17A673" : "#D94E4E" }}>
-                    {revenueDelta >= 0 ? "▲" : "▼"} {Math.abs(revenueDelta)}% vs previous {RANGE_DAYS[range]} days
-                  </span>
-                )}
-                <Text as="span" variant="bodySm" tone="subdued">
-                  Orders placed after a try-on · last {RANGE_DAYS[range]} days
-                </Text>
-              </InlineStack>
-              {purchaseConversionPct != null && (
-                <Text as="span" variant="bodySm" tone="subdued">
-                  {purchaseConversionPct}% of try-on sessions end in a purchase
-                </Text>
-              )}
-            </BlockStack>
-            <BlockStack gap="300">
-              <InlineStack gap="200" blockAlign="center">
-                <IconChip source={ChartFunnelIcon} tone="neutral" />
-                <Text as="span" variant="bodySm" tone="subdued">Widget-to-cart journey</Text>
-              </InlineStack>
-              <FunnelBar label="Widget opens" value={widgetOpens} max={widgetOpens} />
-              <FunnelBar label="Try-ons" value={totalTryons} max={widgetOpens} />
-              <FunnelBar label="Cart adds" value={totalCartAdds} max={widgetOpens} />
-            </BlockStack>
-          </InlineGrid>
-        </Card>
+        <Suspense fallback={<HeroSkeleton />}>
+          <Await resolve={metrics}>
+            {(m) => (
+              <Card padding="500">
+                <InlineGrid columns={{ xs: "1fr", md: "1fr 1fr" }} gap="500">
+                  {/* The page's one accented number: the money. Ledger anatomy —
+                      eyebrow, Playfair hero numeral, delta, mono receipt line. */}
+                  <BlockStack gap="150">
+                    <Eyebrow>Attributed revenue</Eyebrow>
+                    <span
+                      style={{
+                        fontFamily: fonts.serif,
+                        fontSize: 44,
+                        fontWeight: 500,
+                        lineHeight: 1.08,
+                        color: brand.blue,
+                        letterSpacing: "-0.01em",
+                        ...tnum,
+                      }}
+                    >
+                      {money(m.attributedRevenue, m.currencyCode)}
+                    </span>
+                    <Delta value={m.revenueDelta} />
+                    <MonoMeta>
+                      {RANGE_DAYS[range]}d · orders placed after a try-on
+                    </MonoMeta>
+                    {m.purchaseConversionPct != null && (
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        {m.purchaseConversionPct}% of try-on sessions end in a purchase
+                      </Text>
+                    )}
+                  </BlockStack>
+                  <BlockStack gap="300">
+                    <Eyebrow>Widget-to-cart journey</Eyebrow>
+                    <FunnelBar label="Widget opens" value={m.widgetOpens} max={m.widgetOpens} />
+                    <FunnelBar label="Try-ons" value={m.totalTryons} max={m.widgetOpens} />
+                    <FunnelBar label="Cart adds" value={m.totalCartAdds} max={m.widgetOpens} />
+                  </BlockStack>
+                </InlineGrid>
+              </Card>
+            )}
+          </Await>
+        </Suspense>
 
-        {/* ── KPI row (same icon vocabulary as the analytics page) ── */}
-        <InlineGrid columns={{ xs: 1, sm: 3 }} gap="400">
-          <KpiTile
-            label="Total try-ons"
-            value={totalTryons.toLocaleString()}
-            delta={tryonsDelta}
-            hint={`Last ${RANGE_DAYS[range]} days`}
-            icon={CameraIcon}
-            iconTone="neutral"
-            status={verdictFromDelta(tryonsDelta)}
-          />
-          <KpiTile
-            label="Cart conversion"
-            value={cartConversionPct != null ? `${cartConversionPct}%` : "—"}
-            hint="Try-on sessions that added to cart"
-            icon={TargetIcon}
-            iconTone="money"
-          />
-          <KpiTile
-            label="Cart adds"
-            value={totalCartAdds.toLocaleString()}
-            delta={cartsDelta}
-            hint="After a try-on"
-            icon={CartUpIcon}
-            iconTone="neutral"
-            status={verdictFromDelta(cartsDelta)}
-          />
-        </InlineGrid>
+        {/* ── Daily performance: revenue bars + try-on/cart lines, shared
+               x-axis + unified hover, driven by the range selector above ── */}
+        <Suspense fallback={<DailyPerformanceSkeleton />}>
+          <Await resolve={metrics}>
+            {(m) => (
+              <DailyPerformanceCard
+                revenue={m.dailyRevenue}
+                tryons={m.dailyTryons}
+                carts={m.dailyCarts}
+                totals={{ revenue: m.attributedRevenue, tryons: m.totalTryons, carts: m.totalCartAdds }}
+                deltas={{ revenue: m.revenueDelta, tryons: m.tryonsDelta, carts: m.cartsDelta }}
+                formatMoney={(v) => money(v, m.currencyCode)}
+                rangeDays={RANGE_DAYS[range]}
+                cartConversionPct={m.cartConversionPct}
+              />
+            )}
+          </Await>
+        </Suspense>
 
         <Layout>
           {/* ── Plan & usage ── */}
@@ -749,76 +750,13 @@ export default function Index() {
             </Layout.Section>
           )}
 
-          {/* ── Storefront status ── */}
+          {/* ── Storefront status: cached snapshot first, live truth streams in ── */}
           <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <InlineStack align="space-between" blockAlign="center">
-                  <InlineStack gap="300" blockAlign="center">
-                    <IconChip source={StoreOnlineIcon} tone="neutral" size={34} />
-                    <Text as="h2" variant="headingMd">Storefront</Text>
-                  </InlineStack>
-                  {!isLoading && themeStatusOk && storeConnected && storefrontLive && (
-                    <Badge tone="success">All systems operational</Badge>
-                  )}
-                </InlineStack>
-
-                {themeUnreadable && (
-                  <Banner
-                    tone="warning"
-                    title={scopeMissing ? "Reload to verify your widget status" : "Couldn't read your theme"}
-                  >
-                    <Text as="p" variant="bodyMd">
-                      {scopeMissing
-                        ? "Ello now reads your live theme to confirm the Try-On button and widget are actually on. Reload this page to grant the one-time permission."
-                        : "We couldn't read your live theme just now, so the statuses below may be out of date. Reload to try again."}
-                    </Text>
-                    <Box paddingBlockStart="200">
-                      <Button onClick={() => window.location.reload()} variant="primary" size="slim">
-                        {scopeMissing ? "Reload & verify" : "Reload"}
-                      </Button>
-                    </Box>
-                  </Banner>
-                )}
-
-                <BlockStack gap="300">
-                  <PlacementRow {...embedRow} icon={ThemeIcon} />
-                  <PlacementRow {...inlineRow} icon={ButtonIcon} />
-
-                  {/* Plain-language guide for placing the inline button under
-                      Add-to-cart on nested themes (Horizon). Shared component. */}
-                  <InlineButtonPlacementHelp />
-
-                  <InlineStack align="space-between" blockAlign="center">
-                    <InlineStack gap="300" blockAlign="center">
-                      <IconChip
-                        source={DatabaseConnectIcon}
-                        tone={storeConnected ? "good" : "watch"}
-                        size={34}
-                      />
-                      <Text as="span" variant="bodyMd">
-                        {storeConnected ? "Connected to Ello VTO Cloud" : "Connection issue — retrying"}
-                      </Text>
-                    </InlineStack>
-                    {!storeConnected && (
-                      <Button onClick={handleRetrySync} variant="plain" size="slim" loading={isLoading}>
-                        Reconnect
-                      </Button>
-                    )}
-                  </InlineStack>
-                </BlockStack>
-
-                {/* Only surface the banner for a persistent error. The transient
-                    "Syncing…/Checking…" states are intentionally omitted: the
-                    connection badges above already convey status, and a banner
-                    that mounts mid-page after the sync fetcher resolves (then
-                    unmounts on success) reflows everything below it on every
-                    load — a recurring layout shift that hurts CLS. */}
-                {syncFetcher.data && !(syncFetcher.data as { success?: boolean }).success && (
-                  <Box paddingBlockStart="200">{statusBanner}</Box>
-                )}
-              </BlockStack>
-            </Card>
+            <Suspense fallback={<StorefrontStatusCard view={cacheView} {...storefrontProps} />}>
+              <Await resolve={theme}>
+                {(t) => <StorefrontStatusCard view={viewFromLive(t)} {...storefrontProps} />}
+              </Await>
+            </Suspense>
           </Layout.Section>
         </Layout>
 
@@ -877,58 +815,66 @@ export default function Index() {
               </InlineStack>
               <Button variant="plain" onClick={() => navigate("/app/analytics")}>View all analytics</Button>
             </InlineStack>
-            {recent.length === 0 ? (
-              <Box paddingBlock="400">
-                <BlockStack gap="200" inlineAlign="center">
-                  <IconChip source={ViewIcon} tone="neutral" size={38} />
-                  <Text as="p" tone="subdued" alignment="center">
-                    No shopper sessions yet. They&apos;ll appear here as soon as someone opens the widget.
-                  </Text>
-                </BlockStack>
-              </Box>
-            ) : (
-              <BlockStack gap="200">
-                {recent.map((s) => {
-                  const meta = OUTCOME_META[s.outcome] ?? OUTCOME_META.browsed;
-                  return (
-                    <div
-                      key={s.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 12,
-                        border: `1px solid ${brand.ink100}`,
-                        borderRadius: 12,
-                        padding: "10px 14px",
-                      }}
-                    >
-                      <InlineStack gap="300" blockAlign="center" wrap={false}>
-                        <IconChip source={meta.icon} tone={meta.tone} size={34} />
-                        <BlockStack gap="050">
-                          <Text as="span" variant="bodySm" fontWeight="medium">
-                            {s.products.length > 0
-                              ? s.products.map((p) => recentProductNames[p] ?? p).join(", ")
-                              : "Browsed the widget"}
-                          </Text>
-                          <Text as="span" variant="bodySm" tone="subdued">
-                            {timeAgo(s.lastAt)}
-                            {s.device ? ` · ${s.device}` : ""}
-                            {s.tryonCount > 0 ? ` · ${s.tryonCount} try-on${s.tryonCount === 1 ? "" : "s"}` : ""}
-                          </Text>
-                        </BlockStack>
-                      </InlineStack>
-                      <InlineStack gap="200" blockAlign="center" wrap={false}>
-                        {s.revenue > 0 && (
-                          <Text as="span" variant="bodySm" fontWeight="semibold">{money(s.revenue)}</Text>
-                        )}
-                        <StatusPill label={meta.label} tone={meta.tone} />
-                      </InlineStack>
-                    </div>
-                  );
-                })}
-              </BlockStack>
-            )}
+            <Suspense fallback={<RecentRowsSkeleton />}>
+              <Await resolve={recentData}>
+                {(r) =>
+                  r.recent.length === 0 ? (
+                    <Box paddingBlock="400">
+                      <BlockStack gap="200" inlineAlign="center">
+                        <IconChip source={ViewIcon} tone="neutral" size={38} />
+                        <Text as="p" tone="subdued" alignment="center">
+                          No shopper sessions yet. They&apos;ll appear here as soon as someone opens the widget.
+                        </Text>
+                      </BlockStack>
+                    </Box>
+                  ) : (
+                    <BlockStack gap="200">
+                      {r.recent.map((s) => {
+                        const meta = OUTCOME_META[s.outcome] ?? OUTCOME_META.browsed;
+                        return (
+                          <div
+                            key={s.id}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: 12,
+                              border: `1px solid ${brand.ink100}`,
+                              borderRadius: 12,
+                              padding: "10px 14px",
+                            }}
+                          >
+                            <InlineStack gap="300" blockAlign="center" wrap={false}>
+                              <IconChip source={meta.icon} tone={meta.tone} size={34} />
+                              <BlockStack gap="050">
+                                <Text as="span" variant="bodySm" fontWeight="medium">
+                                  {s.products.length > 0
+                                    ? s.products.map((p) => r.recentProductNames[p] ?? p).join(", ")
+                                    : "Browsed the widget"}
+                                </Text>
+                                <Text as="span" variant="bodySm" tone="subdued">
+                                  {timeAgo(s.lastAt)}
+                                  {s.device ? ` · ${s.device}` : ""}
+                                  {s.tryonCount > 0 ? ` · ${s.tryonCount} try-on${s.tryonCount === 1 ? "" : "s"}` : ""}
+                                </Text>
+                              </BlockStack>
+                            </InlineStack>
+                            <InlineStack gap="200" blockAlign="center" wrap={false}>
+                              {s.revenue > 0 && (
+                                <Text as="span" variant="bodySm" fontWeight="semibold">
+                                  {money(s.revenue, r.currencyCode)}
+                                </Text>
+                              )}
+                              <StatusPill label={meta.label} tone={meta.tone} />
+                            </InlineStack>
+                          </div>
+                        );
+                      })}
+                    </BlockStack>
+                  )
+                }
+              </Await>
+            </Suspense>
           </BlockStack>
         </Card>
 
@@ -951,8 +897,366 @@ export default function Index() {
   );
 }
 
+// ─── Money formatter (currency streams in with each data region) ────────────
+function money(n: number, currencyCode: string): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: currencyCode || "USD",
+    maximumFractionDigits: 0,
+  }).format(n);
+}
+
 // ─── Shared icon-component type (matches @shopify/polaris-icons exports) ────
 type IconSource = FunctionComponent<SVGProps<SVGSVGElement>>;
+
+type SyncResult = {
+  success: boolean;
+  message?: string;
+  error?: string;
+  retryable?: boolean;
+  requestId?: string;
+};
+
+// ─── Getting-started checklist (hidden once all steps done) ─────────────────
+function GettingStartedCard({
+  view,
+  effectiveHasPlan,
+  hasPlan,
+  skipBilling,
+  storeConnected,
+  showBillingActivationPending,
+  isLoading,
+  onChoosePlan,
+  onRetrySync,
+  onOpenAppEmbed,
+}: {
+  view: ThemeView;
+  effectiveHasPlan: boolean;
+  hasPlan: boolean;
+  skipBilling: boolean;
+  storeConnected: boolean;
+  showBillingActivationPending: boolean;
+  isLoading: boolean;
+  onChoosePlan: () => void;
+  onRetrySync: () => void;
+  onOpenAppEmbed: () => void;
+}) {
+  const storefrontLive = storefrontLiveFor(view);
+  const allOnboarded = effectiveHasPlan && storeConnected && storefrontLive;
+  if (allOnboarded) return null;
+
+  const checklistTotal = skipBilling ? 2 : 3;
+  const checklistDone =
+    (skipBilling ? 0 : hasPlan ? 1 : 0) + (storeConnected ? 1 : 0) + (storefrontLive ? 1 : 0);
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <InlineStack align="space-between" blockAlign="center">
+          <InlineStack gap="300" blockAlign="center">
+            <IconChip source={ClipboardChecklistIcon} tone="money" size={34} />
+            <BlockStack gap="050">
+              <Text as="h2" variant="headingMd">Getting started</Text>
+              <Text as="p" variant="bodySm" tone="subdued">
+                Complete these steps to go live with virtual try-on.
+              </Text>
+            </BlockStack>
+          </InlineStack>
+          <StatusPill
+            label={`${checklistDone} of ${checklistTotal} done`}
+            tone={checklistDone === checklistTotal ? "good" : "neutral"}
+          />
+        </InlineStack>
+        <ProgressBar
+          progress={Math.round((checklistDone / checklistTotal) * 100)}
+          tone="highlight"
+          size="small"
+        />
+        <BlockStack gap="300">
+          {!skipBilling && (
+            <ChecklistStep
+              state={hasPlan ? "done" : showBillingActivationPending ? "waiting" : "pending"}
+              icon={CreditCardIcon}
+              label={showBillingActivationPending ? "Plan activation in progress" : "Choose a plan"}
+              action={
+                !hasPlan && !showBillingActivationPending ? (
+                  <Button onClick={onChoosePlan} size="slim" variant="primary">Choose plan</Button>
+                ) : undefined
+              }
+            />
+          )}
+
+          <ChecklistStep
+            state={storeConnected ? "done" : "pending"}
+            icon={ConnectIcon}
+            label="Connect your store"
+            action={
+              !storeConnected ? (
+                <Button onClick={onRetrySync} size="slim" loading={isLoading}>Reconnect</Button>
+              ) : undefined
+            }
+          />
+
+          <ChecklistStep
+            state={storefrontLive ? "done" : "pending"}
+            icon={ToggleOnIcon}
+            label="Turn on the Ello widget"
+            action={
+              !storefrontLive ? (
+                <Button onClick={onOpenAppEmbed} size="slim">
+                  {view.live && !view.ok ? "Set up" : "Turn on Ello"}
+                </Button>
+              ) : undefined
+            }
+          />
+        </BlockStack>
+      </BlockStack>
+    </Card>
+  );
+}
+
+// ─── Storefront status card (placement rows + connection row) ───────────────
+function StorefrontStatusCard({
+  view,
+  storeConnected,
+  isLoading,
+  onOpenAppEmbed,
+  onOpenInlineSetup,
+  onRetrySync,
+  syncData,
+}: {
+  view: ThemeView;
+  storeConnected: boolean;
+  isLoading: boolean;
+  onOpenAppEmbed: () => void;
+  onOpenInlineSetup: () => void;
+  onRetrySync: () => void;
+  syncData: SyncResult | undefined;
+}) {
+  const appEmbedOn = view.appEmbedEnabled === true;
+  const inlineOn = view.inlineButtonAdded === true;
+  const storefrontLive = appEmbedOn || inlineOn;
+  const themeUnreadable = !view.ok;
+  const { scopeMissing } = view;
+
+  // ── Live storefront placement rows (inline button + floating embed) ──
+  const inlineRow: PlacementRowProps = inlineOn
+    ? {
+        tone: "on",
+        label: "Inline Try-On button is on your product page",
+        actionLabel: "Open editor",
+        onAction: onOpenInlineSetup,
+      }
+    : view.inlineButtonAdded === false
+      ? {
+          tone: "off",
+          label: "Inline Try-On button isn't on your product page",
+          helper: "Your main conversion placement — one click adds it.",
+          actionLabel: "Add button",
+          onAction: onOpenInlineSetup,
+        }
+      : {
+          tone: "unknown",
+          label: "Inline Try-On button — couldn't verify",
+          helper: scopeMissing
+            ? "Reload above so Ello can verify your theme."
+            : "We can't auto-detect it on this theme. Use the button to add it if it isn't there.",
+          actionLabel: "Add button",
+          onAction: onOpenInlineSetup,
+        };
+
+  // The Ello app embed is the engine: it loads the widget on your storefront
+  // and powers every try-on (the inline button included). So it leads, and its
+  // CTA reassures merchants the only step is Save.
+  const embedRow: PlacementRowProps = appEmbedOn
+    ? {
+        tone: "on",
+        label: "Ello widget is on — powering try-ons across your store",
+        actionLabel: "Open theme editor",
+        onAction: onOpenAppEmbed,
+      }
+    : view.appEmbedPresentButDisabled
+      ? {
+          tone: "off",
+          label: "Ello widget is turned off in your theme",
+          helper: "Click Turn on — we re-enable it for you, then just click Save in the editor.",
+          actionLabel: "Turn on",
+          onAction: onOpenAppEmbed,
+        }
+      : view.appEmbedEnabled === false
+        ? {
+            tone: "off",
+            label: "Ello widget isn't turned on yet",
+            helper: "This powers every try-on. Click Turn on — we switch it on for you, then just click Save.",
+            actionLabel: "Turn on",
+            onAction: onOpenAppEmbed,
+          }
+        : {
+            tone: "unknown",
+            label: "Couldn't check if the Ello widget is on",
+            helper: scopeMissing
+              ? "Reload above so Ello can verify your theme."
+              : "We couldn't read your theme just now — reload to retry.",
+            actionLabel: "Turn on",
+            onAction: onOpenAppEmbed,
+          };
+
+  return (
+    <Card>
+      <BlockStack gap="400">
+        <InlineStack align="space-between" blockAlign="center">
+          <InlineStack gap="300" blockAlign="center">
+            <IconChip source={StoreOnlineIcon} tone="neutral" size={34} />
+            <Text as="h2" variant="headingMd">Storefront</Text>
+          </InlineStack>
+          {!isLoading && view.ok && storeConnected && storefrontLive && (
+            <Badge tone="success">All systems operational</Badge>
+          )}
+        </InlineStack>
+
+        {/* Only the LIVE read may raise the warning — while the cached snapshot
+            paints (view.live=false) we stay quiet instead of flashing a scare
+            banner that usually resolves itself a second later. */}
+        {view.live && themeUnreadable && (
+          <Banner
+            tone="warning"
+            title={scopeMissing ? "Reload to verify your widget status" : "Couldn't read your theme"}
+          >
+            <Text as="p" variant="bodyMd">
+              {scopeMissing
+                ? "Ello now reads your live theme to confirm the Try-On button and widget are actually on. Reload this page to grant the one-time permission."
+                : "We couldn't read your live theme just now, so the statuses below may be out of date. Reload to try again."}
+            </Text>
+            <Box paddingBlockStart="200">
+              <Button onClick={() => window.location.reload()} variant="primary" size="slim">
+                {scopeMissing ? "Reload & verify" : "Reload"}
+              </Button>
+            </Box>
+          </Banner>
+        )}
+
+        <BlockStack gap="300">
+          <PlacementRow {...embedRow} icon={ThemeIcon} />
+          <PlacementRow {...inlineRow} icon={ButtonIcon} />
+
+          {/* Plain-language guide for placing the inline button under
+              Add-to-cart on nested themes (Horizon). Shared component. */}
+          <InlineButtonPlacementHelp />
+
+          <InlineStack align="space-between" blockAlign="center">
+            <InlineStack gap="300" blockAlign="center">
+              <IconChip
+                source={DatabaseConnectIcon}
+                tone={storeConnected ? "good" : "watch"}
+                size={34}
+              />
+              <Text as="span" variant="bodyMd">
+                {storeConnected ? "Connected to Ello VTO Cloud" : "Connection issue — retrying"}
+              </Text>
+            </InlineStack>
+            {!storeConnected && (
+              <Button onClick={onRetrySync} variant="plain" size="slim" loading={isLoading}>
+                Reconnect
+              </Button>
+            )}
+          </InlineStack>
+        </BlockStack>
+
+        {/* Only surface the banner for a persistent error. Transient states are
+            conveyed by the badges above; a mounting/unmounting banner reflows
+            everything below it and hurts CLS. */}
+        {syncData && !syncData.success && (
+          <Box paddingBlockStart="200">
+            <Banner
+              tone="critical"
+              title={syncData.retryable !== false ? "Connection Failed (Retrying...)" : "Connection Failed"}
+            >
+              <p>{syncData.message || syncData.error}</p>
+              <div style={{ marginTop: "8px" }}>
+                {syncData.retryable !== false && (
+                  <Button onClick={onRetrySync} variant="plain" tone="critical">Try Again</Button>
+                )}
+              </div>
+              {syncData.requestId && (
+                <p style={{ marginTop: "0.5rem", fontSize: "11px", opacity: 0.8 }}>Ref: {syncData.requestId}</p>
+              )}
+            </Banner>
+          </Box>
+        )}
+      </BlockStack>
+    </Card>
+  );
+}
+
+// ─── Skeletons (fixed sizes so streamed sections never shift layout) ────────
+// Thin gray bars centered inside line boxes sized to the REAL rendered line
+// heights, so skeleton and content occupy identical vertical space.
+function LineBox({ height, width, bar = 12 }: { height: number; width: number | string; bar?: number }) {
+  return (
+    <div style={{ height, display: "flex", alignItems: "center" }}>
+      <div style={{ width, height: bar, borderRadius: 3, background: brand.ink50 }} />
+    </div>
+  );
+}
+
+// HeadlineStrip = 1px rule + 12px pad + eyebrow line (~17) + 4 + 14.5px/1.55
+// text line (~23) + 13px pad + 1px dashed ≈ 71px.
+function HeadlineSkeleton() {
+  return (
+    <div style={{ borderTop: `1px solid ${brand.ink200}`, borderBottom: `1px dashed ${brand.ink200}`, padding: "12px 2px 13px" }}>
+      <div style={{ marginBottom: 4 }}>
+        <LineBox height={17} width={170} bar={11} />
+      </div>
+      <LineBox height={23} width="72%" bar={14} />
+    </div>
+  );
+}
+
+// Mirrors the hero card line for line. Left (gap 150 = 6px): eyebrow ~17,
+// serif numeral ~48, delta ~18, mono meta ~17, conversion line ~20 → 144.
+// Right (gap 300 = 12px): eyebrow ~17 + 3 × FunnelBar (label 19 + 4 + bar 9).
+function HeroSkeleton() {
+  return (
+    <Card padding="500">
+      <InlineGrid columns={{ xs: "1fr", md: "1fr 1fr" }} gap="500">
+        <BlockStack gap="150">
+          <LineBox height={17} width={130} bar={11} />
+          <div style={{ width: 210, height: 48, borderRadius: 8, background: brand.ink50 }} />
+          <LineBox height={18} width={120} />
+          <LineBox height={17} width={230} bar={11} />
+          <LineBox height={20} width={220} bar={13} />
+        </BlockStack>
+        <BlockStack gap="300">
+          <LineBox height={17} width={165} bar={11} />
+          {[0, 1, 2].map((i) => (
+            <BlockStack key={i} gap="100">
+              <LineBox height={19} width="100%" bar={13} />
+              <div style={{ width: "100%", height: 9, borderRadius: 3, background: brand.ink50 }} />
+            </BlockStack>
+          ))}
+        </BlockStack>
+      </InlineGrid>
+    </Card>
+  );
+}
+
+function RecentRowsSkeleton() {
+  return (
+    <BlockStack gap="200">
+      {[0, 1, 2].map((i) => (
+        <div
+          key={i}
+          style={{
+            height: 58,
+            border: `1px solid ${brand.ink100}`,
+            borderRadius: 12,
+            background: brand.ink50,
+          }}
+        />
+      ))}
+    </BlockStack>
+  );
+}
 
 // ─── Storefront placement status row ───────────────────────────────────────
 // The identity icon says WHAT the row is (theme embed, inline button); the

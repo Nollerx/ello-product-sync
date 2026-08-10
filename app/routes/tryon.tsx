@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { checkAndRecordUsage, createShopifyUsageCharge, releaseTryonCredit } from "../lib/usage-billing.server";
 import { clientIpForRateLimit } from "../lib/client-ip.server";
@@ -13,6 +14,32 @@ const ML_API_URL =
 // Gemini NB2 renders finish in 10–30s; 90s is generous headroom while preventing a
 // degraded render engine from holding slots for the full 300s request timeout.
 const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS || 90_000);
+
+// ─── Engine auth ──────────────────────────────────────────────────────────────
+// The render engine used to accept unauthenticated POSTs from anywhere, so anyone
+// who learned its run.app URL could bill full Gemini renders (~$0.067 each) to our
+// Google Cloud credits. The engine now requires an HMAC header on /tryon; this is
+// the signer. Shared secret is WIDGET_BOOTSTRAP_SECRET, which both engine services
+// already hold — mount the same Secret Manager secret on this service.
+//
+// Signed payload is "<unix_seconds>.<storeSlug>": the timestamp bounds replay to the
+// engine's skew window (5 min) and the slug pins a captured header to one store.
+// This runs server-side only — the secret must never reach widget JS.
+const ENGINE_AUTH_SECRET = process.env.WIDGET_BOOTSTRAP_SECRET;
+if (!ENGINE_AUTH_SECRET) {
+    console.error(
+        "[TryOn Proxy] WIDGET_BOOTSTRAP_SECRET is not set — renders will be rejected 401 by the engine.",
+    );
+}
+
+function engineAuthHeaders(storeSlug: string): Record<string, string> {
+    if (!ENGINE_AUTH_SECRET) return {};
+    const ts = Math.floor(Date.now() / 1000);
+    const sig = createHmac("sha256", ENGINE_AUTH_SECRET)
+        .update(`${ts}.${storeSlug}`)
+        .digest("hex");
+    return { "X-Ello-Auth": `t=${ts},v1=${sig}` };
+}
 
 const CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -174,7 +201,12 @@ export async function action({ request }: ActionFunctionArgs) {
                 `${ML_API_URL}/tryon`,
                 {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: {
+                        "Content-Type": "application/json",
+                        // Signed with the slug the engine will read off the forwarded
+                        // body (body.storeSlug), so the signature matches what it verifies.
+                        ...engineAuthHeaders(storeSlug),
+                    },
                     body: JSON.stringify(body),
                     signal: AbortSignal.timeout(RENDER_TIMEOUT_MS),
                 }
