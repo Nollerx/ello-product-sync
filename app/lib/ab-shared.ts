@@ -2,6 +2,16 @@
 // app.proof.tsx renders these in the browser; the .server module re-exports
 // them for the data layer). Mirrors the analytics-shared.ts pattern.
 
+export type AbExperimentKind = "sitewide" | "product";
+
+/** One product in a product split test, frozen at start time. */
+export interface AbTestProduct {
+  /** Normalized numeric Shopify product id (matches purchase line_items joins). */
+  id: string;
+  handle: string;
+  title: string;
+}
+
 export interface AbExperiment {
   id: string;
   storeSlug: string;
@@ -12,6 +22,10 @@ export interface AbExperiment {
   endedAt: string | null;
   /** True when the outfit (CTL) split rode along with this test's unified start. */
   ctlAttached: boolean;
+  /** 'sitewide' = the classic holdout; 'product' = per-product 50/50 split. */
+  kind: AbExperimentKind;
+  /** Frozen product list for product tests; null for sitewide. */
+  testProducts: AbTestProduct[] | null;
 }
 
 export interface AbVariantStats {
@@ -47,6 +61,46 @@ export interface AbResults {
   pdpRelativeLift: number | null;
 }
 
+/** One arm of one product in a product split test. */
+export interface AbProductArmStats {
+  sessions: number;
+  purchaseSessions: number;
+  orders: number;
+  revenue: number;
+  conversionPct: number | null;
+}
+
+export interface AbProductRow {
+  productId: string;
+  title: string;
+  handle: string;
+  exposed: AbProductArmStats;
+  holdout: AbProductArmStats;
+  /** Relative conversion lift on THIS product (bought it / viewed it). */
+  relativeLift: number | null;
+  /** One-sided confidence exposed beats holdout on this product. */
+  confidence: number | null;
+  /** True once this product alone clears the per-row verdict bar. */
+  hasRowSample: boolean;
+}
+
+export interface AbProductResults {
+  rows: AbProductRow[];
+  /**
+   * Pooled across every product in the test. The unit is a (shopper, product)
+   * pair: each shopper who viewed a test product counts once per product, and
+   * converts by buying that product. This is the test's primary verdict —
+   * individual products often can't reach significance on their own.
+   */
+  pooled: {
+    exposed: AbProductArmStats;
+    holdout: AbProductArmStats;
+    relativeLift: number | null;
+    confidence: number | null;
+    hasMinimumSample: boolean;
+  };
+}
+
 export interface ReceiptRow {
   orderId: string | null;
   productId: string | null;
@@ -66,6 +120,17 @@ export const AB_MIN_TOTAL_CONVERTERS = 10;
 // Complete-the-Look holdout test: the causal AOV lift renders once each arm has
 // this many attributed orders (AOV needs orders, not sessions, to stabilize).
 export const CTL_MIN_ORDERS_PER_ARM = 10;
+
+// Product split test bars. The POOLED verdict reuses the same 200/arm rule as
+// the site-wide test (the pooled unit is a shopper×product view-pair). A
+// PER-PRODUCT row only shows its own verdict once that product alone clears
+// these — below them the row honestly reads "not enough shoppers yet" instead
+// of a fake-precise lift.
+export const AB_PRODUCT_ROW_MIN_SESSIONS_PER_ARM = 100;
+export const AB_PRODUCT_ROW_MIN_CONVERTERS = 5;
+// Cap on how many products one test can hold (the frozen list rides the
+// widget config payload on every storefront pageview).
+export const AB_PRODUCT_MAX_PRODUCTS = 40;
 
 // One-sided confidence a verdict must clear before the UI calls anything
 // "causal" — same bar for the conversion z-test and the AOV t-test.

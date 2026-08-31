@@ -1,28 +1,33 @@
 // Proof — the merchant-facing evidence page, and the single home for testing.
 //
-// One page, four jobs:
-//   1. The scorecard: attributed sales, try-on→purchase rate, median time to
-//      purchase (tracked since day one, displayed here for the first time).
-//   2. The proof test: start/stop a widget-wide A/B holdout and read the lift
-//      with a significance verdict. Measured, not modeled.
-//   3. The outfit-upsell test: the Complete-the-Look holdout split (treatment vs
-//      holdout AOV). The toggle used to live on Widget Design; every
-//      experiment now starts and reports here.
-//   4. The receipts: every attributed order with its Shopify order id and the
-//      try-on→purchase gap, exportable, auditable line by line.
+// Experiments are presented as QUESTIONS, not configurations — a merchant
+// picks the question, Ello picks the statistics:
+//   1. "Does try-on lift my store's sales?"  — the site-wide holdout: a slice
+//      of shoppers browses without Ello and everyone's buying is compared.
+//   2. "Which products does try-on actually sell?" — the product split test:
+//      on the merchant's chosen products, every shopper is split 50/50
+//      (product-salted hash) and conversion is compared on the SAME product.
+//      Splitting shoppers within a product — not products against each other —
+//      is what keeps the comparison clean.
+//   3. "Does the outfit upsell raise order size?" — the Complete-the-Look
+//      holdout split (treatment vs holdout AOV).
+// Plus the standing evidence: the scorecard, the returns comparison, and the
+// receipts ledger (every attributed order, exportable, auditable line by line).
 //
-// One test, three answers: starting the proof test starts the outfit split
-// alongside (same holdout percentage), and the returns section fills in as
-// refunds arrive. The two splits stay mechanically independent (FNV salted
-// per experiment vs FNV salted 'ctl'), so they can never cross-contaminate.
+// One question at a time: the DB enforces a single running experiment per
+// store, which is also the honest-statistics rule (overlapping tests would
+// contaminate each other's arms). The CTL split rides along with a site-wide
+// start; the splits stay mechanically independent (FNV salted per experiment
+// / per experiment+product / 'ctl'), so they can never cross-contaminate.
 
-import { useEffect, useState, type ComponentProps } from "react";
+import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData, useSearchParams } from "react-router";
 import {
   Page,
   Card,
   BlockStack,
+  Checkbox,
   InlineStack,
   InlineGrid,
   Text,
@@ -33,17 +38,14 @@ import {
   Select,
 } from "@shopify/polaris";
 import {
-  CashDollarIcon,
-  TargetIcon,
-  ClockIcon,
-  ChartVerticalFilledIcon,
   ConnectIcon,
   HideIcon,
+  ProductIcon,
   ReturnIcon,
 } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
-import { SectionHeading, brand } from "../components/ui";
-import { HeadlineStrip, IconChip, KpiTile, StatusPill, type Tone } from "../components/analytics";
+import { MonoMeta, PageHeader, PillButton, SectionHeading, brand } from "../components/ui";
+import { HeadlineStrip, IconChip, KpiBand, StatusPill, type Tone } from "../components/analytics";
 import {
   getConversionSummary,
   getCtlPerformance,
@@ -52,21 +54,37 @@ import {
 } from "../lib/analytics.server";
 import {
   AB_MIN_SESSIONS_PER_ARM,
+  AB_PRODUCT_MAX_PRODUCTS,
+  AB_PRODUCT_ROW_MIN_SESSIONS_PER_ARM,
   AB_VERDICT_CONFIDENCE,
   CTL_MIN_ORDERS_PER_ARM,
   welchAovConfidence,
+  type AbProductResults,
   type AbResults,
+  type AbTestProduct,
 } from "../lib/ab-shared";
 import {
   getExperimentResults,
+  getProductExperimentResults,
   getReceipts,
+  getTopViewedProducts,
   listExperiments,
   startExperiment,
+  startProductExperiment,
   stopExperiment,
 } from "../lib/ab-testing.server";
+import { fetchStorefrontProductRefs } from "../lib/storefront-names.server";
 import { supabaseAdmin } from "../lib/supabase.server";
 
 const RANGE_DAYS = 30;
+
+// Setup payload for the product split test's question card: eligibility plus
+// the "choose for me" suggestion list (most-viewed, try-on-enabled products).
+type ProductSetup = {
+  eligible: boolean;
+  reason: string | null;
+  suggestions: Array<{ id: string; title: string; handle: string; views: number }>;
+} | null;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -98,6 +116,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       experiments: [],
       latestExperimentId: null,
       results: null,
+      productResults: null as AbProductResults | null,
+      productSetup: null as ProductSetup | null,
       receipts: [],
       titles: {} as Record<string, string>,
       ctl: null,
@@ -125,7 +145,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const winFrom = experiment ? new Date(experiment.startedAt) : from;
   const winTo = experiment?.endedAt ? new Date(experiment.endedAt) : to;
 
-  const [summary, receipts, ctl, returns, storeRow, results] = await Promise.all([
+  const [summary, receipts, ctl, returns, storeRow, results, productResults] = await Promise.all([
     getConversionSummary(slug, winFrom, winTo),
     getReceipts(slug, winFrom, winTo, 100),
     // When the outfit split rode along with this test, freeze the arms to the
@@ -147,12 +167,78 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     getReturnRates(slug, winFrom, winTo),
     supabaseAdmin
       .from("vto_stores")
-      .select("complete_the_look_enabled, ctl_holdout_enabled, ctl_holdout_enabled_at, ctl_holdout_percent")
+      .select(
+        "complete_the_look_enabled, ctl_holdout_enabled, ctl_holdout_enabled_at, ctl_holdout_percent, clothing_population_type, tryon_targeting_mode, tryon_included_product_ids",
+      )
       .eq("shop_domain", shop)
       .maybeSingle()
       .then((r) => r.data),
-    experiment ? getExperimentResults(slug, experiment.id) : Promise.resolve(null),
+    experiment && experiment.kind !== "product"
+      ? getExperimentResults(slug, experiment.id)
+      : Promise.resolve(null),
+    experiment && experiment.kind === "product"
+      ? getProductExperimentResults(slug, experiment)
+      : Promise.resolve(null),
   ]);
+
+  // Product-test setup suggestions ("choose for me"): the store's most-viewed
+  // products from the last 30 days, filtered to try-on-enabled ones and
+  // resolved to titles + handles. Only computed when a new test could start.
+  const running = experiments.find((e) => e.status === "running") ?? null;
+  let productSetup: ProductSetup = null;
+  if (!running) {
+    if (storeRow?.clothing_population_type === "supabase") {
+      productSetup = {
+        eligible: false,
+        reason: "The product test needs a Shopify product catalog.",
+        suggestions: [],
+      };
+    } else {
+      try {
+        const top = await getTopViewedProducts(slug, 30, 20);
+        let candidates = top;
+        const mode = (storeRow?.tryon_targeting_mode as string | null) || "all";
+        if (mode === "products") {
+          const included = new Set(
+            (Array.isArray(storeRow?.tryon_included_product_ids)
+              ? (storeRow!.tryon_included_product_ids as string[])
+              : []
+            ).map((id) => String(id).replace(/^.*\//, "")),
+          );
+          candidates = candidates.filter((c) => included.has(c.productId));
+        } else if (mode === "all") {
+          const { data: hidden } = await supabaseAdmin
+            .from("clothing_items")
+            .select("item_id")
+            .eq("store_id", slug)
+            .eq("data_source", "shopify")
+            .eq("active", false);
+          const hiddenIds = new Set(
+            (hidden ?? []).map((r) => String(r.item_id).replace(/^.*\//, "")),
+          );
+          candidates = candidates.filter((c) => !hiddenIds.has(c.productId));
+        }
+        const refs = await fetchStorefrontProductRefs(
+          store.shopDomain,
+          store.storefrontToken,
+          candidates.map((c) => `gid://shopify/Product/${c.productId}`),
+        );
+        productSetup = {
+          eligible: true,
+          reason: null,
+          suggestions: candidates
+            .map((c) => {
+              const ref = refs.get(c.productId);
+              return ref ? { id: c.productId, title: ref.title, handle: ref.handle, views: c.views } : null;
+            })
+            .filter((s): s is NonNullable<typeof s> => s != null),
+        };
+      } catch (err) {
+        console.error("[proof] product setup suggestions failed (non-fatal):", err);
+        productSetup = { eligible: true, reason: null, suggestions: [] };
+      }
+    }
+  }
 
   const fmtDay = (d: Date) =>
     d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -186,6 +272,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     experiments,
     latestExperimentId: latestExperiment?.id ?? null,
     results,
+    productResults,
+    productSetup,
     receipts,
     titles,
     ctl,
@@ -248,6 +336,42 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }
     }
     return res;
+  }
+  if (intent === "start_product") {
+    // The client sends [{id, title?, handle?}] (numeric ids or GIDs). Handles
+    // and titles are re-resolved server-side from the Storefront API so the
+    // frozen list is authoritative — a stale client label can't corrupt the
+    // widget's URL matching. Products that fail to resolve are dropped.
+    let picked: Array<{ id: string; title?: string; handle?: string }> = [];
+    try {
+      const parsed = JSON.parse(String(form.get("products") ?? "[]"));
+      if (Array.isArray(parsed)) picked = parsed;
+    } catch {
+      return { ok: false, error: "Could not read the product list. Try again." };
+    }
+    const ids = Array.from(
+      new Set(
+        picked
+          .map((p) => String(p?.id ?? "").replace(/^.*\//, ""))
+          .filter((id) => /^\d{1,20}$/.test(id)),
+      ),
+    ).slice(0, AB_PRODUCT_MAX_PRODUCTS);
+    if (ids.length === 0) return { ok: false, error: "Pick at least one product for the test." };
+    const refs = await fetchStorefrontProductRefs(
+      store.shopDomain,
+      store.storefrontToken,
+      ids.map((id) => `gid://shopify/Product/${id}`),
+    );
+    const products: AbTestProduct[] = ids
+      .map((id) => refs.get(id))
+      .filter((r): r is NonNullable<typeof r> => r != null)
+      .map((r) => ({ id: r.id, handle: r.handle, title: r.title }));
+    if (products.length === 0) {
+      return { ok: false, error: "None of those products could be resolved. Are they published?" };
+    }
+    const res = await startProductExperiment(store.slug, products);
+    if (!res.ok) return res;
+    return { ok: true, dropped: ids.length - products.length };
   }
   if (intent === "stop") {
     const experimentId = String(form.get("experimentId") ?? "");
@@ -635,13 +759,151 @@ function liftVerdict(results: AbResults): { label: string; tone: Tone } {
   return { label: "Too early to call", tone: "neutral" };
 }
 
+// Same verdict ladder for the product test's pooled readout.
+function pooledVerdict(pooled: NonNullable<AbProductResults>["pooled"]): { label: string; tone: Tone } {
+  if (!pooled.hasMinimumSample) return { label: "Collecting data", tone: "neutral" };
+  if (pooled.relativeLift == null || pooled.confidence == null)
+    return { label: "Collecting data", tone: "neutral" };
+  if (pooled.relativeLift <= 0) return { label: "No lift yet", tone: "watch" };
+  if (pooled.confidence >= AB_VERDICT_CONFIDENCE) return { label: "Proven lift", tone: "good" };
+  if (pooled.confidence >= 0.9) return { label: "Likely lift", tone: "watch" };
+  return { label: "Too early to call", tone: "neutral" };
+}
+
+// "≈ N more days at the current pace" for a running test's collecting banner.
+// Pace = the SLOWER arm's fill rate since the test started; null when there's
+// no pace yet or the verdict bar is already cleared.
+function paceEstimateDays(
+  startedAt: string,
+  exposedSessions: number,
+  holdoutSessions: number,
+  minPerArm: number,
+): number | null {
+  const daysElapsed = Math.max((Date.now() - new Date(startedAt).getTime()) / 86400000, 0.25);
+  const minArm = Math.min(exposedSessions, holdoutSessions);
+  const deficit = minPerArm - minArm;
+  if (deficit <= 0) return null;
+  const rate = minArm / daysElapsed;
+  if (rate <= 0) return null;
+  return Math.ceil(deficit / rate);
+}
+
+// One question in the experiments menu: icon chip, the plain-English question,
+// what the merchant will learn, and either a start control or an expand hook.
+// Expandable cards (onOpen given) are clickable anywhere while collapsed and
+// wear a blue ring while open — the same "this one is active" language as the
+// Widget Design style tiles.
+function QuestionCard({
+  icon,
+  tone,
+  question,
+  learn,
+  meta,
+  pill,
+  action,
+  open,
+  onOpen,
+  onClose,
+  children,
+}: {
+  icon: ComponentProps<typeof IconChip>["source"];
+  tone: Tone;
+  question: string;
+  learn: string;
+  meta?: string;
+  pill?: { label: string; tone: Tone } | null;
+  action?: ReactNode;
+  open?: boolean;
+  onOpen?: () => void;
+  onClose?: () => void;
+  children?: ReactNode;
+}) {
+  const expandable = typeof onOpen === "function";
+  const clickable = expandable && !open;
+  const resolvedAction =
+    action ??
+    (expandable ? (
+      open ? (
+        <PillButton onClick={() => onClose?.()}>Close</PillButton>
+      ) : (
+        <PillButton onClick={() => onOpen?.()}>Set up</PillButton>
+      )
+    ) : undefined);
+  return (
+    <div
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={clickable ? () => onOpen?.() : undefined}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") onOpen?.();
+            }
+          : undefined
+      }
+      style={{
+        border: `1px solid ${open ? brand.blue300 : brand.ink200}`,
+        boxShadow: open ? `0 0 0 1px ${brand.blue300}` : undefined,
+        background: brand.white,
+        borderRadius: 12,
+        padding: "16px 18px",
+        cursor: clickable ? "pointer" : undefined,
+        transition: "border-color 120ms ease, box-shadow 120ms ease",
+      }}
+    >
+      <BlockStack gap="200">
+        <InlineStack gap="300" blockAlign="start" wrap={false}>
+          <IconChip source={icon} tone={tone} size={36} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <InlineStack gap="200" blockAlign="center" wrap>
+              <span style={{ fontSize: 15, fontWeight: 600, color: brand.ink }}>{question}</span>
+              {pill && <StatusPill label={pill.label} tone={pill.tone} />}
+            </InlineStack>
+            <Text as="p" variant="bodySm" tone="subdued">
+              {learn}
+            </Text>
+          </div>
+          {resolvedAction && <div style={{ flexShrink: 0 }}>{resolvedAction}</div>}
+        </InlineStack>
+        {meta && !open && <MonoMeta>{meta}</MonoMeta>}
+        {children}
+      </BlockStack>
+    </div>
+  );
+}
+
 // ─── page ───────────────────────────────────────────────────────────────────
 
 export default function ProofPage() {
   const data = useLoaderData<typeof loader>();
-  const fetcher = useFetcher<{ ok: boolean; error?: string; action?: string }>();
+  const fetcher = useFetcher<{ ok: boolean; error?: string; action?: string; dropped?: number }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [holdoutPct, setHoldoutPct] = useState("10");
+  // Which question card is expanded in the experiments menu.
+  const [openQuestion, setOpenQuestion] = useState<"sitewide" | "product" | null>(null);
+  // Product-test setup state, seeded from the loader's "choose for me" list.
+  const initialSetup = data.ready ? data.productSetup : null;
+  const [productList, setProductList] = useState<
+    Array<{ id: string; title: string; handle: string; views?: number }>
+  >(() => initialSetup?.suggestions ?? []);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set((initialSetup?.suggestions ?? []).map((s) => s.id)),
+  );
+  // Suggestions can arrive on a later revalidation (e.g. right after a test
+  // stops) — adopt them only while the merchant hasn't built their own list.
+  useEffect(() => {
+    if (!initialSetup || initialSetup.suggestions.length === 0) return;
+    setProductList((prev) => (prev.length ? prev : initialSetup.suggestions));
+    setSelectedIds((prev) => (prev.size ? prev : new Set(initialSetup.suggestions.map((s) => s.id))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSetup?.suggestions.length]);
+  const selectedViews = useMemo(
+    () =>
+      productList
+        .filter((p) => selectedIds.has(p.id))
+        .reduce((n, p) => n + (p.views ?? 0), 0),
+    [productList, selectedIds],
+  );
 
   // After a successful action, steer the view: a reset lands on the fresh
   // walkthrough page; anything else (start/stop) snaps back to the current
@@ -673,7 +935,7 @@ export default function ProofPage() {
     );
   }
 
-  const { summary, experiment, experiments, latestExperimentId, results, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, ctlWindowPct, returns, rangeDays, freshView, windowLabel } = data;
+  const { summary, experiment, experiments, latestExperimentId, results, productResults, productSetup, receipts, titles, ctl, ctlFeatureOn, ctlTestRunning, ctlTestSince, ctlTestPct, ctlWindowPct, returns, rangeDays, freshView, windowLabel } = data;
 
   const setFreshView = (on: boolean) => {
     const next = new URLSearchParams(searchParams);
@@ -688,10 +950,6 @@ export default function ProofPage() {
 
   const viewingPast =
     experiment != null && latestExperimentId != null && experiment.id !== latestExperimentId;
-  // A new test can start only when nothing is running (the latest experiment
-  // is the only one that can ever be running).
-  const canStartNew =
-    experiments.length > 0 && experiments[0].status === "completed";
 
   const showExperiment = (id: string | null) => {
     const next = new URLSearchParams(searchParams);
@@ -705,9 +963,9 @@ export default function ProofPage() {
   const fmtExperiment = (e: (typeof experiments)[number]) => {
     const d = (s: string) =>
       new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    return `${d(e.startedAt)} – ${e.endedAt ? d(e.endedAt) : "now"} · ${
-      e.status === "running" ? "Running" : "Completed"
-    } · ${e.holdoutPercent}% holdout`;
+    return `${e.kind === "product" ? "Product test" : "Store-wide"} · ${d(e.startedAt)} – ${
+      e.endedAt ? d(e.endedAt) : "now"
+    } · ${e.status === "running" ? "Running" : "Completed"}`;
   };
   const busy = fetcher.state !== "idle";
 
@@ -727,10 +985,66 @@ export default function ProofPage() {
   const currency = receipts.find((r) => r.currency)?.currency ?? null;
   const medianSecs = median(receipts.map((r) => r.secondsToPurchase));
 
-  const verdict = results ? liftVerdict(results) : null;
-  const liftPct =
-    results?.relativeLift != null ? `${results.relativeLift >= 0 ? "+" : ""}${(results.relativeLift * 100).toFixed(1)}%` : "—";
-  const confidencePct = results?.confidence != null ? `${Math.min(99.9, results.confidence * 100).toFixed(1)}%` : "—";
+  // The lift KPI reads from whichever test the page is windowed to.
+  const isProductTest = experiment?.kind === "product";
+  const activeLift = isProductTest ? productResults?.pooled.relativeLift ?? null : results?.relativeLift ?? null;
+  const activeConfidence = isProductTest ? productResults?.pooled.confidence ?? null : results?.confidence ?? null;
+  const activeHasSample = isProductTest
+    ? productResults?.pooled.hasMinimumSample ?? false
+    : results?.hasMinimumSample ?? false;
+  const verdict = isProductTest
+    ? productResults
+      ? pooledVerdict(productResults.pooled)
+      : null
+    : results
+      ? liftVerdict(results)
+      : null;
+  const liftPct = activeLift != null ? `${activeLift >= 0 ? "+" : ""}${(activeLift * 100).toFixed(1)}%` : "—";
+  const confidencePct =
+    activeConfidence != null ? `${Math.min(99.9, activeConfidence * 100).toFixed(1)}%` : "—";
+
+  // Experiments menu: shown whenever nothing is running and we're not pinned
+  // to a past test — covers both "never ran a test" and "latest completed".
+  const runningNow = experiment?.status === "running";
+  const showMenu = !runningNow && !viewingPast;
+  const hasEverRun = experiments.length > 0;
+  const selectedCount = productList.filter((p) => selectedIds.has(p.id)).length;
+  // Rough time-to-verdict for the setup card: selected products' recent view
+  // pace, halved per arm, against the pooled 200/arm bar. Views only exist for
+  // suggested products, so picker-only lists show no estimate.
+  const estSetupDays =
+    selectedViews > 0 ? Math.ceil(AB_MIN_SESSIONS_PER_ARM / (selectedViews / 30 / 2)) : null;
+
+  const pickProducts = async () => {
+    const picker = window.shopify?.resourcePicker;
+    if (!picker) return;
+    const sel = await picker({
+      type: "product",
+      multiple: true,
+      selectionIds: productList
+        .filter((p) => selectedIds.has(p.id))
+        .map((p) => ({ id: `gid://shopify/Product/${p.id}` })),
+    });
+    if (!sel) return;
+    const mapped = sel.map((r) => ({
+      id: r.id.replace(/^.*\//, ""),
+      title: r.title ?? r.id,
+      handle: r.handle ?? "",
+      views: productList.find((p) => p.id === r.id.replace(/^.*\//, ""))?.views,
+    }));
+    setProductList(mapped);
+    setSelectedIds(new Set(mapped.map((m) => m.id)));
+  };
+
+  const startProductTest = () => {
+    const products = productList
+      .filter((p) => selectedIds.has(p.id))
+      .map(({ id, title, handle }) => ({ id, title, handle }));
+    fetcher.submit(
+      { intent: "start_product", products: JSON.stringify(products) },
+      { method: "post" },
+    );
+  };
 
   // CTL test verdict: the lift number renders once each arm has enough orders,
   // but "causal" is only claimed when the Welch t-test on AOV clears the same
@@ -783,27 +1097,30 @@ export default function ProofPage() {
   };
 
   return (
-    <Page
-      title="Proof"
-      subtitle="Measured on your own shoppers. Not modeled, not projected."
-      secondaryActions={
-        freshView
-          ? [{ content: "Exit fresh view", onAction: () => setFreshView(false) }]
-          : [
-              { content: "View as a new store", onAction: () => setFreshView(true) },
-              ...(experiments.length > 0
-                ? [
-                    {
-                      content: "Reset page (tests stay in history)",
-                      destructive: true,
-                      onAction: () => fetcher.submit({ intent: "reset_demo" }, { method: "post" }),
-                    },
-                  ]
-                : []),
-            ]
-      }
-    >
+    <Page>
       <BlockStack gap="500">
+        <PageHeader
+          kicker="Experiments"
+          title="Proof"
+          actions={
+            freshView ? (
+              <PillButton onClick={() => setFreshView(false)}>Exit fresh view</PillButton>
+            ) : (
+              <>
+                <PillButton onClick={() => setFreshView(true)}>View as a new store</PillButton>
+                {experiments.length > 0 && (
+                  <PillButton
+                    onClick={() => fetcher.submit({ intent: "reset_demo" }, { method: "post" })}
+                  >
+                    Reset page
+                  </PillButton>
+                )}
+              </>
+            )
+          }
+        />
+        <MonoMeta>Measured on your own shoppers · not modeled, not projected</MonoMeta>
+
         {actionError && <Banner tone="critical"><p>{actionError}</p></Banner>}
 
         {freshView && (
@@ -827,54 +1144,56 @@ export default function ProofPage() {
           </span>
         </HeadlineStrip>
 
-        <InlineGrid columns={{ xs: 1, sm: 2, lg: 4 }} gap="300">
-          <KpiTile
-            label="Tracked sales"
-            value={money(attributedRevenue, currency)}
-            hint="the tried-on items' revenue, gross of returns"
-            icon={CashDollarIcon}
-            iconTone="money"
-            accent
-          />
-          <KpiTile
-            label="Try-on → purchase"
-            value={conversionPct != null ? `${conversionPct}%` : "—"}
-            hint="try-on sessions that bought that product"
-            icon={TargetIcon}
-            iconTone="good"
-          />
-          <KpiTile
-            label="Median time to purchase"
-            value={medianSecs != null ? humanizeSeconds(medianSecs) : "—"}
-            hint="from try-on to checkout"
-            icon={ClockIcon}
-            iconTone="neutral"
-          />
-          <KpiTile
-            label="Conversion lift"
-            value={results && results.hasMinimumSample ? liftPct : "—"}
-            hint={
-              experiment
-                ? results?.hasMinimumSample
-                  ? `${confidencePct} confidence vs holdout`
-                  : "test running — collecting data"
-                : "run a proof test to measure"
-            }
-            icon={ChartVerticalFilledIcon}
-            iconTone={verdict?.tone ?? "neutral"}
-            status={verdict}
-          />
-        </InlineGrid>
+        <KpiBand
+          tiles={[
+            {
+              label: "Tracked sales",
+              value: money(attributedRevenue, currency),
+              hint: "gross of returns",
+              accent: true,
+            },
+            {
+              label: "Try-on → purchase",
+              value: conversionPct != null ? `${conversionPct}%` : "—",
+              hint: "bought what they tried",
+            },
+            {
+              label: "Median time to purchase",
+              value: medianSecs != null ? humanizeSeconds(medianSecs) : "—",
+              hint: "try-on to checkout",
+            },
+            {
+              label: "Conversion lift",
+              value: activeHasSample ? liftPct : "—",
+              hint: experiment
+                ? activeHasSample
+                  ? `${confidencePct} confidence`
+                  : "collecting data"
+                : "start a test below",
+              status: verdict,
+            },
+          ]}
+        />
 
+        {experiment && (
         <Card padding="500">
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="start" wrap>
-              <IconHeading
-                icon={HideIcon}
-                tone="good"
-                title="The proof test"
-                description="A slice of your shoppers browses without Ello. Every gap below is measured against them — would they have bought anyway?"
-              />
+              {isProductTest ? (
+                <IconHeading
+                  icon={ProductIcon}
+                  tone="money"
+                  title="The product split test"
+                  description={`On ${experiment.testProducts?.length ?? "your chosen"} products, half of shoppers see try-on and half don't — conversion is compared on the same product.`}
+                />
+              ) : (
+                <IconHeading
+                  icon={HideIcon}
+                  tone="good"
+                  title="The proof test"
+                  description="A slice of your shoppers browses without Ello. Every gap below is measured against them — would they have bought anyway?"
+                />
+              )}
               {experiments.length > 1 && (
                 <Select
                   label="Test history"
@@ -896,71 +1215,14 @@ export default function ProofPage() {
               </Banner>
             )}
 
-            {!experiment && (
-              <BlockStack gap="400">
-                <AnswerRow
-                  icon={HideIcon}
-                  tone="good"
-                  title="Conversion"
-                  text="The holdout never sees try-on. If everyone else buys more often, that gap is the proof."
-                />
-                {ctlFeatureOn ? (
-                  <AnswerRow
-                    icon={ConnectIcon}
-                    tone="money"
-                    title="Order value"
-                    text="The outfit offer hides from the same shoppers. The order-value gap is what the offer causes."
-                  />
-                ) : (
-                  <AnswerRow
-                    icon={ConnectIcon}
-                    tone="neutral"
-                    title="Order value"
-                    text="Turn on Complete the Look in Widget Design to include the outfit offer in this test."
-                  />
-                )}
-                <AnswerRow
-                  icon={ReturnIcon}
-                  tone="neutral"
-                  title="Returns"
-                  text="Tried-on purchases get compared with your store's baseline return rate as refunds come in."
-                />
-                <InlineStack gap="300" blockAlign="end" wrap>
-                  <Select
-                    label="Holdout size"
-                    labelHidden={false}
-                    options={[
-                      { label: "5% of shoppers", value: "5" },
-                      { label: "10% of shoppers (recommended)", value: "10" },
-                      { label: "20% of shoppers", value: "20" },
-                      { label: "50% of shoppers", value: "50" },
-                    ]}
-                    value={holdoutPct}
-                    onChange={setHoldoutPct}
-                  />
-                  <fetcher.Form method="post">
-                    <input type="hidden" name="intent" value="start" />
-                    <input type="hidden" name="holdoutPercent" value={holdoutPct} />
-                    <Button submit variant="primary" loading={busy}>
-                      Start the test
-                    </Button>
-                  </fetcher.Form>
-                  <Text as="span" variant="bodySm" tone="subdued">
-                    One holdout, every answer. Sticky per shopper; stop any time and everything
-                    returns instantly.
-                  </Text>
-                </InlineStack>
-              </BlockStack>
-            )}
-
-            {experiment && (
+            {(
               <BlockStack gap="300">
                 <InlineStack gap="300" blockAlign="center" wrap>
                   <Badge tone={experiment.status === "running" ? "success" : "info"}>
                     {experiment.status === "running" ? "Running" : "Completed"}
                   </Badge>
                   <Text as="span" variant="bodySm" tone="subdued">
-                    {experiment.holdoutPercent}% holdout · started{" "}
+                    {isProductTest ? "50/50 split on the test products" : `${experiment.holdoutPercent}% holdout`} · started{" "}
                     {new Date(experiment.startedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
                     {experiment.endedAt
                       ? ` · ended ${new Date(experiment.endedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
@@ -973,13 +1235,6 @@ export default function ProofPage() {
                       <Button submit tone="critical" variant="plain" loading={busy}>
                         Stop test
                       </Button>
-                    </fetcher.Form>
-                  )}
-                  {canStartNew && !viewingPast && (
-                    <fetcher.Form method="post">
-                      <input type="hidden" name="intent" value="start" />
-                      <input type="hidden" name="holdoutPercent" value={holdoutPct} />
-                      <Button submit loading={busy}>Start a new test</Button>
                     </fetcher.Form>
                   )}
                 </InlineStack>
@@ -1025,17 +1280,310 @@ export default function ProofPage() {
                         <p>
                           Collecting data — verdicts unlock at {AB_MIN_SESSIONS_PER_ARM.toLocaleString()} sessions
                           per group ({results.exposed.sessions.toLocaleString()} with try-on /{" "}
-                          {results.holdout.sessions.toLocaleString()} without so far). Numbers shown before that
-                          would just be noise.
+                          {results.holdout.sessions.toLocaleString()} without so far
+                          {(() => {
+                            const pace =
+                              experiment.status === "running"
+                                ? paceEstimateDays(
+                                    experiment.startedAt,
+                                    results.exposed.sessions,
+                                    results.holdout.sessions,
+                                    AB_MIN_SESSIONS_PER_ARM,
+                                  )
+                                : null;
+                            return pace != null ? ` · about ${pace > 60 ? "60+" : pace} more days at the current pace` : "";
+                          })()}
+                          ). Numbers shown before that would just be noise.
                         </p>
                       </Banner>
                     )}
+                  </>
+                )}
+
+                {isProductTest && productResults && (
+                  <>
+                    <InlineGrid columns={{ xs: 1, sm: 2 }} gap="300">
+                      <ArmPanel
+                        label="Without try-on"
+                        hint="viewed a test product with try-on hidden"
+                        stats={productResults.pooled.holdout}
+                        currency={currency}
+                      />
+                      <ArmPanel
+                        label="With try-on"
+                        hint="viewed a test product with try-on available"
+                        stats={productResults.pooled.exposed}
+                        currency={currency}
+                        accent
+                      />
+                    </InlineGrid>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      How to read this: each shopper who opens a test product&apos;s page counts once for
+                      that product, and converts by buying that product. Both groups saw the same
+                      pages — the only difference is whether try-on was there. The verdict is
+                      computed on all test products pooled together; the leaderboard below shows
+                      where the lift concentrates.
+                    </Text>
+                    {productResults.pooled.hasMinimumSample ? (
+                      <LiftHero
+                        value={liftPct}
+                        label="conversion lift on products with try-on"
+                        subline={`${confidencePct} confidence · pooled across ${productResults.rows.length} products · measured on your own shoppers`}
+                        pill={verdict ?? undefined}
+                      />
+                    ) : (
+                      <Banner tone="info">
+                        <p>
+                          Collecting data — the pooled verdict unlocks at{" "}
+                          {AB_MIN_SESSIONS_PER_ARM.toLocaleString()} product viewers per group (
+                          {productResults.pooled.exposed.sessions.toLocaleString()} with try-on /{" "}
+                          {productResults.pooled.holdout.sessions.toLocaleString()} without so far
+                          {(() => {
+                            const pace =
+                              experiment.status === "running"
+                                ? paceEstimateDays(
+                                    experiment.startedAt,
+                                    productResults.pooled.exposed.sessions,
+                                    productResults.pooled.holdout.sessions,
+                                    AB_MIN_SESSIONS_PER_ARM,
+                                  )
+                                : null;
+                            return pace != null ? ` · about ${pace > 60 ? "60+" : pace} more days at the current pace` : "";
+                          })()}
+                          ). Numbers shown before that would just be noise.
+                        </p>
+                      </Banner>
+                    )}
+                    <BlockStack gap="200">
+                      <SectionHeading
+                        title="Product leaderboard"
+                        description={`Per-product verdicts unlock at ${AB_PRODUCT_ROW_MIN_SESSIONS_PER_ARM} shoppers per group on that product — until then a row honestly says it doesn't know yet.`}
+                      />
+                      <DataTable
+                        columnContentTypes={["text", "numeric", "numeric", "numeric", "text"]}
+                        headings={["Product", "Without try-on", "With try-on", "Lift", "Verdict"]}
+                        rows={productResults.rows.map((r) => [
+                          r.title,
+                          r.holdout.conversionPct != null ? `${Number(r.holdout.conversionPct).toFixed(1)}%` : "—",
+                          r.exposed.conversionPct != null ? `${Number(r.exposed.conversionPct).toFixed(1)}%` : "—",
+                          r.hasRowSample && r.relativeLift != null
+                            ? `${r.relativeLift >= 0 ? "+" : ""}${(r.relativeLift * 100).toFixed(0)}%`
+                            : "—",
+                          !r.hasRowSample ? (
+                            <StatusPill key={r.productId} label="Not enough shoppers yet" tone="neutral" />
+                          ) : r.relativeLift != null && r.relativeLift <= 0 ? (
+                            <StatusPill key={r.productId} label="No lift yet" tone="watch" />
+                          ) : r.confidence != null && r.confidence >= AB_VERDICT_CONFIDENCE ? (
+                            <StatusPill key={r.productId} label="Confident lift" tone="good" />
+                          ) : r.confidence != null && r.confidence >= 0.9 ? (
+                            <StatusPill key={r.productId} label="Likely lift" tone="watch" />
+                          ) : (
+                            <StatusPill key={r.productId} label="Too early to call" tone="neutral" />
+                          ),
+                        ])}
+                      />
+                    </BlockStack>
                   </>
                 )}
               </BlockStack>
             )}
           </BlockStack>
         </Card>
+        )}
+
+        {showMenu && (
+          <Card padding="500">
+            <BlockStack gap="400">
+              <SectionHeading
+                title={hasEverRun ? "Start your next test" : "Pick your question"}
+                description="One test at a time — you pick the question, Ello handles the statistics. Stop any time and everything returns instantly."
+              />
+
+              <QuestionCard
+                icon={HideIcon}
+                tone="good"
+                question="Does try-on lift my store's sales?"
+                learn="A slice of shoppers browses without Ello. Comparing the two groups answers whether try-on causes more sales, store-wide."
+                meta="Conversion · order value · returns — one holdout"
+                pill={{ label: "Most complete", tone: "neutral" }}
+                open={openQuestion === "sitewide"}
+                onOpen={() => setOpenQuestion("sitewide")}
+                onClose={() => setOpenQuestion(null)}
+              >
+                {openQuestion === "sitewide" && (
+                  <BlockStack gap="300">
+                    <AnswerRow
+                      icon={HideIcon}
+                      tone="good"
+                      title="Conversion"
+                      text="The holdout never sees try-on. If everyone else buys more often, that gap is the proof."
+                    />
+                    {ctlFeatureOn ? (
+                      <AnswerRow
+                        icon={ConnectIcon}
+                        tone="money"
+                        title="Order value"
+                        text="The outfit offer hides from the same shoppers. The order-value gap is what the offer causes."
+                      />
+                    ) : (
+                      <AnswerRow
+                        icon={ConnectIcon}
+                        tone="neutral"
+                        title="Order value"
+                        text="Turn on Complete the Look in Widget Design to include the outfit offer in this test."
+                      />
+                    )}
+                    <AnswerRow
+                      icon={ReturnIcon}
+                      tone="neutral"
+                      title="Returns"
+                      text="Tried-on purchases get compared with your store's baseline return rate as refunds come in."
+                    />
+                    <InlineStack gap="300" blockAlign="end" wrap>
+                      <Select
+                        label="Holdout size"
+                        labelHidden={false}
+                        options={[
+                          { label: "5% of shoppers", value: "5" },
+                          { label: "10% of shoppers (recommended)", value: "10" },
+                          { label: "20% of shoppers", value: "20" },
+                          { label: "50% of shoppers", value: "50" },
+                        ]}
+                        value={holdoutPct}
+                        onChange={setHoldoutPct}
+                      />
+                      <fetcher.Form method="post">
+                        <input type="hidden" name="intent" value="start" />
+                        <input type="hidden" name="holdoutPercent" value={holdoutPct} />
+                        <Button submit variant="primary" loading={busy}>
+                          Start the test
+                        </Button>
+                      </fetcher.Form>
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        One holdout, every answer. Sticky per shopper; stop any time.
+                      </Text>
+                    </InlineStack>
+                  </BlockStack>
+                )}
+              </QuestionCard>
+
+              <QuestionCard
+                icon={ProductIcon}
+                tone="money"
+                question="Which products does try-on actually sell?"
+                learn="On the products you pick, half of shoppers see try-on and half don't. Conversion is compared on the same product — a lift leaderboard, product by product."
+                meta="50/50 split · needs far less traffic than a small holdout"
+                pill={{ label: "Fastest verdict", tone: "good" }}
+                open={openQuestion === "product"}
+                onOpen={() => setOpenQuestion("product")}
+                onClose={() => setOpenQuestion(null)}
+              >
+                {openQuestion === "product" &&
+                  (productSetup?.eligible === false ? (
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {productSetup.reason}
+                    </Text>
+                  ) : (
+                    <BlockStack gap="300">
+                      {productList.length > 0 ? (
+                        <>
+                          <Text as="p" variant="bodySm" tone="subdued">
+                            Ello pre-picked your most-viewed try-on products from the last 30 days —
+                            busy pages reach a verdict fastest. Untick any, or pick your own list.
+                          </Text>
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
+                              gap: 2,
+                            }}
+                          >
+                            {productList.map((p) => (
+                              <Checkbox
+                                key={p.id}
+                                label={p.views ? `${p.title} · ${p.views.toLocaleString()} views` : p.title}
+                                checked={selectedIds.has(p.id)}
+                                onChange={(checked) =>
+                                  setSelectedIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (checked) next.add(p.id);
+                                    else next.delete(p.id);
+                                    return next;
+                                  })
+                                }
+                              />
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Pick the products to test — your busiest product pages give the fastest
+                          verdict. Products must have try-on enabled.
+                        </Text>
+                      )}
+                      <InlineStack gap="300" blockAlign="center" wrap>
+                        <Button onClick={pickProducts}>Pick products myself</Button>
+                        <Button
+                          variant="primary"
+                          loading={busy}
+                          disabled={selectedCount === 0}
+                          onClick={startProductTest}
+                        >
+                          Start the product test
+                        </Button>
+                        <MonoMeta>
+                          {selectedCount} {selectedCount === 1 ? "product" : "products"} · 50/50 split
+                          {estSetupDays != null
+                            ? ` · verdict ≈ ${estSetupDays > 60 ? "60+" : estSetupDays} days`
+                            : ""}
+                        </MonoMeta>
+                      </InlineStack>
+                      {estSetupDays != null && estSetupDays > 60 && (
+                        <Banner tone="warning">
+                          <p>
+                            These products don&apos;t get enough visits to reach a verdict in a
+                            reasonable time. Add more products, or run the store-wide proof test
+                            instead.
+                          </p>
+                        </Banner>
+                      )}
+                    </BlockStack>
+                  ))}
+              </QuestionCard>
+
+              <QuestionCard
+                icon={ConnectIcon}
+                tone="money"
+                question="Does the outfit upsell raise order size?"
+                learn="Complete the Look hides from a slice of shoppers. The order-value gap between the groups is what the offer causes."
+                meta={
+                  ctlFeatureOn
+                    ? "Runs on its own — and rides along automatically when you start the proof test"
+                    : "Turn on Complete the Look in Widget Design first"
+                }
+                pill={ctlTestRunning ? { label: "Running", tone: "watch" } : { label: "Order value", tone: "money" }}
+                action={
+                  ctlTestRunning ? (
+                    <fetcher.Form method="post">
+                      <input type="hidden" name="intent" value="ctl_stop" />
+                      <Button submit variant="plain" tone="critical" loading={busy}>
+                        Stop
+                      </Button>
+                    </fetcher.Form>
+                  ) : ctlFeatureOn ? (
+                    <fetcher.Form method="post">
+                      <input type="hidden" name="intent" value="ctl_start" />
+                      <input type="hidden" name="ctlHoldoutPercent" value="50" />
+                      <Button submit loading={busy}>
+                        Start
+                      </Button>
+                    </fetcher.Form>
+                  ) : undefined
+                }
+              />
+            </BlockStack>
+          </Card>
+        )}
 
         {(ctlTestRunning || ctlHasWindowData) && (
         <Card padding="500">

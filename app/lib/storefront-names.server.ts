@@ -82,6 +82,64 @@ export async function resolveStorefront(
   }
 }
 
+export interface SFProductRef {
+  /** Normalized numeric product id. */
+  id: string;
+  title: string;
+  handle: string;
+}
+
+/**
+ * Lean id/title/handle lookup for a set of product GIDs — powers the product
+ * split test's setup (suggestion labels) and start action (the frozen list
+ * needs handles for the widget's URL match). Unpublished/deleted products
+ * simply don't come back; callers drop them.
+ */
+export async function fetchStorefrontProductRefs(
+  shopDomain: string | null,
+  storefrontToken: string | null,
+  productGids: string[],
+): Promise<Map<string, SFProductRef>> {
+  const out = new Map<string, SFProductRef>();
+  if (!shopDomain || !storefrontToken || productGids.length === 0) return out;
+
+  const endpoint = `https://${normalizeShopDomain(shopDomain)}/api/2024-01/graphql.json`;
+  const unique = Array.from(new Set(productGids)).slice(0, 250);
+
+  const QUERY = `query Refs($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on Product { id title handle }
+    }
+  }`;
+
+  try {
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Storefront-Access-Token": storefrontToken,
+      },
+      body: JSON.stringify({ query: QUERY, variables: { ids: unique } }),
+    });
+    if (!res.ok) {
+      console.error(`[storefront-names] refs GraphQL ${res.status}`);
+      return out;
+    }
+    const json: {
+      data?: { nodes?: Array<{ id?: string; title?: string; handle?: string } | null> };
+    } = await res.json();
+    for (const node of json.data?.nodes ?? []) {
+      if (!node?.id || !node?.handle) continue;
+      const numeric = node.id.replace(/^.*\//, "");
+      out.set(numeric, { id: numeric, title: node.title ?? node.handle, handle: node.handle });
+    }
+    return out;
+  } catch (err) {
+    console.error("[storefront-names] refs lookup failed (non-fatal):", err);
+    return out;
+  }
+}
+
 export interface SFProduct {
   id: string;
   title: string;

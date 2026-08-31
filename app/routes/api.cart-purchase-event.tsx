@@ -116,6 +116,47 @@ export async function action({ request }: ActionFunctionArgs) {
         console.warn("[ab] exposure rejected:", JSON.stringify(abResult));
       }
     }
+  } else if (event_type === "ab_product_exposure") {
+    // Product split test exposure: one row per (experiment, session, product),
+    // minted when a shopper views a test product's page. Same anti-forgery
+    // shape as ab_exposure — the RPC recomputes the product-salted bucket and
+    // rejects rows whose variant doesn't match, whose experiment isn't a
+    // running product test, or whose product isn't in the frozen list.
+    const experimentId = body.experiment_id as string | undefined;
+    const variant = body.variant as string | undefined;
+    const productId = body.product_id as string | undefined;
+    const bucket = Number(body.bucket);
+    const UUID_RE =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (
+      experimentId &&
+      UUID_RE.test(experimentId) &&
+      typeof productId === "string" &&
+      /^\d{1,20}$/.test(productId) &&
+      (variant === "exposed" || variant === "holdout") &&
+      Number.isInteger(bucket) &&
+      bucket >= 0 &&
+      bucket <= 99 &&
+      session_id.length <= 64 &&
+      store_slug.length <= 100
+    ) {
+      const { data: abResult, error: abError } = await supabase.rpc(
+        "record_ab_product_exposure",
+        {
+          p_store_slug: store_slug,
+          p_session_id: session_id,
+          p_experiment_id: experimentId,
+          p_product_id: productId,
+          p_variant: variant,
+          p_bucket: bucket,
+        },
+      );
+      if (abError) {
+        console.error("[ab] product exposure RPC failed:", abError.message);
+      } else if (abResult && (abResult as { success?: boolean }).success === false) {
+        console.warn("[ab] product exposure rejected:", JSON.stringify(abResult));
+      }
+    }
   }
 
   return new Response(JSON.stringify({ ok: true }), {

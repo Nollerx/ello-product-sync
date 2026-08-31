@@ -143,13 +143,13 @@ There is no `test` script in this repo.
 ## Workflow rules (non-negotiable)
 
 1. **Always** run the pre-deploy gate (lint + typecheck + build) before any `gcloud run deploy`. If any fails, stop and fix.
-2. **Always** show the diff first and ask: "Deploy to public, custom, or both?" Never assume both.
-3. Each deploy target requires an explicit **"go"** from Andrew before you run the command:
+2. STANDING AUTHORIZATION (Andrew, 2026-08-31): when Andrew asks to ship/make something live, deploy WITHOUT re-asking per target — widget changes go to BOTH services (they serve the same widget files), admin/server-only changes may go public-only when custom is irrelevant. Summarize the true delta (build-archive diff) in the wrap-up instead of asking first. gcloud auth expires periodically; if a deploy fails on reauth, hand Andrew `gcloud auth login` — never try to complete a browser auth flow for him.
+3. Deploy targets (context, not per-deploy gates anymore):
    - **Custom app** — single-merchant production service (Marcos / Kaizen churned; no active paying merchant). Still get an explicit "go" before deploying.
    - **Public app** — live on the App Store.
    - **ML service** — hits every merchant.
 4. **Public-app billing flag:** `cloud_run_env.yaml` has `BILLING_TEST_MODE: "false"` — real Shopify charges are live (as of 2026-05-16). Do not flip this without an explicit instruction. Surface its current value before each public deploy and ask whether to keep or flip.
-5. **SQL:** Draft the statement, hand it to Andrew to paste into the Supabase SQL editor. Do not run via MCP unless Andrew explicitly authorizes per-statement.
+5. **SQL:** STANDING AUTHORIZATION (Andrew, 2026-08-31): run SQL against this project directly via the Supabase MCP — reads, migrations, and function changes — without asking per statement. Always announce what ran and keep writing the .sql file to `supabase/migrations/` first so the repo stays the source of truth. Destructive data operations (DELETE/TRUNCATE/DROP TABLE on real rows) still require an explicit ask. Note: the harness permission classifier may still block DDL until Andrew's settings allowlist includes the Supabase MCP server — if blocked, hand him the SQL to paste instead of working around it.
 6. **Dashboard:** Produce a Lovable prompt; do not edit the dashboard repo directly.
 7. **Git:** Direct commits to `main` and push (solo workflow). No PR/branch flow unless Andrew asks.
 8. **Accuracy bar:** If you're not 100% sure of a fact, say so and verify (read the file, run the gcloud command, curl the URL). Never guess about deploy targets, service names, or URLs.

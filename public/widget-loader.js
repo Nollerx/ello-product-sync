@@ -304,7 +304,34 @@
     window.ELLO_WIDGET_BASE_URL = WIDGET_BASE_URL;
 
     // Version string used to cache-bust widget-main.js across deploys.
-    const WIDGET_VERSION = '2.13.0';
+    const WIDGET_VERSION = '2.20.0';
+
+    // ─── Warm the heavy assets NOW, in parallel with everything else ─────────
+    // initializeWidget() deliberately waits for requestIdleCallback (LCP
+    // protection) before injecting any DOM — but the DOWNLOADS don't need to
+    // wait. Preloading here overlaps the ~120KB widget-main.js fetch and the
+    // widget.html template with the config round-trip, so by the time the idle
+    // callback fires the network work is already done and only parse/init
+    // remains. Cold-mobile measurement on the dev store (2026-08-22): the
+    // serialized chain put the try-on entry point 5-11s behind first paint.
+    // A/B note: holdout shoppers preload widget-main they'll never execute —
+    // accepted; experiments are rare and the alternative (waiting for config
+    // before preloading) re-serializes the chain for everyone.
+    try {
+        const __elloPreload = function (href, as) {
+            const l = document.createElement('link');
+            l.rel = 'preload';
+            l.as = as;
+            l.href = href;
+            // Must mirror the eventual request's CORS mode or the preload is
+            // wasted: fetch() for widget.html sends no credentials cross-origin
+            // (anonymous); loadScript() makes a plain classic <script> (none).
+            if (as === 'fetch') l.crossOrigin = 'anonymous';
+            (document.head || document.documentElement).appendChild(l);
+        };
+        __elloPreload(WIDGET_BASE_URL + '/widget-main.js?v=' + WIDGET_VERSION, 'script');
+        __elloPreload(WIDGET_BASE_URL + '/widget.html?v=' + WIDGET_VERSION, 'fetch');
+    } catch (e) { /* preload is an optimization only — never block boot */ }
     // Legacy localStorage cache prefix — older versions stored config here.
     // We sweep any leftover entry on load so returning visitors see fresh config.
     const LEGACY_CONFIG_CACHE_PREFIX = 'ello_widget_config_';
@@ -482,7 +509,7 @@
             // CTL intro style — how the upsell first appears over the hero.
             // 'pairing' | 'whisper' | 'drop'; anything else (incl. NULL) =
             // legacy full-width card, so existing stores don't shift.
-            ctlIntroStyle: (storeConfig.ctl_intro_style === 'pairing' || storeConfig.ctl_intro_style === 'whisper' || storeConfig.ctl_intro_style === 'drop')
+            ctlIntroStyle: (storeConfig.ctl_intro_style === 'pairing' || storeConfig.ctl_intro_style === 'whisper' || storeConfig.ctl_intro_style === 'drop' || storeConfig.ctl_intro_style === 'row')
                 ? storeConfig.ctl_intro_style : null,
             // CTL proof test: suppress the upsell for the merchant-chosen
             // holdout slice so the dashboard can report causal AOV lift.
@@ -499,11 +526,36 @@
             abExperimentEnabled: storeConfig.ab_experiment_enabled === true,
             abExperimentId: storeConfig.ab_experiment_id || null,
             abHoldoutPercent: typeof storeConfig.ab_holdout_percent === 'number' ? storeConfig.ab_holdout_percent : 10,
+            // Experiment kind: 'product' scopes the split to the test products'
+            // own pages (50/50 per product, product-salted hash); anything else
+            // is the classic site-wide holdout — so a config from before this
+            // field existed keeps byte-identical behavior.
+            abExperimentKind: storeConfig.ab_experiment_kind === 'product' ? 'product' : 'sitewide',
+            // Frozen [{id, handle}] list for product tests (null otherwise).
+            abTestProducts: Array.isArray(storeConfig.ab_test_products) ? storeConfig.ab_test_products : null,
             // Live Try-On (Decart realtime mirror) — explicit opt-in, OFF by
             // default. The flag only SHOWS the entry points; every session is
             // re-gated server-side by /api/live-token, so a spoofed true here
             // can't mint a stream.
-            tryOnLiveEnabled: storeConfig.live_tryon_enabled === true
+            tryOnLiveEnabled: storeConfig.live_tryon_enabled === true,
+            // Where the try-on CTA lives on the PDP. 'image_corner' anchors a
+            // chip on the product photo (widget-main mounts it; the theme
+            // block hides itself); anything else = today's below-ATC button.
+            // Rides inlineButtonEnabled, so the kill switch and the A/B
+            // holdout cover it without extra wiring.
+            inlineButtonPlacement: storeConfig.inline_button_placement === 'image_corner' ? 'image_corner' : 'below_atc',
+            cornerLaunchCorner: (storeConfig.corner_launch_corner === 'top-left' || storeConfig.corner_launch_corner === 'bottom-left' || storeConfig.corner_launch_corner === 'bottom-right')
+                ? storeConfig.corner_launch_corner : 'top-right',
+            cornerLaunchStyle: storeConfig.corner_launch_style === 'icon' ? 'icon' : 'pill',
+            // Route the try-on result (and Complete the Look) into the widget
+            // panel on hero-swap stores instead of painting the PDP image.
+            ctlInResultEnabled: storeConfig.ctl_in_result_enabled === true,
+            // Adds the "Fitted clothing" accuracy bullet to the photo-tips modal.
+            photoTipsFittedEnabled: storeConfig.photo_tips_fitted_enabled === true,
+            // Merchant's attribution window (7/14/30). The widget only uses it
+            // to extend session lifetime so >7d windows attribute for real.
+            attributionWindowDays: (storeConfig.attribution_window_days === 14 || storeConfig.attribution_window_days === 30)
+                ? storeConfig.attribution_window_days : 7
         };
     }
 
@@ -546,7 +598,15 @@
             abExperimentEnabled: false,
             abExperimentId: null,
             abHoldoutPercent: 10,
-            tryOnLiveEnabled: false
+            abExperimentKind: 'sitewide',
+            abTestProducts: null,
+            tryOnLiveEnabled: false,
+            inlineButtonPlacement: 'below_atc',
+            cornerLaunchCorner: 'top-right',
+            cornerLaunchStyle: 'pill',
+            ctlInResultEnabled: false,
+            photoTipsFittedEnabled: false,
+            attributionWindowDays: 7
         };
     }
 
@@ -569,7 +629,7 @@
     // Testing overrides (never logged as data): ?ello_ab=holdout / ?ello_ab=exposed
     // persist in localStorage; ?ello_ab=off clears. ?ello_preview=1 always sees
     // the widget and logs nothing.
-    var ELLO_AB = { active: false, variant: null, bucket: null, experimentId: null, sessionId: null, override: null };
+    var ELLO_AB = { active: false, variant: null, bucket: null, experimentId: null, sessionId: null, override: null, kind: null, productId: null };
     window.__elloAbState = ELLO_AB;
     // Once the product-page stamp lands for this pageview there is nothing left
     // to watch for, so the retry schedule and the SPA hooks can all stand down.
@@ -1174,6 +1234,122 @@
         } catch (e) { /* attribution write must never break the page */ }
     }
 
+    // Force every surface's kill switch off IN the config object so the inline
+    // button, preview popup, fitting-room hub and PDP swap all hide through
+    // their normal pathways. Shared by the site-wide holdout (every page) and
+    // the product split test (the test product's own page only — a pageview is
+    // single-product, so page-scoped suppression is exactly product-scoped).
+    function elloAbSuppressSurfaces(cfg) {
+        // Hub triggers bound before the config resolved are already
+        // wired and visible — hide them now (new ones are hidden at
+        // bind time in __elloHubBind).
+        try {
+            var hubEls = document.querySelectorAll('a[href*="ello-fitting-room"], [data-ello-hub]');
+            for (var hubI = 0; hubI < hubEls.length; hubI++) hubEls[hubI].style.display = 'none';
+        } catch (e) { /* hub hide must never break config apply */ }
+        cfg.__elloAbHoldout = true;
+        cfg.inlineButtonEnabled = false;
+        cfg.floatingWidgetPdpEnabled = false;
+        cfg.floatingWidgetNonPdpEnabled = false;
+        cfg.fittingRoomEnabled = false;
+        cfg.pdpImageSwapEnabled = false;
+        cfg.completeTheLookEnabled = false;
+        cfg.desktopPreviewEnabled = false;
+        cfg.tryOnLiveEnabled = false;
+        return cfg;
+    }
+
+    // One product-exposure beacon per (experiment, session, product) — the
+    // product split test's denominator row, minted on the test product's page
+    // for BOTH arms. The server recomputes the product-salted bucket and
+    // rejects anything that doesn't match.
+    function elloAbLogProductExposure(state, cfg) {
+        try {
+            var marker = 'ello_ab_seen_' + state.experimentId + '_' + state.productId;
+            try { if (window.localStorage.getItem(marker) === state.sessionId) return; } catch (e) { /* storage blocked — server dedupes */ }
+            elloAbSendBeacon(JSON.stringify({
+                event_type: 'ab_product_exposure',
+                store_slug: cfg.storeSlug || storeSlug,
+                session_id: state.sessionId,
+                experiment_id: state.experimentId,
+                product_id: state.productId,
+                variant: state.variant,
+                bucket: state.bucket
+            }));
+            try { window.localStorage.setItem(marker, state.sessionId); } catch (e) { /* storage blocked — server dedupes */ }
+        } catch (e) { /* exposure logging must never break the page */ }
+    }
+
+    // Product split test: on the test products' own pages, split shoppers
+    // 50/50 with a product-salted hash — hash(session + ':' + experiment +
+    // ':' + product) — so each product's split is independent and the readout
+    // compares conversion on the SAME product. Every other page behaves
+    // normally. Evaluated once per page load (the exposure and the suppression
+    // must agree, and suppression can only be applied at load) — SPA-style
+    // product swaps within one pageview are deliberately NOT logged, so a
+    // gating decision and its exposure row can never disagree.
+    function elloAbApplyProductSplit(cfg) {
+        var isPreview = false;
+        try { isPreview = new URLSearchParams(window.location.search).get('ello_preview') === '1'; } catch (e) { /* no URLSearchParams — treat as normal */ }
+        var override = elloAbReadOverride();
+        // Same slug rule as the site-wide path: mint under the script-tag slug.
+        var sid = ELLO_AB.sessionId || elloAbEnsureSessionId(storeSlug);
+
+        // Symmetric purchase-attribution carrier for every session while a
+        // test runs — exposure sessions can buy from any page, and the pixel's
+        // cart-attribute fallback must rescue both arms equally.
+        elloAbWriteCartAttr(sid);
+
+        // Which test product (if any) is this page? Handle comes from the same
+        // signals the view emitter trusts; the frozen list pairs it to the id.
+        var products = cfg.abTestProducts;
+        if (!products || !products.length) return cfg;
+        var handle = null;
+        try { handle = elloViewCurrentHandle(); } catch (e) { /* detection must never break the page */ }
+        if (!handle) return cfg;
+        var normalized = String(handle).toLowerCase();
+        var match = null;
+        for (var i = 0; i < products.length; i++) {
+            if (products[i] && String(products[i].handle || '').toLowerCase() === normalized) { match = products[i]; break; }
+        }
+        if (!match || !match.id) return cfg;
+
+        var pid = String(match.id).replace(/^.*\//, '');
+        var bucket = elloAbFnvBucket(sid, cfg.abExperimentId + ':' + pid);
+        var pct = typeof cfg.abHoldoutPercent === 'number' ? cfg.abHoldoutPercent : 50;
+        var variant = bucket < pct ? 'holdout' : 'exposed';
+        if (override === 'exposed' || override === 'holdout') variant = override;
+        if (isPreview) variant = 'exposed';
+        ELLO_AB.active = true;
+        ELLO_AB.kind = 'product';
+        ELLO_AB.productId = pid;
+        ELLO_AB.variant = variant;
+        ELLO_AB.bucket = bucket;
+        ELLO_AB.experimentId = cfg.abExperimentId;
+        ELLO_AB.sessionId = sid;
+        ELLO_AB.override = override || (isPreview ? 'preview' : null);
+
+        // Late-arriving experiment config (cached config had no experiment, UI
+        // already injected): don't half-hide the page and don't log a
+        // contaminated exposure — the next pageview decides cleanly.
+        if (variant === 'holdout' && window.__elloAbUiInjected === true) {
+            ELLO_AB.lateHoldout = true;
+            return cfg;
+        }
+
+        // Overridden/preview sessions are excluded from the data entirely.
+        // (No saw_pdp machinery here — a product exposure IS a product-page
+        // view by construction.)
+        if (!ELLO_AB.override) {
+            elloAbLogProductExposure(ELLO_AB, cfg);
+        }
+
+        if (variant === 'holdout') {
+            elloAbSuppressSurfaces(cfg);
+        }
+        return cfg;
+    }
+
     // Decide the shopper's variant and, for holdout, force every surface's kill
     // switch off IN the config object so the inline button, preview popup,
     // fitting-room hub and PDP swap all hide through their normal pathways.
@@ -1181,6 +1357,7 @@
     // fast path and the fresh fetch.
     function elloAbApplyHoldout(cfg) {
         if (!cfg || cfg.abExperimentEnabled !== true || !cfg.abExperimentId) return cfg;
+        if (cfg.abExperimentKind === 'product') return elloAbApplyProductSplit(cfg);
         var isPreview = false;
         try { isPreview = new URLSearchParams(window.location.search).get('ello_preview') === '1'; } catch (e) { }
         var override = elloAbReadOverride();
@@ -1199,6 +1376,7 @@
         if (override === 'exposed' || override === 'holdout') variant = override;
         if (isPreview) variant = 'exposed';
         ELLO_AB.active = true;
+        ELLO_AB.kind = 'sitewide';
         ELLO_AB.variant = variant;
         ELLO_AB.bucket = bucket;
         ELLO_AB.experimentId = cfg.abExperimentId;
@@ -1225,22 +1403,7 @@
         }
 
         if (variant === 'holdout') {
-            // Hub triggers bound before the config resolved are already
-            // wired and visible — hide them now (new ones are hidden at
-            // bind time in __elloHubBind).
-            try {
-                var hubEls = document.querySelectorAll('a[href*="ello-fitting-room"], [data-ello-hub]');
-                for (var hubI = 0; hubI < hubEls.length; hubI++) hubEls[hubI].style.display = 'none';
-            } catch (e) { /* hub hide must never break config apply */ }
-            cfg.__elloAbHoldout = true;
-            cfg.inlineButtonEnabled = false;
-            cfg.floatingWidgetPdpEnabled = false;
-            cfg.floatingWidgetNonPdpEnabled = false;
-            cfg.fittingRoomEnabled = false;
-            cfg.pdpImageSwapEnabled = false;
-            cfg.completeTheLookEnabled = false;
-            cfg.desktopPreviewEnabled = false;
-            cfg.tryOnLiveEnabled = false;
+            elloAbSuppressSurfaces(cfg);
         }
         return cfg;
     }
@@ -1279,6 +1442,174 @@
         ];
     }
 
+    // ─── Early corner chip (image_corner stores) ────────────────────────────
+    // On image_corner stores the PDP's ONLY try-on entry is the chip that
+    // widget-main.js mounts — which historically put the primary CTA behind
+    // idle-wait + config + a ~500KB script (measured 5-11s to appear on a cold
+    // mobile visit to the dev store, 2026-08-22). Mount a lightweight
+    // placeholder chip from the LOADER instead, as soon as config resolves —
+    // instantly on repeat visits (localStorage fast-path), ~300ms cold. Same
+    // id, same stylesheet, same visuals as widget-main's chip; clicking queues
+    // the try-on context and kicks widget-main loading NOW (__elloForward), so
+    // a click is never lost. When widget-main's elloMountCornerLaunch builds
+    // the real chip it removes this one (data-ello-early marker) in the same
+    // frame — the swap is invisible to the shopper.
+    //
+    // The stylesheet id + content MUST stay byte-identical to widget-main's
+    // elloEnsureCornerLaunchStyles — both sides dedupe on the id, so whichever
+    // script runs first owns the tag and the other must be able to reuse it.
+    function elloEarlyChipStyles() {
+        if (document.getElementById('ello-corner-launch-styles')) return;
+        var s = document.createElement('style');
+        s.id = 'ello-corner-launch-styles';
+        s.textContent =
+            '#ello-corner-launch{position:absolute;z-index:6;display:inline-flex;align-items:center;justify-content:center;gap:6px;' +
+            'border:0;margin:0;cursor:pointer;font-family:inherit;font-weight:600;line-height:1;white-space:nowrap;' +
+            'border-radius:999px;box-shadow:0 2px 10px rgba(0,0,0,.22);-webkit-tap-highlight-color:transparent;' +
+            'transition:transform .15s ease,box-shadow .15s ease;}' +
+            '#ello-corner-launch:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.28);}' +
+            '#ello-corner-launch:active{transform:scale(.96);}' +
+            '#ello-corner-launch:focus-visible{outline:2px solid #fff;outline-offset:2px;}' +
+            '#ello-corner-launch svg{width:14px;height:14px;display:block;flex:none;}' +
+            '#ello-corner-launch.ello-cl-pill{height:var(--ello-cl-size,34px);padding:0 14px;font-size:13px;}' +
+            '#ello-corner-launch.ello-cl-icon{width:var(--ello-cl-size,40px);height:var(--ello-cl-size,40px);padding:0;}' +
+            '#ello-corner-launch.ello-cl-tl{top:var(--ello-cl-offset,10px);left:var(--ello-cl-offset,10px);}' +
+            '#ello-corner-launch.ello-cl-tr{top:var(--ello-cl-offset,10px);right:var(--ello-cl-offset,10px);}' +
+            '#ello-corner-launch.ello-cl-bl{bottom:var(--ello-cl-offset,10px);left:var(--ello-cl-offset,10px);}' +
+            '#ello-corner-launch.ello-cl-br{bottom:var(--ello-cl-offset,10px);right:var(--ello-cl-offset,10px);}' +
+            // Mobile: comfortable touch targets (galleries are carousels; the chip
+            // must be easy to hit without triggering a swipe).
+            '@media (max-width:768px){' +
+            '#ello-corner-launch.ello-cl-pill{height:max(var(--ello-cl-size,38px),38px);font-size:12.5px;padding:0 13px;}' +
+            '#ello-corner-launch.ello-cl-icon{width:max(var(--ello-cl-size,44px),44px);height:max(var(--ello-cl-size,44px),44px);}' +
+            '}' +
+            '@media (prefers-reduced-motion:reduce){#ello-corner-launch{transition:none;}}';
+        document.head.appendChild(s);
+    }
+
+    // Compact mirror of widget-main's selector tiers — but WITHOUT requiring
+    // the image to have LOADED. Lazy heroes keep their layout box (aspect-ratio
+    // wrappers), so rect width alone is enough to anchor a chip; waiting for
+    // pixels was a large part of the old delay on slow connections.
+    function elloEarlyChipFindImg() {
+        var selectors = [
+            '#pdp-main-image',
+            '.product__media img', '.product-media img', 'product-media img',
+            '.product-single__photo img', '.product__main-photos img',
+            '.product-gallery__image img', '.product__media-item img',
+            '[data-product-single-media-wrapper] img', '[data-media-type="image"] img',
+            '.product__media-list img', '.product-image-main img', '.product__photo img'
+        ];
+        for (var i = 0; i < selectors.length; i++) {
+            var nodes;
+            try { nodes = document.querySelectorAll(selectors[i]); } catch (e) { continue; }
+            for (var j = 0; j < nodes.length; j++) {
+                var r;
+                try { r = nodes[j].getBoundingClientRect(); } catch (e) { continue; }
+                if (r && r.width >= 140) return nodes[j];
+            }
+        }
+        return null;
+    }
+
+    var __elloEarlyChipTries = 0;
+    function elloEarlyCornerChip() {
+        var cfg = window.ELLO_STORE_CONFIG;
+        // Config can change between the cached apply and the fresh fetch —
+        // if the fresh config turns the corner OFF, take the early chip down
+        // (widget-main only manages nodes it created itself).
+        if (!cfg || cfg.inlineButtonEnabled === false || cfg.inlineButtonPlacement !== 'image_corner') {
+            try {
+                var stale = document.getElementById('ello-corner-launch');
+                if (stale && stale.dataset.elloEarly === '1') stale.remove();
+            } catch (e) { }
+            return;
+        }
+        if (window.location.pathname.indexOf('/products/') === -1) return;  // PDP only
+        if (window.Shopify && window.Shopify.designMode) return;            // theme editor
+        if (typeof window.__elloInitializeWidget === 'function') return;    // widget-main owns the chip now
+        if (document.getElementById('ello-corner-launch')) return;          // already mounted (either owner)
+
+        var img = elloEarlyChipFindImg();
+        if (!img) {
+            // Lazy galleries mount late — short, fast ladder; if it never
+            // resolves, widget-main's own mount ladder still runs afterwards,
+            // so giving up here costs nothing.
+            if (__elloEarlyChipTries < 5) {
+                setTimeout(elloEarlyCornerChip, [150, 350, 700, 1500, 3000][__elloEarlyChipTries++]);
+            }
+            return;
+        }
+
+        var wrap = img.parentElement || img;
+        // Positioning guard with the collapse check from widget-main's
+        // elloPdpAnchor: forcing position:relative onto an auto-height wrapper
+        // collapses absolutely-sized heroes — measure, and on collapse revert
+        // and anchor to the img's own positioned ancestor instead.
+        var before = 0;
+        try { before = img.getBoundingClientRect().height; } catch (e) { }
+        var mutated = false;
+        try {
+            var pos = window.getComputedStyle(wrap).position;
+            if (pos === 'static' || !pos) { wrap.style.position = 'relative'; mutated = true; }
+        } catch (e) { }
+        if (mutated && before > 20) {
+            try {
+                if (img.getBoundingClientRect().height < before * 0.5) {
+                    wrap.style.position = '';
+                    var op = img.offsetParent;
+                    if (op && op !== document.body && op !== document.documentElement &&
+                        op.getBoundingClientRect().height >= 40) {
+                        wrap = op;
+                    } else {
+                        wrap.style.position = 'relative';
+                    }
+                }
+            } catch (e) { }
+        }
+
+        elloEarlyChipStyles();
+
+        var so = (cfg.styleOverrides && typeof cfg.styleOverrides === 'object') ? cfg.styleOverrides : {};
+        var styleMode = cfg.cornerLaunchStyle === 'icon' ? 'icon' : 'pill';
+        var cornerCls = { 'top-left': 'ello-cl-tl', 'top-right': 'ello-cl-tr', 'bottom-left': 'ello-cl-bl', 'bottom-right': 'ello-cl-br' }[cfg.cornerLaunchCorner] || 'ello-cl-tr';
+        var label = cfg.inlineButtonText || 'Try On';
+        var bg = cfg.inlineButtonColor || cfg.widgetAccentColor || cfg.widgetPrimaryColor || '#111111';
+        var fg = cfg.inlineButtonTextColor || '#ffffff';
+
+        var el = document.createElement('button');
+        el.type = 'button';
+        el.id = 'ello-corner-launch';
+        el.dataset.elloEarly = '1';
+        el.className = 'ello-cl-' + styleMode + ' ' + cornerCls;
+        var size = Number(so.corner_launch_size);
+        el.style.setProperty('--ello-cl-size', (size > 20 && size <= 80) ? size + 'px' : '');
+        var offset = Number(so.corner_launch_offset);
+        el.style.setProperty('--ello-cl-offset', (offset >= 0 && offset <= 60) ? offset + 'px' : '');
+        el.style.background = bg;
+        el.style.color = fg;
+        var spark = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .8 9.6 6.4 15.2 8 9.6 9.6 8 15.2 6.4 9.6 .8 8 6.4 6.4Z"/></svg>';
+        el.innerHTML = styleMode === 'icon' ? spark : spark + '<span>' + String(label).replace(/[<>&]/g, '') + '</span>';
+        if (styleMode === 'icon') el.setAttribute('aria-label', label);
+
+        el.addEventListener('click', function (ev) {
+            // Swallow the tap so theme click-to-zoom never fires underneath
+            // (widget-main's tap shield takes over once it adopts the corner).
+            try { ev.preventDefault(); ev.stopPropagation(); } catch (e) { }
+            var pid = null, vid = null;
+            try { pid = window.ShopifyAnalytics && window.ShopifyAnalytics.meta && window.ShopifyAnalytics.meta.product && window.ShopifyAnalytics.meta.product.id || null; } catch (e) { }
+            try { var vEl = document.querySelector('form[action*="/cart/add"] input[name="id"]'); vid = vEl && vEl.value || null; } catch (e) { }
+            var handle = null;
+            try { handle = (window.location.pathname.match(/\/products\/([^\/?#]+)/) || [])[1] || null; } catch (e) { }
+            // window.Ello.openTryOn queues + kicks init immediately, so this
+            // works whether widget-main is loaded, loading, or not yet started.
+            window.Ello.openTryOn({ source: 'inline_button', productHandle: handle, productId: pid, variantId: vid });
+        });
+
+        wrap.appendChild(el);
+        elloLog('[Ello Loader] Early corner chip mounted');
+    }
+
     function applyConfig(cfg) {
         cfg = elloAbApplyHoldout(cfg);
         window.ELLO_STORE_CONFIG = cfg;
@@ -1298,6 +1629,9 @@
             // CustomEvent constructor not supported in some legacy browsers —
             // the inline block has its own readiness polling as a backstop.
         }
+        // Give image_corner stores their try-on entry immediately — idempotent
+        // (id-deduped), and a no-op for every other placement/page.
+        try { elloEarlyCornerChip(); } catch (e) { /* never break config apply */ }
     }
 
     // Sweep any leftover config cache from earlier widget versions so returning
@@ -1620,13 +1954,17 @@
             const scripts = doc.querySelectorAll('script');
             scripts.forEach(script => script.remove());
 
-            // Fix image paths to use hosted URL
-            const images = doc.querySelectorAll('img[id="goodExampleImage"], img[id="badExampleImage"]');
+            // Fix image paths to use hosted URL. The template is injected into
+            // the MERCHANT's page, so any relative src would resolve against
+            // the store domain and 404 — rewrite every relative src to the
+            // widget origin (same host, same CDN caching as the code assets).
+            const images = doc.querySelectorAll('img[src]');
             images.forEach(img => {
                 const currentSrc = img.getAttribute('src');
-                // If it's a relative path (doesn't start with http:// or https://), make it absolute
-                if (currentSrc && !currentSrc.startsWith('http://') && !currentSrc.startsWith('https://')) {
-                    img.setAttribute('src', `${WIDGET_BASE_URL}/${currentSrc}`);
+                if (currentSrc &&
+                    !currentSrc.startsWith('http://') && !currentSrc.startsWith('https://') &&
+                    !currentSrc.startsWith('//') && !currentSrc.startsWith('data:')) {
+                    img.setAttribute('src', `${WIDGET_BASE_URL}/${currentSrc.replace(/^\/+/, '')}`);
                 }
             });
 
@@ -1672,6 +2010,25 @@
 
             // Inject the HTML
             container.innerHTML = bodyContent;
+
+            // Warm the first-open surfaces. The onboarding strip thumbs are the
+            // first thing a first-time shopper sees when they open try-on, but
+            // they sit loading="lazy" inside a hidden overlay (zero cost at
+            // page load) — without this they'd only start downloading when the
+            // overlay becomes visible. Flipping the data-ello-warm images to
+            // eager at idle pulls ~30KB in the background, so the first open
+            // paints complete instead of popping in.
+            try {
+                const warmImgs = container.querySelectorAll('img[data-ello-warm]');
+                const warmFirstOpen = function () {
+                    warmImgs.forEach(function (im) { im.loading = 'eager'; });
+                };
+                if (typeof requestIdleCallback === 'function') {
+                    requestIdleCallback(warmFirstOpen, { timeout: 4000 });
+                } else {
+                    setTimeout(warmFirstOpen, 1200);
+                }
+            } catch (e) { /* warm-up is an optimization only */ }
 
             // Now load the script - also using version instead of timestamp
             await loadScript(`${WIDGET_BASE_URL}/widget-main.js?v=${WIDGET_VERSION}`);

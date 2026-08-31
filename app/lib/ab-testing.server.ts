@@ -15,9 +15,16 @@ import { supabaseAdmin } from "./supabase.server";
 import {
   AB_MIN_SESSIONS_PER_ARM,
   AB_MIN_TOTAL_CONVERTERS,
+  AB_PRODUCT_MAX_PRODUCTS,
+  AB_PRODUCT_ROW_MIN_CONVERTERS,
+  AB_PRODUCT_ROW_MIN_SESSIONS_PER_ARM,
   normalCdf,
   type AbExperiment,
+  type AbProductArmStats,
+  type AbProductResults,
+  type AbProductRow,
   type AbResults,
+  type AbTestProduct,
   type AbVariantStats,
   type ReceiptRow,
 } from "./ab-shared";
@@ -28,7 +35,10 @@ export {
   AB_MIN_SESSIONS_PER_ARM,
   AB_MIN_TOTAL_CONVERTERS,
   type AbExperiment,
+  type AbProductResults,
+  type AbProductRow,
   type AbResults,
+  type AbTestProduct,
   type AbVariantStats,
   type ReceiptRow,
 };
@@ -36,6 +46,19 @@ export {
 // ─── Experiment lifecycle ───────────────────────────────────────────────────
 
 function mapExperiment(row: Record<string, unknown>): AbExperiment {
+  const kind = row.kind === "product" ? ("product" as const) : ("sitewide" as const);
+  const rawProducts = Array.isArray(row.test_products) ? (row.test_products as unknown[]) : null;
+  const testProducts: AbTestProduct[] | null =
+    kind === "product" && rawProducts
+      ? rawProducts
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .map((p: any) => ({
+            id: String(p?.id ?? ""),
+            handle: String(p?.handle ?? ""),
+            title: String(p?.title ?? p?.handle ?? p?.id ?? "Product"),
+          }))
+          .filter((p) => p.id)
+      : null;
   return {
     id: row.id as string,
     storeSlug: row.store_slug as string,
@@ -45,6 +68,8 @@ function mapExperiment(row: Record<string, unknown>): AbExperiment {
     startedAt: row.started_at as string,
     endedAt: (row.ended_at as string | null) ?? null,
     ctlAttached: row.ctl_attached === true,
+    kind,
+    testProducts,
   };
 }
 
@@ -111,6 +136,8 @@ export async function startExperiment(
       ab_experiment_enabled: true,
       ab_experiment_id: data.id,
       ab_holdout_percent: pct,
+      ab_experiment_kind: "sitewide",
+      ab_test_products: null,
     })
     .eq("store_slug", slug);
   if (storeErr) {
@@ -118,6 +145,68 @@ export async function startExperiment(
     await supabaseAdmin.from("vto_experiments").delete().eq("id", data.id);
     console.error("[ab] store flag update failed:", storeErr.message);
     return { ok: false, error: "Could not activate the experiment on the widget." };
+  }
+  return { ok: true, experimentId: data.id as string };
+}
+
+/**
+ * Start a product split test: on the chosen products, every shopper is split
+ * 50/50 (product-salted hash) — half see try-on, half don't — and conversion
+ * is compared on the same product. The product list freezes on the experiment
+ * row (with titles, for the readout) and a slim {id, handle} copy rides
+ * vto_stores → get_widget_config to the loader.
+ */
+export async function startProductExperiment(
+  slug: string,
+  products: AbTestProduct[],
+): Promise<{ ok: boolean; error?: string; experimentId?: string }> {
+  const clean = products
+    .map((p) => ({
+      id: String(p.id).replace(/^.*\//, ""),
+      handle: String(p.handle || "").toLowerCase(),
+      title: String(p.title || p.handle || p.id),
+    }))
+    .filter((p) => /^\d{1,20}$/.test(p.id) && p.handle.length > 0);
+  if (clean.length === 0) {
+    return { ok: false, error: "Pick at least one product for the test." };
+  }
+  if (clean.length > AB_PRODUCT_MAX_PRODUCTS) {
+    return { ok: false, error: `A test can hold at most ${AB_PRODUCT_MAX_PRODUCTS} products.` };
+  }
+  const { data, error } = await supabaseAdmin
+    .from("vto_experiments")
+    .insert({
+      store_slug: slug,
+      name: "Product split test",
+      holdout_percent: 50,
+      status: "running",
+      kind: "product",
+      test_products: clean,
+    })
+    .select("id")
+    .single();
+  if (error || !data) {
+    const msg = error?.message ?? "insert failed";
+    if (msg.includes("uq_vto_experiments_one_running")) {
+      return { ok: false, error: "A test is already running — one question at a time." };
+    }
+    console.error("[ab] start product experiment failed:", msg);
+    return { ok: false, error: "Could not start the test. Try again." };
+  }
+  const { error: storeErr } = await supabaseAdmin
+    .from("vto_stores")
+    .update({
+      ab_experiment_enabled: true,
+      ab_experiment_id: data.id,
+      ab_holdout_percent: 50,
+      ab_experiment_kind: "product",
+      ab_test_products: clean.map(({ id, handle }) => ({ id, handle })),
+    })
+    .eq("store_slug", slug);
+  if (storeErr) {
+    await supabaseAdmin.from("vto_experiments").delete().eq("id", data.id);
+    console.error("[ab] product store flag update failed:", storeErr.message);
+    return { ok: false, error: "Could not activate the test on the widget." };
   }
   return { ok: true, experimentId: data.id as string };
 }
@@ -139,7 +228,7 @@ export async function stopExperiment(
   }
   const { error: storeErr } = await supabaseAdmin
     .from("vto_stores")
-    .update({ ab_experiment_enabled: false })
+    .update({ ab_experiment_enabled: false, ab_experiment_kind: "sitewide", ab_test_products: null })
     .eq("store_slug", slug);
   if (storeErr) {
     console.error("[ab] store flag release failed:", storeErr.message);
@@ -238,6 +327,141 @@ export async function getExperimentResults(
     pdpCrE != null && pdpCrH != null && pdpCrH > 0 ? (pdpCrE - pdpCrH) / pdpCrH : null;
 
   return { exposed, holdout, relativeLift, confidence, incrementalRevenue, hasMinimumSample, pdpRelativeLift };
+}
+
+const emptyProductArm = (): AbProductArmStats => ({
+  sessions: 0,
+  purchaseSessions: 0,
+  orders: 0,
+  revenue: 0,
+  conversionPct: null,
+});
+
+/**
+ * Product split test readout. The unit is a (shopper, product) view-pair;
+ * conversion means the shopper bought THAT product. Pooled numbers are the
+ * primary verdict (per-product rows are often underpowered on their own);
+ * each row only shows its own verdict once it clears the per-row sample bar.
+ */
+export async function getProductExperimentResults(
+  slug: string,
+  experiment: AbExperiment,
+): Promise<AbProductResults | null> {
+  const { data, error } = await supabaseAdmin.rpc("get_ab_product_results", {
+    p_store_slug: slug,
+    p_experiment_id: experiment.id,
+  });
+  if (error) {
+    console.error("[ab] product results failed (non-fatal):", error.message);
+    return null;
+  }
+  const byProduct = new Map<string, { exposed: AbProductArmStats; holdout: AbProductArmStats }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const row of (data ?? []) as any[]) {
+    const pid = String(row.product_id ?? "");
+    if (!pid) continue;
+    const entry = byProduct.get(pid) ?? { exposed: emptyProductArm(), holdout: emptyProductArm() };
+    const arm: AbProductArmStats = {
+      sessions: Number(row.sessions ?? 0),
+      purchaseSessions: Number(row.purchase_sessions ?? 0),
+      orders: Number(row.orders ?? 0),
+      revenue: Number(row.revenue ?? 0),
+      conversionPct: row.conversion_pct == null ? null : Number(row.conversion_pct),
+    };
+    if (row.variant === "holdout") entry.holdout = arm;
+    else entry.exposed = arm;
+    byProduct.set(pid, entry);
+  }
+
+  const meta = new Map((experiment.testProducts ?? []).map((p) => [p.id, p]));
+  const rows: AbProductRow[] = [];
+  // Every product in the frozen list gets a row, even with zero exposures yet.
+  const allIds = new Set<string>([...meta.keys(), ...byProduct.keys()]);
+  for (const pid of allIds) {
+    const arms = byProduct.get(pid) ?? { exposed: emptyProductArm(), holdout: emptyProductArm() };
+    const m = meta.get(pid);
+    const crE = arms.exposed.sessions > 0 ? arms.exposed.purchaseSessions / arms.exposed.sessions : null;
+    const crH = arms.holdout.sessions > 0 ? arms.holdout.purchaseSessions / arms.holdout.sessions : null;
+    rows.push({
+      productId: pid,
+      title: m?.title ?? pid,
+      handle: m?.handle ?? "",
+      exposed: arms.exposed,
+      holdout: arms.holdout,
+      relativeLift: crE != null && crH != null && crH > 0 ? (crE - crH) / crH : null,
+      confidence: twoProportionConfidence(
+        arms.exposed.purchaseSessions,
+        arms.exposed.sessions,
+        arms.holdout.purchaseSessions,
+        arms.holdout.sessions,
+      ),
+      hasRowSample:
+        arms.exposed.sessions >= AB_PRODUCT_ROW_MIN_SESSIONS_PER_ARM &&
+        arms.holdout.sessions >= AB_PRODUCT_ROW_MIN_SESSIONS_PER_ARM &&
+        arms.exposed.purchaseSessions + arms.holdout.purchaseSessions >= AB_PRODUCT_ROW_MIN_CONVERTERS,
+    });
+  }
+  // Busiest products first — that's where verdicts land first.
+  rows.sort((a, b) => b.exposed.sessions + b.holdout.sessions - (a.exposed.sessions + a.holdout.sessions));
+
+  const pooledArm = (pick: (r: AbProductRow) => AbProductArmStats): AbProductArmStats => {
+    const sum = rows.reduce(
+      (acc, r) => {
+        const a = pick(r);
+        acc.sessions += a.sessions;
+        acc.purchaseSessions += a.purchaseSessions;
+        acc.orders += a.orders;
+        acc.revenue += a.revenue;
+        return acc;
+      },
+      emptyProductArm(),
+    );
+    sum.conversionPct = sum.sessions > 0 ? Math.round((10000 * sum.purchaseSessions) / sum.sessions) / 100 : null;
+    return sum;
+  };
+  const exposed = pooledArm((r) => r.exposed);
+  const holdout = pooledArm((r) => r.holdout);
+  const crE = exposed.sessions > 0 ? exposed.purchaseSessions / exposed.sessions : null;
+  const crH = holdout.sessions > 0 ? holdout.purchaseSessions / holdout.sessions : null;
+  return {
+    rows,
+    pooled: {
+      exposed,
+      holdout,
+      relativeLift: crE != null && crH != null && crH > 0 ? (crE - crH) / crH : null,
+      confidence: twoProportionConfidence(
+        exposed.purchaseSessions,
+        exposed.sessions,
+        holdout.purchaseSessions,
+        holdout.sessions,
+      ),
+      hasMinimumSample:
+        exposed.sessions >= AB_MIN_SESSIONS_PER_ARM &&
+        holdout.sessions >= AB_MIN_SESSIONS_PER_ARM &&
+        exposed.purchaseSessions + holdout.purchaseSessions >= AB_MIN_TOTAL_CONVERTERS,
+    },
+  };
+}
+
+/** Most-viewed products (normalized numeric ids) — the "choose for me" list. */
+export async function getTopViewedProducts(
+  slug: string,
+  days = 30,
+  limit = 20,
+): Promise<Array<{ productId: string; views: number }>> {
+  const { data, error } = await supabaseAdmin.rpc("get_vto_top_viewed_products", {
+    p_store_slug: slug,
+    p_days: days,
+    p_limit: limit,
+  });
+  if (error) {
+    console.error("[ab] top viewed lookup failed (non-fatal):", error.message);
+    return [];
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return ((data ?? []) as any[])
+    .map((r) => ({ productId: String(r.product_id ?? ""), views: Number(r.views ?? 0) }))
+    .filter((r) => /^\d{1,20}$/.test(r.productId));
 }
 
 // ─── Receipts ledger ────────────────────────────────────────────────────────
