@@ -51,6 +51,18 @@ import {
 } from "./bag-carry";
 
 const GEMINI_MODEL = "gemini-3.6-flash";
+
+// Catalogue scanning must never compete with rendering. Both used to share
+// GEMINI_API_KEY, so one big catalogue sweep (a 5,000-product store is ~2,500
+// calls) ate into the same AI Studio requests-per-day budget that paying
+// merchants' try-ons draw from — a scan for a free store could throttle a
+// render for Atlas. Scans now prefer their own key and only fall back to the
+// render key when it isn't set, so this is safe to deploy before the key exists.
+// Cost is NOT the reason for the split: a full catalogue scan is cents
+// (Atlas's 27 scannable products measured $0.116). Throughput is.
+function scanApiKey(): string | undefined {
+  return process.env.PRINT_SCAN_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+}
 const CONFIDENCE_KEEP = 1.5;
 const MAX_IMAGES = 10; // later gallery slots are detail crops / size charts
 
@@ -285,7 +297,7 @@ export async function classify(
   title: string,
   imageUrls: string[],
 ): Promise<Classification | null> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = scanApiKey();
   if (!apiKey) return null;
 
   const parts: unknown[] = [
@@ -407,7 +419,7 @@ interface CarryWrite {
 }
 
 async function classifyHandbagProduct(p: CatalogProduct): Promise<Awaited<ReturnType<typeof classifyHandbag>>> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = scanApiKey();
   if (!apiKey) return null;
   const images: InlineImage[] = [];
   for (const src of p.images.slice(0, BAG_MAX_IMAGES)) {
