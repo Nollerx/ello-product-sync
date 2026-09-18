@@ -153,6 +153,15 @@ There is no `test` script in this repo.
 6. **Dashboard:** Produce a Lovable prompt; do not edit the dashboard repo directly.
 7. **Git:** Direct commits to `main` and push (solo workflow). No PR/branch flow unless Andrew asks.
 8. **Accuracy bar:** If you're not 100% sure of a fact, say so and verify (read the file, run the gcloud command, curl the URL). Never guess about deploy targets, service names, or URLs.
+9. **Evidence bar (added 2026-09-18, after the Atlas outage).** One verified fact beats three plausible explanations. Before claiming something works, **measure it — do not estimate**; open the query, run the render, read the log, count the rows. Before shipping, ask two questions out loud: *what breaks at 100x current volume?* and *what happens if this deploys before its migration?* After touching shared logic, ask *what existing behaviour could this silently overwrite?* When an explanation sounds clean, check it against real data before repeating it — the clean answer is where I am most likely wrong.
+
+   Why this rule exists. Every bug worth finding that day was found by a question that forced measurement rather than by carefulness:
+   - A **cost** question ("how much does this cost?") made me read the sweep's query and find that PostgREST silently caps a select at 1000 rows — the alert would have computed failure rates from a truncated slice the first time LA Apparel got busy, and reported them confidently.
+   - **"Why didn't the scan work, it usually does?"** proved my own first answer wrong: the scan was fine, and `print_side='back'` had never once been written in production, so the engine path was simply untested.
+   - Checking whether a fix would **survive a re-scan** found that merchant print-side corrections were being silently overwritten — a bug the same day's webhook change had just made far easier to hit.
+   - Checking the **existing** alerts before building new ones showed all seven were burst-shaped and structurally could not catch one store failing quietly.
+
+   The counterweight: this standard is slow, and slow is sometimes wrong. When Andrew says "quick fix", "don't audit", or "just ship it", take him at his word and skip it. The failure mode is not being insufficiently careful — it is being careful about the wrong thing.
 
 ## Brand palette (authoritative)
 
