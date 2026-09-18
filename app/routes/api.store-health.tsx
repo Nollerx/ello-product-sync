@@ -38,11 +38,16 @@ const IGNORED_SLUGS = new Set(
 const isIgnored = (slug: string) =>
   IGNORED_SLUGS.has(slug) || slug.startsWith("app-review") || slug.includes("-test") || slug.startsWith("m-test");
 
-interface EventRow {
-  store_slug: string | null;
-  success: boolean | null;
-  product_id: string | null;
-  created_at: string;
+// One row per store, aggregated by store_tryon_health(). Deliberately NOT a raw
+// tryon_events pull: PostgREST caps an unlimited select at 1000 rows, so once a
+// store passes 1000 try-ons inside the window the app-side aggregate would have
+// been computed from a truncated, unordered slice — a confidently wrong alert.
+interface HealthRow {
+  store_slug: string;
+  total: number;
+  failed: number;
+  top_product: string | null;
+  top_product_failures: number | null;
 }
 
 async function runSweep(request: Request): Promise<Response> {
@@ -55,12 +60,9 @@ async function runSweep(request: Request): Promise<Response> {
   }
 
   const dryRun = new URL(request.url).searchParams.get("dry") === "1";
-  const since = new Date(Date.now() - WINDOW_HOURS * 60 * 60 * 1000).toISOString();
-
-  const { data, error } = await supabaseAdmin
-    .from("tryon_events")
-    .select("store_slug, success, product_id, created_at")
-    .gte("created_at", since);
+  const { data, error } = await supabaseAdmin.rpc("store_tryon_health", {
+    p_hours: WINDOW_HOURS,
+  });
 
   if (error) {
     console.error("[StoreHealth] query failed:", error.message);
@@ -70,22 +72,10 @@ async function runSweep(request: Request): Promise<Response> {
     });
   }
 
-  // Aggregate per store, and track which product is failing most — that single
-  // line is what turns "Atlas is failing" into something actionable.
-  const byStore = new Map<string, { total: number; failed: number; products: Map<string, number> }>();
-  for (const row of (data ?? []) as EventRow[]) {
-    const slug = row.store_slug;
-    if (!slug || isIgnored(slug)) continue;
-    let s = byStore.get(slug);
-    if (!s) {
-      s = { total: 0, failed: 0, products: new Map() };
-      byStore.set(slug, s);
-    }
-    s.total += 1;
-    if (row.success === false) {
-      s.failed += 1;
-      if (row.product_id) s.products.set(row.product_id, (s.products.get(row.product_id) ?? 0) + 1);
-    }
+  const byStore = new Map<string, HealthRow>();
+  for (const row of (data ?? []) as HealthRow[]) {
+    if (!row.store_slug || isIgnored(row.store_slug)) continue;
+    byStore.set(row.store_slug, row);
   }
 
   const { data: stores } = await supabaseAdmin
@@ -124,7 +114,8 @@ async function runSweep(request: Request): Promise<Response> {
 
     if (last && Date.now() - new Date(last).getTime() < REALERT_COOLDOWN_MS) continue;
 
-    const [topProduct, topCount] = [...s.products.entries()].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+    const topProduct = s.top_product;
+    const topCount = s.top_product_failures ?? 0;
     const lines = [
       `🔴 <b>Try-ons failing — ${escapeHtml(domains.get(slug) || slug)}</b>`,
       ``,
