@@ -1,6 +1,6 @@
 # Ello VTO — Operating Brief
 
-You are working in `~/ello-storefront-app/`. Read this end-to-end before doing anything. **Verified 2026-04-25.**
+You are working in `~/ello-storefront-app/`. Read this end-to-end before doing anything. **Verified 2026-09-18.**
 
 Authoritative (more detailed) source of truth: vault note `02-Areas/Ello/_context/Project-Map.md`. Search via `obsidian read file="Project-Map"`.
 
@@ -16,7 +16,7 @@ This single repo (`Nollerx/ello-product-sync`, branch `main`) builds **one Docke
 | Cloud Run env file | `cloud_run_env.yaml` | `cloud_run_env_custom.yaml` |
 | Cloud Run service | `ello-vto-public-13593516897` | `custom-ello-app-13593516897` |
 | Billing | Shopify Billing API (`BILLING_TEST_MODE=false` — real charges live as of 2026-05-16) | None — Stripe-billed externally (`SKIP_BILLING=true`, `APP_DISTRIBUTION=SingleMerchant`) |
-| Live merchants | App Store installs (no paying merchants yet) | Formerly **Marcos Rivera / Kaizen Marketing** — no longer a customer; no active paying merchant on the custom app |
+| Live merchants | **Atlas Apparel** (`ecmxv0-vh`, atlasapparel.store) — Ello Launch $97/mo, Shopify-billed, active. First recurring customer; treat it as production. | Formerly **Marcos Rivera / Kaizen Marketing** — no longer a customer; no active paying merchant on the custom app |
 
 A parallel Cloud Run service `custom-ello-app-13593516897-13593516897` (doubled suffix) also exists and has received deploys recently. It responds at `https://custom-ello-app-13593516897-13593516897-13593516897.us-central1.run.app` (triple-suffix URL). Shopify routes the Custom Ello App to the **single-suffix** service via `shopify.app.custom.toml`'s `application_url`, so the doubled one is **not** what the Custom Ello App serves. Don't deploy to it without investigating where its existing deploys came from.
 
@@ -24,7 +24,7 @@ A parallel Cloud Run service `custom-ello-app-13593516897-13593516897` (doubled 
 
 - **Source:** `~/Desktop/ELLO VTOW/` (FastAPI Python, entrypoint `main.py`) — **not git-tracked**, edit with care
 - **Cloud Run service:** `ello-vto-13593516897`
-- **URL used in code:** `https://ello-vto-13593516897-13593516897.us-central1.run.app` (referenced in `app/routes/tryon.tsx:72`)
+- **URL used in code:** `https://ello-vto-13593516897-13593516897.us-central1.run.app` (referenced near the top of `app/routes/tryon.tsx` — grep `ML_API_URL`, the line moves)
 - **Affects every merchant** — public + custom both call this
 - **Env:** `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` / `SUPABASE_URL` / `SCOPES` set inline; `FASHN_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `WIDGET_BOOTSTRAP_SECRET` pulled from Google Secret Manager. Env is preserved across `--source` redeploys — no env-vars file needed.
 - ⚠️ The `SHOPIFY_API_KEY` on this service is `5a061b1380e2f426010459c372872b55`, which is the legacy `Ello Storefront App` client_id, not public or custom. May be vestigial — check before assuming it's wired to anything.
@@ -46,7 +46,16 @@ The merchant-facing dashboard is a Lovable project, not a Cloud Run deploy. It r
 
 - **Project ref:** `rwmvgwnebnsqcyhhurti`
 - **URL:** `https://rwmvgwnebnsqcyhhurti.supabase.co`
-- **Tables:** `vto_accounts`, `vto_stores`, `vto_subscriptions`, `vto_usage_periods`, `vto_plans`
+- **Tables:** ~119 tables/views are exposed — the five billing ones (`vto_accounts`,
+  `vto_stores`, `vto_subscriptions`, `vto_usage_periods`, `vto_plans`) are a small
+  slice. The ones most work actually touches: `tryon_events` (every try-on, with
+  `success`), `clothing_items` (the print-side/carry EXCEPTIONS table — NOT a
+  catalogue mirror), `widget_events`, `purchase_events`, `cart_events`,
+  `refund_events`, `vto_live_sessions`. Introspect rather than assuming this list
+  is complete.
+- **PostgREST caps an unlimited select at 1000 rows.** Aggregate in SQL (an RPC)
+  for anything that scales, or a query silently returns a truncated slice and the
+  code computes confidently wrong numbers.
 - **Edge functions:** in `supabase/functions/`. Deploy: `supabase functions deploy <name> --project-ref rwmvgwnebnsqcyhhurti --no-verify-jwt`
 - **Migrations:** in `supabase/migrations/`. Andrew runs them manually in the Supabase SQL editor. Lovable Cloud manages permissions, so do not assume Supabase MCP can execute against this project without explicit per-statement authorization.
 
@@ -92,10 +101,18 @@ cd ~/ello-storefront-app
 gcloud run deploy ello-vto-public-13593516897 \
   --source . \
   --region us-central1 \
-  --env-vars-file cloud_run_env.yaml \
   --project ello-vto \
   --allow-unauthenticated
 ```
+⚠️ **Do NOT pass `--env-vars-file cloud_run_env.yaml` to the public service.** It
+fails outright: `Cannot update environment variable [SHOPIFY_API_SECRET] to string
+literal because it has already been set with a different type`. Five keys in that
+yaml (`SHOPIFY_API_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET`,
+`DECART_API_KEY`, `GEMINI_API_KEY`) are Secret Manager references on the live
+service, and the file would downgrade them to plaintext literals. `--source`
+preserves env, so omit the file. Verified 2026-09-18: omitting it kept all 21
+entries and 7 secret-refs intact. The CUSTOM command below is unaffected — none of
+its yaml keys are secret-refs there.
 
 ### Custom app
 ```bash
@@ -113,9 +130,11 @@ Both web services also bind `TELEGRAM_BOT_TOKEN` from Secret Manager (secret
 The binding persists across the plain deploys above; only re-add
 `--update-secrets=TELEGRAM_BOT_TOKEN=telegram-bot-token:latest` if it's ever
 cleared. `TELEGRAM_CHAT_ID` and `CRON_SECRET` live in the (gitignored) env
-yamls. A Cloud Scheduler job `ello-install-followup` (us-central1, every 15
-min) POSTs to `/api/install-followup` on the public service with header
-`x-cron-key=$CRON_SECRET` to drive the 2h post-install Telegram check-ins.
+yamls. Two Cloud Scheduler jobs (us-central1, both `*/15 * * * *`, both POSTing to the
+public service with header `x-cron-key=$CRON_SECRET`): `ello-install-followup`
+→ `/api/install-followup` (2h post-install Telegram check-ins), and
+`ello-store-health` → `/api/store-health` (per-store try-on failure-rate pager;
+alerts at >=30% failures over 6h with an 8-attempt floor, one page per incident).
 
 ### ML service
 ```bash
@@ -132,13 +151,19 @@ The widget (`public/widget-main.js`, `public/widget-loader.js`) is served by bot
 
 ## Pre-deploy gate
 
-Run all three; deploy only if all pass:
 ```bash
-npm run lint
-npm run typecheck
-npm run build
+npm run typecheck   # must be clean — this is a real gate
+npm run build       # must be clean — this is a real gate
+npm run lint        # ~413 PRE-EXISTING errors; see below
 ```
 There is no `test` script in this repo.
+
+⚠️ **`npm run lint` cannot go green and never blocks a deploy.** It carries ~413
+pre-existing errors repo-wide — mostly `supabase/functions/*` (Deno `jsr:` /
+`https://` imports eslint cannot resolve) and empty `catch {}` blocks in the
+legacy `public/widget-main.js`. The usable gate is: **typecheck and build clean,
+plus `npx eslint <the files you touched>` clean.** If a whole-repo lint is treated
+as a blocker, nothing ever ships.
 
 ## Workflow rules (non-negotiable)
 
@@ -178,9 +203,24 @@ Quick reference (do not memorize from here — always reconcile against the doc)
 2. Never save palette decisions to ephemeral agent memory. Palette state lives in `Brand-Palette.md` — update the doc, don't carry it in your head.
 3. If a hero, gradient, or color choice in the existing code looks off-brand, flag it to Andrew before changing it — don't make stylistic judgment calls unilaterally.
 
-## Env-var names (yaml files in repo root, plaintext secrets)
+## Env-var names (yaml files in repo root — NOT the whole picture)
 
-`NODE_ENV, SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SCOPES, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY, SHOPIFY_APP_URL, SKIP_BILLING, DEFAULT_INCLUDED_TRYONS, BILLING_TEST_MODE`. Custom adds `APP_DISTRIBUTION`. Local `.env` has only the first five.
+`cloud_run_env.yaml` (16): `NODE_ENV, SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SCOPES,
+SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_ANON_KEY, SHOPIFY_APP_URL,
+SKIP_BILLING, DEFAULT_INCLUDED_TRYONS, BILLING_TEST_MODE, TELEGRAM_CHAT_ID,
+CRON_SECRET, DECART_API_KEY, GEMINI_API_KEY, PRINT_SCAN_CUTOFF`. Custom adds
+`APP_DISTRIBUTION` + `ML_API_URL`.
+
+**The yaml is not the source of truth for the live service.** The public service
+runs 21 env entries, 7 of them Secret Manager refs that appear in no yaml:
+`TELEGRAM_BOT_TOKEN`, `WIDGET_BOOTSTRAP_SECRET`, `PRINT_SCAN_GEMINI_API_KEY`
+(catalogue scanning, deliberately a DIFFERENT Google project from the render key
+so a big scan cannot eat the render quota), plus `ALERTS_TELEGRAM_BOT_TOKEN` /
+`ALERTS_TELEGRAM_CHAT_ID` (the @Elloalertbot pager). Always read the live service
+with `gcloud run services describe` before reasoning about env.
+
+Local `.env` (7): `SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SCOPES, SUPABASE_URL,
+SUPABASE_SERVICE_ROLE_KEY, DECART_API_KEY, LIVE_SHOPPER_DAILY_SESSIONS`.
 
 ## Other folders on Desktop (context, not deploy sources)
 
