@@ -507,7 +507,7 @@ export async function scanStoreCatalog(
   // row always has print data, lands in this set, and is never upserted over.
   const { data: existing } = await supabaseAdmin
     .from("clothing_items")
-    .select("item_id, print_side, print_scanned_at, carry_modes, carry_source")
+    .select("item_id, print_side, print_scanned_at, carry_modes, carry_source, print_side_source")
     .eq("store_id", store.slug);
   const done = new Set<string>();
   const manual = new Set<string>();
@@ -515,7 +515,12 @@ export async function scanStoreCatalog(
     const tail = String(row.item_id).match(/(\d+)$/)?.[1];
     if (!tail) continue;
     if (row.print_side || row.print_scanned_at || row.carry_modes || row.carry_source === "manual") done.add(tail);
-    if (row.carry_source === "manual") manual.add(tail);
+    // A merchant correction must survive a re-scan. carry_source covers handbags;
+    // print_side_source is what app.products.tsx stamps when someone fixes a
+    // front/back call by hand, and it was NOT protected here — so a forced
+    // rescan (which product webhooks now trigger on legacy stores) would
+    // silently overwrite their correction with the classifier's guess.
+    if (row.carry_source === "manual" || row.print_side_source === "manual") manual.add(tail);
   }
   // Forced products (from a products webhook) are re-read unless the merchant
   // set them by hand.
@@ -574,13 +579,23 @@ export async function scanStoreCatalog(
       stats.classified += 1;
       const write = cls ? decideWrite(kind, cls) : null;
       if (write) {
-        row.print_side = write.print_side;
+        // NEVER store "back". It is the one label the engine renders wrong: it
+        // puts the back graphic on the FRONT panel (Atlas ROSE tee, 2026-09-18 —
+        // the identical product stored as "both" renders both panels correctly).
+        // Every one of the live split cards in this DB is "both", so that is the
+        // only exercised path. The classifier's back/both judgment is not thrown
+        // away — it becomes lead_view, which decides the view the shopper sees
+        // first. A back-graphic garment opens on its back; the widget's Front/Back
+        // toggle still gives them the front.
+        const backDominant = write.print_side === "back" || write.print_side === "both";
+        row.print_side = write.print_side === "back" ? "both" : write.print_side;
         row.print_side_source = "auto";
         row.front_image_url = write.front_image_url;
         row.back_image_url = write.back_image_url;
         row.print_scan_confidence = cls!.confidence;
+        if (backDominant && write.back_image_url) row.lead_view = "back";
         configured = true;
-        isSplit = write.print_side === "back" || write.print_side === "both";
+        isSplit = backDominant;
       }
     }
     const { error } = await supabaseAdmin

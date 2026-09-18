@@ -33,6 +33,9 @@ interface PrintSideRow {
     print_side: string | null;
     front_image_url: string | null;
     back_image_url: string | null;
+    // Which view the widget opens on. Presentation only — it never changes how
+    // the render is produced, so it can never cause a wrong-side render.
+    lead_view: string | null;
     // Handbags (2026-09-07): how the bag is carried + its listed size, from
     // the catalogue scan (app/lib/print-scan.server.ts → bag-carry.ts).
     carry_modes: string[] | null;
@@ -46,16 +49,30 @@ async function lookupPrintSide(
 ): Promise<PrintSideRow | null> {
     const candidates = productIdCandidates(productId);
     if (candidates.length === 0) return null;
-    try {
-        const { data, error } = await supabaseAdmin
+    // lead_view is newer than this code path. Selecting a column that does not
+    // exist yet makes PostgREST fail the WHOLE query, which would return null
+    // here and silently switch off every split card in the fleet — so the
+    // deploy would have to land strictly after the migration. Ask for it, and
+    // fall back to the columns that have always existed if it is not there.
+    const BASE_COLS = "print_side, front_image_url, back_image_url, carry_modes, bag_dimensions, carry_meta";
+    const run = (cols: string) =>
+        supabaseAdmin
             .from("clothing_items")
-            .select("print_side, front_image_url, back_image_url, carry_modes, bag_dimensions, carry_meta")
+            .select(cols)
             .eq("store_id", storeSlug)
             .in("item_id", candidates)
             .or("print_side.not.is.null,carry_modes.not.is.null,bag_dimensions.not.is.null")
             .limit(1);
-        if (error || !data?.length) return null;
-        return data[0] as PrintSideRow;
+    try {
+        const first = await run(`${BASE_COLS}, lead_view`);
+        let data = first.data;
+        if (first.error) {
+            const { data: d2, error: e2 } = await run(BASE_COLS);
+            if (e2 || !d2?.length) return null;
+            data = d2;
+        }
+        if (!data?.length) return null;
+        return data[0] as unknown as PrintSideRow;
     } catch {
         // Lookup is best-effort: any failure means "no print data", which renders
         // exactly as today. A render must never fail because this table hiccuped.
@@ -321,12 +338,17 @@ export async function action({ request }: ActionFunctionArgs) {
         //     widget's own PDP image so step 3 can fall back to it.
         const widgetProductImageUrl = body.productImageUrl;
         let usedCatalogImages = false;
+        let leadView: "front" | "back" | null = null;
         const printRow = await lookupPrintSide(storeSlug, body.productId || body.product_id);
         if (printRow?.print_side && ["back", "both"].includes(printRow.print_side) && printRow.back_image_url) {
             usedCatalogImages = true;
             body.printSide = printRow.print_side;
             body.backImageUrl = printRow.back_image_url;
             body.hasFrontPhoto = Boolean(printRow.front_image_url);
+            // A back-graphic garment should open on the back: that print is the
+            // reason the shopper is looking at it. The Front/Back toggle the
+            // widget already renders still gives them the front.
+            leadView = printRow.lead_view === "back" ? "back" : "front";
             if (printRow.front_image_url) {
                 body.productImageUrl = printRow.front_image_url;
             }
@@ -449,8 +471,15 @@ export async function action({ request }: ActionFunctionArgs) {
                 });
             }
 
-            // 6. Return response with CORS headers
-            return new Response(JSON.stringify(data), {
+            // 6. Return response with CORS headers. leadView is added HERE rather
+            //    than in the engine: the proxy already read the catalogue row, so
+            //    the widget can be told which view to open on without an engine
+            //    change. Only ever sent when a real back panel came back.
+            const payload =
+                leadView && (data?.imageBackB64 || data?.image_back_b64)
+                    ? { ...data, leadView }
+                    : data;
+            return new Response(JSON.stringify(payload), {
                 status: res.status,
                 headers: { "Content-Type": "application/json", ...CORS_HEADERS },
             });

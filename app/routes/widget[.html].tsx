@@ -2,7 +2,7 @@ import { type LoaderFunctionArgs } from "react-router";
 import fs from "fs";
 import path from "path";
 
-export async function loader({ request }: LoaderFunctionArgs) {
+export async function loader({ request: _request }: LoaderFunctionArgs) {
     // Determine the file path
     // In production (Docker), the build is in /app/build, and public assets are in /app/build/client
     // In development, we might need to look in public/ or dist/

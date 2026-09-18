@@ -7,13 +7,13 @@ declare global {
     elloHiddenProductIds?: Set<string>;
     elloHiddenTitles?: Set<string>;
     elloHiddenHandles?: Set<string>;
-    ELLO_STORE_CONFIG?: Record<string, any>;
+    ELLO_STORE_CONFIG?: Record<string, unknown>;
     ELLO_STORE_SLUG?: string;
     ELLO_STORE_ID?: string;
     ELLO_STORE_NAME?: string;
     ELLO_SESSION_ID?: string;
-    ELLO_BOOTSTRAP_PROMISE?: Promise<any>;
-    elloStoreConfig?: Record<string, any>;
+    ELLO_BOOTSTRAP_PROMISE?: Promise<unknown>;
+    elloStoreConfig?: Record<string, unknown>;
     initializeWidget?: () => void;
     // Modern App Bridge global (injected by AppProvider in app.tsx). Minimal
     // surface — just the resource picker used by the Products page.

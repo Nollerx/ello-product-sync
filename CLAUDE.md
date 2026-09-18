@@ -158,12 +158,24 @@ npm run lint        # ~413 PRE-EXISTING errors; see below
 ```
 There is no `test` script in this repo.
 
-⚠️ **`npm run lint` cannot go green and never blocks a deploy.** It carries ~413
-pre-existing errors repo-wide — mostly `supabase/functions/*` (Deno `jsr:` /
-`https://` imports eslint cannot resolve) and empty `catch {}` blocks in the
-legacy `public/widget-main.js`. The usable gate is: **typecheck and build clean,
-plus `npx eslint <the files you touched>` clean.** If a whole-repo lint is treated
-as a blocker, nothing ever ships.
+**Lint state (cleaned up 2026-09-18: 413 errors → 43).** What changed:
+`supabase/functions/**` is now ignored (it is DENO — `jsr:`/`npm:`/`https://`
+specifiers are unresolvable by this config by design, and it deploys and lints
+through Deno's own toolchain), `dev/**-playground` is ignored (scratch harnesses,
+never shipped), `no-empty` allows the deliberate `catch {}` best-effort idiom the
+widget relies on, the CDN globals (`tf`, `faceapi`, `poseDetection`) are declared,
+and `_`-prefixed args are the opt-out for intentionally-unused parameters.
+
+**`app/` is now clean and must stay clean — treat any error there as a blocker.**
+
+The remaining ~43 are all in the legacy `public/*.js` widget files (unused vars,
+`no-useless-escape`, a few non-catch empty blocks). They are genuine findings but
+were deliberately NOT auto-fixed: `widget-main.js` is ~20k lines of shipped
+storefront code, and churning it for style carries far more risk than the findings
+are worth. Fix them when you are already in that file for another reason.
+
+So the gate is: **`npm run typecheck` and `npm run build` must be clean, and
+`npx eslint <files you touched>` must be clean.**
 
 ## Workflow rules (non-negotiable)
 

@@ -47,7 +47,7 @@ export async function runTokenSync(shop: string, accessToken: string, requestId:
     }
 
     let attempts = 0;
-    let lastError: any = null;
+    let lastError: DbLikeError | null = null;
 
     // 2. Retry Loop
     for (const delay of [0, ...RETRY_DELAYS]) {
@@ -90,9 +90,9 @@ export async function runTokenSync(shop: string, accessToken: string, requestId:
                 attempts
             };
 
-        } catch (err: any) {
+        } catch (err) {
             console.error(`[SyncEngine:${requestId}] Network/System Exception attempt ${attempts}:`, err);
-            lastError = err;
+            lastError = err as DbLikeError;
             // Network errors are usually retryable
             if (attempts <= RETRY_DELAYS.length) continue;
         }
@@ -115,14 +115,23 @@ export async function runTokenSync(shop: string, accessToken: string, requestId:
 
 // Helpers
 
-function isRetryableError(error: any): boolean {
+// Postgres/PostgREST errors and thrown Errors both surface as code + message;
+// this is the only shape the retry logic below actually reads.
+interface DbLikeError {
+    code?: string;
+    message?: string;
+    details?: string | null;
+    hint?: string | null;
+}
+
+function isRetryableError(error: DbLikeError): boolean {
     // Retry on network/timeout or 5xx specific codes if available
     // PGRST106 (schema missing) and 42501 (perms) are NOT retryable
     if (error.code === 'PGRST106' || error.code === '42501') return false;
     return true; // Default to retry for unknown/network glitches
 }
 
-function mapDbErrorToResult(error: any, shop: string, requestId: string, attempts: number): SyncResult {
+function mapDbErrorToResult(error: DbLikeError, shop: string, requestId: string, attempts: number): SyncResult {
     let code = SYNC_ERRORS.UNKNOWN;
     let msg = error.message;
 

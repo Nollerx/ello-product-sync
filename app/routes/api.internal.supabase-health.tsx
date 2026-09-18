@@ -39,12 +39,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             headers: { "Content-Type": "application/json" }
         });
 
-    } catch (err: any) {
+    } catch (err) {
         return new Response(JSON.stringify({
             status: 'crash',
             ok: false,
             latency_ms: Math.round(performance.now() - start),
-            error: err.message,
+            error: err instanceof Error ? err.message : String(err),
             requestId
         }), { 
             status: 500,
