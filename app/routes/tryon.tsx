@@ -4,6 +4,7 @@ import { checkAndRecordUsage, createShopifyUsageCharge, releaseTryonCredit } fro
 import { checkTryonOrigin } from "../lib/tryon-origin.server";
 import { clientIpForRateLimit } from "../lib/client-ip.server";
 import { supabaseAdmin } from "../lib/supabase.server";
+import { healRottenSnapshot } from "../lib/print-scan.server";
 
 // ─── Back-graphic split cards (2026-08-13) ───────────────────────────────────
 // Where a product's design sits (clothing_items.print_side, filled by the
@@ -445,6 +446,13 @@ export async function action({ request }: ActionFunctionArgs) {
                         renderSucceeded = true;
                         console.warn(
                             `[TryOn Proxy] Stale catalogue image for store=${storeSlug} product=${body.productId || body.product_id} — served from the live PDP image; clothing_items needs a re-scan.`,
+                        );
+                        // Don't just log it. Clear the dead URLs so the NEXT
+                        // shopper skips the failed first attempt entirely, and
+                        // kick a rescan for this one product to refill them.
+                        // Fire-and-forget: the shopper already has their render.
+                        healRottenSnapshot(storeSlug, body.productId || body.product_id).catch(
+                            (healErr) => console.error("[TryOn Proxy] self-heal failed:", healErr),
                         );
                     }
                 } catch (retryErr) {

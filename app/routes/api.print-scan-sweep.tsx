@@ -9,7 +9,7 @@ import { sendTelegramMessage, escapeHtml } from "../lib/telegram.server";
 // big catalog finishes across a short chain of requests.
 //
 //   ?store=<slug or myshopify domain>   required
-//   ?src=install|webhook                gate selector; omitted = manual kick
+//   ?src=install|webhook|admin|selfheal gate selector; omitted = manual kick
 //   ?limit=<n>                          classifier calls per hop (cap 60)
 //   ?hop=<n>                            internal chain counter
 
@@ -59,25 +59,36 @@ async function runScan(request: Request): Promise<Response> {
       });
     }
 
-    // A pre-cutoff (legacy) store must not have its whole catalog vision-scanned
-    // off a webhook — that cost gate is the entire reason the cutoff exists. But
-    // it does have to re-read the ONE product a merchant just edited:
-    // clothing_items holds point-in-time Shopify CDN URLs, and replacing a photo
-    // deletes the file behind the stored URL, so without this the row keeps a
-    // dead link forever and every try-on on that product 404s at the garment
-    // fetch (Atlas, 2026-09-17 — 7 of 17 products, ~43% of try-ons).
-    // onlyForced holds the blast radius to exactly the named product.
+    // A named product means a named product. clothing_items holds point-in-time
+    // Shopify CDN URLs, and replacing a photo deletes the file behind the stored
+    // URL, so the row has to be re-read — but re-reading it is all that is owed
+    // (Atlas, 2026-09-17: a dead link took out ~43% of that store's try-ons).
+    // onlyForced holds the blast radius to exactly that product on EVERY store,
+    // legacy or not. A catalog-wide sweep belongs to install, to the merchant's
+    // own Rescan button, and to a manual kick — never to routine traffic.
     let onlyForced = false;
-    if (src === "webhook") {
-      const cutoff = process.env.PRINT_SCAN_CUTOFF || DEFAULT_CUTOFF;
-      if (!store.createdAt || store.createdAt.slice(0, 10) < cutoff) {
-        if (!product) {
+    if (src === "selfheal") {
+      if (!product) {
+        return new Response(JSON.stringify({ ok: true, skipped: "self-heal kick without a product" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      onlyForced = true;
+    } else if (src === "webhook") {
+      if (product) {
+        onlyForced = true;
+      } else {
+        // No product id in the payload. A legacy catalog must still never
+        // vision-scan itself off a webhook — that cost gate is the entire
+        // reason the cutoff exists.
+        const cutoff = process.env.PRINT_SCAN_CUTOFF || DEFAULT_CUTOFF;
+        if (!store.createdAt || store.createdAt.slice(0, 10) < cutoff) {
           return new Response(JSON.stringify({ ok: true, skipped: "pre-cutoff store" }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           });
         }
-        onlyForced = true;
       }
     }
 
@@ -118,15 +129,19 @@ async function runScan(request: Request): Promise<Response> {
       fetch(next.toString(), { headers: { "x-cron-key": secret } }).catch(() => {});
     }
 
-    // One Telegram summary per store, when the chain finishes with anything
-    // configured (mirrors the install-alert pattern; silent for no-op stores).
-    if (drained && stats.written > 0) {
+    // One Telegram summary per DELIBERATE sweep — install, the merchant's Rescan
+    // button, or a manual kick. Webhook and self-heal passes are single products
+    // and fire with ordinary store traffic; a ping for each one is noise, and it
+    // read as "why is it scanning a bunch of things?" when the number in the
+    // message was the catalog size, not the number scanned.
+    const announce = src !== "webhook" && src !== "selfheal";
+    if (drained && stats.written > 0 && announce) {
       await sendTelegramMessage(
         `🧵 <b>Print scan: ${escapeHtml(store.slug)}</b>\n${stats.written} configured (${stats.split} split-enabled${stats.bags ? `, ${stats.bags} handbags` : ""}) of ${stats.catalog} products${stats.parked ? ` · ${stats.parked} parked` : ""}`,
       ).catch(() => {});
     }
 
-    return new Response(JSON.stringify({ ok: true, drained, hop, stats }), {
+    return new Response(JSON.stringify({ ok: true, drained, hop, scope: onlyForced ? "product" : "catalog", stats }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });

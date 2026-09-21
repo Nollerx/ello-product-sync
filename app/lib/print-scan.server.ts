@@ -3,10 +3,17 @@
 //
 // Trigger model (no cron): the scan is kicked per store —
 //   - at INSTALL, from afterAuth after the storefront token sync completes,
-//   - from the products webhook when the catalog changes (gated to stores
-//     installed after PRINT_SCAN_CUTOFF, so legacy catalogs never scan
-//     without a deliberate manual kick),
+//   - from the products webhook when a product's PHOTOS change — see
+//     shouldRescanProduct: products/update also fires on inventory, price,
+//     tags, publish state and app metafield writes, and re-classifying on
+//     those is pure waste (gated to stores installed after PRINT_SCAN_CUTOFF
+//     for catalog-wide kicks, so legacy catalogs never sweep by themselves),
+//   - from the try-on proxy when a shopper hits a rotten snapshot
+//     (healRottenSnapshot), which is the one trigger that fires exactly when
+//     the data is actually being used,
 //   - manually via /api/print-scan-sweep?store=<slug-or-domain>.
+// Every trigger but install and a merchant Rescan names ONE product and reads
+// only that product.
 // One invocation processes a bounded batch; the route self-chains until the
 // store's catalog is drained.
 //
@@ -148,23 +155,97 @@ export async function resolveStore(slugOrDomain: string): Promise<StoreRef | nul
   };
 }
 
+// ── Product id spellings ─────────────────────────────────────────────────────
+// clothing_items.item_id, the widget's productId and a webhook payload each use
+// whichever spelling their source had on hand — full GID, bare numeric id,
+// occasionally a variant gid. Trailing digits are the one part they all agree on.
+export function productIdTail(raw: unknown): string | null {
+  if (typeof raw !== "string" && typeof raw !== "number") return null;
+  return String(raw).match(/(\d+)$/)?.[1] ?? null;
+}
+
+function toProductGid(raw: unknown): string | null {
+  const tail = productIdTail(raw);
+  return tail ? `gid://shopify/Product/${tail}` : null;
+}
+
+// Every spelling of one product, for an `item_id IN (...)` lookup.
+function itemIdVariants(raw: string): string[] {
+  const tail = productIdTail(raw);
+  if (!tail) return [raw];
+  return [...new Set([raw, tail, `gid://shopify/Product/${tail}`])];
+}
+
 // ── Catalog enumeration via the Storefront API ───────────────────────────────
 // Same endpoint/auth pattern as fetchStorefrontProducts (storefront-names) and
 // the catalog-handles fetchers. Token-authenticated, so it works even when the
 // storefront has a password page (dev stores).
-async function fetchCatalog(store: StoreRef): Promise<CatalogProduct[] | null> {
+interface StorefrontProductNode {
+  id?: string;
+  title?: string;
+  productType?: string;
+  tags?: string[];
+  description?: string;
+  images?: { edges?: Array<{ node?: { url?: string } }> };
+  variants?: { edges?: Array<{ node?: { price?: { amount?: string } } }> };
+}
+
+const PRODUCT_FIELDS = `
+  id title productType tags
+  description(truncateAt: 1500)
+  images(first: ${MAX_IMAGES}) { edges { node { url } } }
+  variants(first: 1) { edges { node { price { amount } } } }
+`;
+
+function toCatalogProduct(n: StorefrontProductNode | null | undefined): CatalogProduct | null {
+  if (!n?.id) return null;
+  return {
+    gid: n.id,
+    title: n.title ?? "",
+    productType: n.productType ?? "",
+    tags: Array.isArray(n.tags) ? n.tags : [],
+    description: typeof n.description === "string" ? n.description : "",
+    price: Number(n.variants?.edges?.[0]?.node?.price?.amount ?? 0) || 0,
+    images: (n.images?.edges ?? [])
+      .map((e) => e?.node?.url)
+      .filter((u): u is string => Boolean(u)),
+  };
+}
+
+async function storefrontQuery<T>(
+  store: StoreRef,
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<T | null> {
   if (!store.storefrontToken) return null;
   const domain = store.shopDomain.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-  const endpoint = `https://${domain}/api/2024-01/graphql.json`;
+  const res = await fetch(`https://${domain}/api/2024-01/graphql.json`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Shopify-Storefront-Access-Token": store.storefrontToken,
+    },
+    body: JSON.stringify({ query, variables }),
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) return null;
+  const json = (await res.json()) as { data?: T };
+  return json.data ?? null;
+}
+
+interface CatalogPage {
+  products?: {
+    pageInfo?: { hasNextPage?: boolean; endCursor?: string };
+    edges?: Array<{ node?: StorefrontProductNode }>;
+  };
+}
+
+async function fetchCatalog(store: StoreRef): Promise<CatalogProduct[] | null> {
+  if (!store.storefrontToken) return null;
   const QUERY = `query Catalog($cursor: String) {
     products(first: 100, after: $cursor) {
       pageInfo { hasNextPage endCursor }
-      edges { node {
-        id title productType tags
-        description(truncateAt: 1500)
-        images(first: ${MAX_IMAGES}) { edges { node { url } } }
-        variants(first: 1) { edges { node { price { amount } } } }
-      } }
+      edges { node { ${PRODUCT_FIELDS} } }
     }
   }`;
 
@@ -172,57 +253,47 @@ async function fetchCatalog(store: StoreRef): Promise<CatalogProduct[] | null> {
   let cursor: string | null = null;
   for (let page = 0; page < 30; page++) {
     try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Storefront-Access-Token": store.storefrontToken,
-        },
-        body: JSON.stringify({ query: QUERY, variables: { cursor } }),
-        signal: AbortSignal.timeout(20000),
-      });
-      if (!res.ok) return out.length ? out : null;
-      const json = (await res.json()) as {
-        data?: {
-          products?: {
-            pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-            edges?: Array<{
-              node?: {
-                id?: string;
-                title?: string;
-                productType?: string;
-                tags?: string[];
-                description?: string;
-                images?: { edges?: Array<{ node?: { url?: string } }> };
-                variants?: { edges?: Array<{ node?: { price?: { amount?: string } } }> };
-              };
-            }>;
-          };
-        };
-      };
-      const conn = json.data?.products;
-      for (const edge of conn?.edges ?? []) {
-        const n = edge?.node;
-        if (!n?.id) continue;
-        out.push({
-          gid: n.id,
-          title: n.title ?? "",
-          productType: n.productType ?? "",
-          tags: Array.isArray(n.tags) ? n.tags : [],
-          description: typeof n.description === "string" ? n.description : "",
-          price: Number(n.variants?.edges?.[0]?.node?.price?.amount ?? 0) || 0,
-          images: (n.images?.edges ?? [])
-            .map((e) => e?.node?.url)
-            .filter((u): u is string => Boolean(u)),
-        });
+      // Annotated, not inferred: `cursor` is assigned from this result, so an
+      // inferred type here is a circular reference (TS7022).
+      const data: CatalogPage | null = await storefrontQuery<CatalogPage>(store, QUERY, { cursor });
+      const conn: CatalogPage["products"] = data?.products;
+      if (!conn) return out.length ? out : null;
+      for (const edge of conn.edges ?? []) {
+        const product = toCatalogProduct(edge?.node);
+        if (product) out.push(product);
       }
-      if (!conn?.pageInfo?.hasNextPage || !conn.pageInfo.endCursor) return out;
+      if (!conn.pageInfo?.hasNextPage || !conn.pageInfo.endCursor) return out;
       cursor = conn.pageInfo.endCursor;
     } catch {
       return out.length ? out : null;
     }
   }
   return out;
+}
+
+// Read named products only. A products webhook and a try-on self-heal each name
+// exactly one product, and walking a 5,000-item catalog to look at one of them
+// is the difference between one Storefront call and fifty.
+async function fetchProductsByIds(store: StoreRef, refs: string[]): Promise<CatalogProduct[] | null> {
+  if (!store.storefrontToken) return null;
+  const ids = [...new Set(refs.map(toProductGid).filter((g): g is string => Boolean(g)))];
+  if (!ids.length) return [];
+  const QUERY = `query Products($ids: [ID!]!) {
+    nodes(ids: $ids) { ... on Product { ${PRODUCT_FIELDS} } }
+  }`;
+  try {
+    const data = await storefrontQuery<{ nodes?: Array<StorefrontProductNode | null> }>(
+      store,
+      QUERY,
+      { ids },
+    );
+    if (!data) return null;
+    return (data.nodes ?? [])
+      .map(toCatalogProduct)
+      .filter((p): p is CatalogProduct => Boolean(p));
+  } catch {
+    return null;
+  }
 }
 
 async function downloadImage(src: string): Promise<{ mime: string; b64: string } | null> {
@@ -498,17 +569,31 @@ export async function scanStoreCatalog(
     bags: 0,
   };
 
-  const catalog = await fetchCatalog(store);
+  // A forced single-product pass (products webhook, try-on self-heal) reads just
+  // that product and just its row. This path runs routinely, so it has to stay
+  // near-free; enumerating the whole catalog to re-read one item was most of the
+  // cost of a webhook kick.
+  const forced = opts.force ?? [];
+  const singleProduct = Boolean(opts.onlyForced) && forced.length > 0;
+  const catalog = singleProduct
+    ? await fetchProductsByIds(store, forced)
+    : await fetchCatalog(store);
   if (!catalog) return { stats, error: "catalog enumeration failed (no storefront token, or Storefront API unreachable)" };
+  // In a single-product pass this is the products READ, not the store's catalog
+  // size. Nothing announces it (see the sweep route), so it stays an internal stat.
   stats.catalog = catalog.length;
 
   // Anything already decided — scanned by a previous hop/run, or set by the
   // merchant — is skipped. This is also the manual-row protection: a manual
   // row always has print data, lands in this set, and is never upserted over.
-  const { data: existing } = await supabaseAdmin
+  let existingQuery = supabaseAdmin
     .from("clothing_items")
     .select("item_id, print_side, print_scanned_at, carry_modes, carry_source, print_side_source")
     .eq("store_id", store.slug);
+  if (singleProduct) {
+    existingQuery = existingQuery.in("item_id", forced.flatMap(itemIdVariants));
+  }
+  const { data: existing } = await existingQuery;
   const done = new Set<string>();
   const manual = new Set<string>();
   for (const row of existing ?? []) {
@@ -524,7 +609,7 @@ export async function scanStoreCatalog(
   }
   // Forced products (from a products webhook) are re-read unless the merchant
   // set them by hand.
-  const force = new Set((opts.force ?? []).map((g) => g.match(/(\d+)$/)?.[1]).filter((t): t is string => Boolean(t)));
+  const force = new Set(forced.map(productIdTail).filter((t): t is string => Boolean(t)));
 
   const candidates = catalog.filter((p) => {
     const tail = p.gid.match(/(\d+)$/)?.[1];
@@ -622,7 +707,9 @@ export async function scanStoreCatalog(
 // Used by afterAuth and the products webhook to start a scan without blocking
 // the caller: the scan runs in its own HTTP request, which gives it its own
 // CPU allocation on Cloud Run. `src` tells the route which gate to apply.
-export function kickPrintScan(shopOrSlug: string, src: "install" | "webhook" | "admin", productGid?: string | null): void {
+export type ScanSource = "install" | "webhook" | "admin" | "selfheal";
+
+export function kickPrintScan(shopOrSlug: string, src: ScanSource, productGid?: string | null): void {
   const base = process.env.SHOPIFY_APP_URL;
   const secret = process.env.CRON_SECRET;
   if (!base || !secret) return;
@@ -632,4 +719,167 @@ export function kickPrintScan(shopOrSlug: string, src: "install" | "webhook" | "
   // be stuck with the first read). Manual rows are still never touched.
   if (productGid) url += `&product=${encodeURIComponent(productGid)}`;
   fetch(url, { headers: { "x-cron-key": secret } }).catch(() => {});
+}
+
+// ── Webhook gate: does this product actually need re-reading? ───────────────
+// products/update is not a "the photos changed" signal. Shopify fires it for
+// inventory quantity, price, tags, publish state, sales-channel changes and app
+// metafield writes, and none of those can change a print-side or carry-mode
+// call. Before this gate every one of them kicked a full catalog enumeration
+// plus a classifier call — and the classifier falls back to GEMINI_API_KEY, the
+// same key and daily request budget paying merchants' renders draw from, so the
+// waste was throughput, not just cents.
+//
+// The scan is re-run only when the product's PHOTOS moved:
+//   - a photo we stored is no longer on the product (the rot case — replacing a
+//     photo deletes the file behind the URL we saved, and every try-on using it
+//     then 404s at the garment fetch: Atlas, 2026-09-17, ~43% of try-ons), or
+//   - a photo was added after the last scan (a view the classifier never saw).
+// Everything else returns false before touching Shopify or the classifier, and
+// a non-garment returns false before touching the database at all.
+
+export interface ProductWebhookPayload {
+  admin_graphql_api_id?: string;
+  id?: number | string;
+  title?: string;
+  product_type?: string;
+  tags?: string | string[];
+  images?: Array<{ src?: string | null; created_at?: string | null } | null>;
+}
+
+export interface RescanDecision {
+  kick: boolean;
+  gid: string | null;
+  reason: string;
+}
+
+// Shopify CDN URLs carry a ?v= cache key that moves without the file changing,
+// so a photo's identity is its path. A replaced photo always gets a new path.
+function imageKey(url: unknown): string | null {
+  if (typeof url !== "string" || !url.trim()) return null;
+  try {
+    return new URL(url).pathname.toLowerCase();
+  } catch {
+    return url.split("?")[0].toLowerCase() || null;
+  }
+}
+
+// REST webhook payloads send tags as one comma-separated string.
+function payloadTags(tags: string | string[] | undefined): string[] {
+  if (Array.isArray(tags)) return tags;
+  if (typeof tags === "string") return tags.split(",").map((t) => t.trim()).filter(Boolean);
+  return [];
+}
+
+export async function shouldRescanProduct(
+  shopOrSlug: string,
+  payload: ProductWebhookPayload,
+  opts: { isCreate: boolean },
+): Promise<RescanDecision> {
+  const gid = payload.admin_graphql_api_id
+    || (payload.id != null ? toProductGid(payload.id) : null);
+  if (!gid) return { kick: false, gid: null, reason: "no product id in payload" };
+
+  // Free rejection, zero queries: bottoms and accessories never get a row, so
+  // nothing about them is worth a round trip.
+  const kind = garmentKind({
+    title: payload.title ?? "",
+    productType: payload.product_type ?? "",
+    tags: payloadTags(payload.tags),
+  });
+  if (kind === "skip") return { kick: false, gid, reason: "not a scannable kind" };
+  if (opts.isCreate) return { kick: true, gid, reason: "new product" };
+
+  const store = await resolveStore(shopOrSlug);
+  if (!store) return { kick: false, gid, reason: "no vto_stores row" };
+
+  const { data: rows, error } = await supabaseAdmin
+    .from("clothing_items")
+    .select("print_side_source, carry_source, print_scanned_at, front_image_url, back_image_url, carry_meta")
+    .eq("store_id", store.slug)
+    .in("item_id", itemIdVariants(gid))
+    .limit(1);
+  // A lookup failure must not silently switch the scan off: fall back to the
+  // old always-kick behaviour, which is wasteful but never wrong.
+  if (error) return { kick: true, gid, reason: `row lookup failed (${error.message})` };
+
+  const row = rows?.[0];
+  if (!row) return { kick: true, gid, reason: "never scanned" };
+  if (row.print_side_source === "manual" || row.carry_source === "manual") {
+    // The scan would refuse to touch this row anyway; today it pays a whole
+    // catalog enumeration to find that out.
+    return { kick: false, gid, reason: "merchant-set row, never rescanned" };
+  }
+
+  const liveKeys = new Set(
+    (payload.images ?? [])
+      .map((img) => imageKey(img?.src))
+      .filter((k): k is string => Boolean(k)),
+  );
+  const meta = (row.carry_meta ?? {}) as Record<string, unknown>;
+  const storedKeys = [row.front_image_url, row.back_image_url, meta.strap_image_url, meta.handle_image_url]
+    .map(imageKey)
+    .filter((k): k is string => Boolean(k));
+
+  if (liveKeys.size > 0 && storedKeys.some((k) => !liveKeys.has(k))) {
+    return { kick: true, gid, reason: "a stored photo is gone from the product" };
+  }
+
+  const scannedAt = row.print_scanned_at ? Date.parse(String(row.print_scanned_at)) : NaN;
+  if (!Number.isFinite(scannedAt)) return { kick: true, gid, reason: "row has no scan stamp" };
+
+  // Reordering images and editing alt text do not move created_at, so those
+  // stay free. A replaced photo is a delete plus an add, so it trips this too.
+  const addedSinceScan = (payload.images ?? []).some((img) => {
+    const t = img?.created_at ? Date.parse(img.created_at) : NaN;
+    return Number.isFinite(t) && t > scannedAt;
+  });
+  if (addedSinceScan) return { kick: true, gid, reason: "photo added since the last scan" };
+
+  return { kick: false, gid, reason: "photos unchanged" };
+}
+
+// ── Self-heal: the snapshot went stale and a shopper found it ───────────────
+// The try-on proxy already retries a failed catalogue render with the widget's
+// own live PDP image, so that shopper still gets their render. But the dead URL
+// stays in the row, so the NEXT shopper pays the same failed first attempt, and
+// on a back-graphic product they silently lose the split card. Clear the
+// auto-set image fields right away — the next try-on then goes straight to the
+// live image with no wasted engine call — and kick a single-product rescan to
+// refill them. This is the one trigger that fires exactly when the data is used.
+export async function healRottenSnapshot(storeSlug: string, productRef: unknown): Promise<void> {
+  const gid = toProductGid(productRef);
+  if (!gid || !storeSlug) return;
+
+  // lead_view postdates some deployed databases, and naming a column that does
+  // not exist fails the WHOLE update — which would leave the dead URL in place.
+  const clear = (cols: Record<string, unknown>) =>
+    supabaseAdmin
+      .from("clothing_items")
+      .update(cols)
+      .eq("store_id", storeSlug)
+      .in("item_id", itemIdVariants(gid))
+      // Never wipe a merchant's own correction.
+      .eq("print_side_source", "auto");
+  const BASE = {
+    print_side: null,
+    front_image_url: null,
+    back_image_url: null,
+    print_scanned_at: null,
+  };
+  try {
+    const { error } = await clear({ ...BASE, lead_view: null });
+    if (error) {
+      const { error: retryErr } = await clear(BASE);
+      if (retryErr) {
+        console.error(`[PrintScan] self-heal clear failed ${storeSlug}/${gid}: ${retryErr.message}`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.error("[PrintScan] self-heal clear threw:", err);
+    return;
+  }
+  console.warn(`[PrintScan] self-heal: cleared rotten snapshot ${storeSlug}/${gid}, rescanning`);
+  kickPrintScan(storeSlug, "selfheal", gid);
 }
