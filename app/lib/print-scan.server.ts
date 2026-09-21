@@ -726,9 +726,11 @@ export function kickPrintScan(shopOrSlug: string, src: ScanSource, productGid?: 
 // inventory quantity, price, tags, publish state, sales-channel changes and app
 // metafield writes, and none of those can change a print-side or carry-mode
 // call. Before this gate every one of them kicked a full catalog enumeration
-// plus a classifier call — and the classifier falls back to GEMINI_API_KEY, the
-// same key and daily request budget paying merchants' renders draw from, so the
-// waste was throughput, not just cents.
+// plus a classifier call. Measured 2026-09-20: 132 kicks over 7 days for 67
+// distinct products across 4 stores — one Atlas product was re-read 11 times.
+// The scan runs on its own PRINT_SCAN_GEMINI_API_KEY, so this never competed
+// with renders for AI Studio quota; it was Cloud Run CPU, Storefront calls,
+// classifier spend and a Telegram ping per edit.
 //
 // The scan is re-run only when the product's PHOTOS moved:
 //   - a photo we stored is no longer on the product (the rot case — replacing a
