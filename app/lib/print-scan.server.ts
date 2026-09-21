@@ -756,14 +756,24 @@ export interface RescanDecision {
 }
 
 // Shopify CDN URLs carry a ?v= cache key that moves without the file changing,
-// so a photo's identity is its path. A replaced photo always gets a new path.
-function imageKey(url: unknown): string | null {
-  if (typeof url !== "string" || !url.trim()) return null;
+// so a photo's identity is its path, not its URL. Two spellings of the same
+// file also have to compare equal: the stored URL came from the Storefront API
+// and the one in a webhook payload comes from REST, and those have historically
+// disagreed on the directory (/products/ vs /files/). Match on the full path OR
+// the filename — Shopify keeps filenames unique within a shop's Files (a
+// same-named upload becomes foo_1.jpg), so a replaced photo never reuses one.
+// Erring toward "same file" errs toward not rescanning, which is the point.
+function imageKeys(url: unknown): string[] {
+  if (typeof url !== "string" || !url.trim()) return [];
+  let path: string;
   try {
-    return new URL(url).pathname.toLowerCase();
+    path = new URL(url).pathname.toLowerCase();
   } catch {
-    return url.split("?")[0].toLowerCase() || null;
+    path = url.split("?")[0].toLowerCase();
   }
+  if (!path) return [];
+  const base = path.split("/").pop() || "";
+  return base && base !== path ? [path, base] : [path];
 }
 
 // REST webhook payloads send tags as one comma-separated string.
@@ -813,17 +823,14 @@ export async function shouldRescanProduct(
     return { kick: false, gid, reason: "merchant-set row, never rescanned" };
   }
 
-  const liveKeys = new Set(
-    (payload.images ?? [])
-      .map((img) => imageKey(img?.src))
-      .filter((k): k is string => Boolean(k)),
-  );
+  const liveKeys = new Set((payload.images ?? []).flatMap((img) => imageKeys(img?.src)));
   const meta = (row.carry_meta ?? {}) as Record<string, unknown>;
-  const storedKeys = [row.front_image_url, row.back_image_url, meta.strap_image_url, meta.handle_image_url]
-    .map(imageKey)
-    .filter((k): k is string => Boolean(k));
+  const stored = [row.front_image_url, row.back_image_url, meta.strap_image_url, meta.handle_image_url]
+    .map(imageKeys)
+    .filter((keys) => keys.length > 0);
 
-  if (liveKeys.size > 0 && storedKeys.some((k) => !liveKeys.has(k))) {
+  // A stored photo is still there if ANY of its spellings is on the product.
+  if (liveKeys.size > 0 && stored.some((keys) => !keys.some((k) => liveKeys.has(k)))) {
     return { kick: true, gid, reason: "a stored photo is gone from the product" };
   }
 
