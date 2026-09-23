@@ -381,6 +381,9 @@ export async function action({ request }: ActionFunctionArgs) {
             const handle = typeof meta.handle_image_url === "string" ? meta.handle_image_url : null;
             if (strap || handle) body.carryImages = { strap, handle };
             if (typeof meta.strap_removable === "boolean") body.strapRemovable = meta.strap_removable;
+            // The scan read the whole listing; the widget's description copy can
+            // be missing (1.5s fetch race), so the engine prefers this verdict.
+            if (typeof meta.handles_only === "boolean") body.handlesOnly = meta.handles_only;
             console.log(
                 `[TryOn Proxy] Bag carry: store=${storeSlug} modes=${(printRow.carry_modes || []).join("+") || "-"} dims=${printRow.bag_dimensions ? "yes" : "no"}`,
             );

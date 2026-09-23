@@ -46,16 +46,18 @@
 import { supabaseAdmin } from "./supabase.server";
 import {
   classifyHandbag,
+  decideCarryWrite,
   detectCarryModes,
   isHandbagLike,
-  mergeDimensions,
   normalizeModes,
   parseBagDimensions,
-  strapIsRemovable,
-  type BagDimensions,
-  type CarryMode,
   type InlineImage,
 } from "./bag-carry";
+
+// The carry write decision lives in bag-carry.ts so the pre-install script
+// (scripts/lola/scan-bags.mjs) runs the exact same rule; re-exported for callers
+// that import it from here.
+export { decideCarryWrite };
 
 const GEMINI_MODEL = "gemini-3.6-flash";
 
@@ -476,19 +478,6 @@ function decideWrite(
 // ── Handbags: vision + text → carry modes, dimensions, photo picks ───────────
 const BAG_MAX_IMAGES = 8; // resale listings run 10-18 photos; the first 8 carry the views
 
-interface CarryWrite {
-  carry_modes: CarryMode[];
-  bag_dimensions: BagDimensions | null;
-  carry_meta: {
-    strap_image_url: string | null;
-    handle_image_url: string | null;
-    strap_removable: boolean | null;
-    vision_modes: CarryMode[];
-    text_modes: CarryMode[];
-  };
-  carry_scan_confidence: number | null;
-}
-
 async function classifyHandbagProduct(p: CatalogProduct): Promise<Awaited<ReturnType<typeof classifyHandbag>>> {
   const apiKey = scanApiKey();
   if (!apiKey) return null;
@@ -507,49 +496,6 @@ async function classifyHandbagProduct(p: CatalogProduct): Promise<Awaited<Return
     description: p.description,
     images,
   });
-}
-
-// The vision read decides; the text read is ADDITIVE (a listed strap drop
-// proves a strap exists even when every photo shows the bag without it) and
-// is the whole answer when the model is unavailable or unsure. A confident
-// "not a handbag" (wallet, case) parks the row. Nothing usable → park.
-export function decideCarryWrite(
-  cls: Awaited<ReturnType<typeof classifyHandbag>>,
-  textModes: CarryMode[],
-  parsedDims: BagDimensions | null,
-  textBlob: string,
-): CarryWrite | null {
-  let modes: CarryMode[] = [];
-  let confidence: number | null = null;
-  let strapImage: string | null = null;
-  let handleImage: string | null = null;
-  let strapRemovable = strapIsRemovable(textBlob);
-  const visionModes = cls?.carry_modes ?? [];
-  if (cls && cls.confidence >= CONFIDENCE_KEEP && !cls.is_handbag) return null;
-  if (cls && cls.is_handbag && cls.confidence >= CONFIDENCE_KEEP && visionModes.length) {
-    modes = normalizeModes([...visionModes, ...textModes]);
-    confidence = cls.confidence;
-    strapImage = cls.strap_image_url;
-    handleImage = cls.handle_image_url;
-    if (cls.strap_removable != null) strapRemovable = cls.strap_removable;
-  } else {
-    modes = textModes;
-    confidence = textModes.length ? 1 : null;
-  }
-  const dims = mergeDimensions(parsedDims, cls?.dimensions ?? null);
-  if (modes.length === 0 && !dims) return null;
-  return {
-    carry_modes: modes,
-    bag_dimensions: dims,
-    carry_meta: {
-      strap_image_url: strapImage,
-      handle_image_url: handleImage,
-      strap_removable: strapRemovable,
-      vision_modes: visionModes,
-      text_modes: textModes,
-    },
-    carry_scan_confidence: confidence,
-  };
 }
 
 // ── Store scan (one bounded invocation; the route self-chains) ───────────────
@@ -746,6 +692,7 @@ export interface ProductWebhookPayload {
   title?: string;
   product_type?: string;
   tags?: string | string[];
+  body_html?: string | null;
   images?: Array<{ src?: string | null; created_at?: string | null } | null>;
 }
 
@@ -783,6 +730,37 @@ function payloadTags(tags: string | string[] | undefined): string[] {
   return [];
 }
 
+// A handbag's row also stores what the listing TEXT said: carry_meta.text_modes
+// and the measurements parsed from the description. Merchants add or correct
+// the "Measures ... strap drop" line and carry tags after publishing, and the
+// stored row wins over the live listing at render time, so a text edit that
+// changes that read must re-read the product. Told to Lola Saratoga's team on
+// 2026-09-08; lost when this gate went photo-only on 09-20; restored 09-23.
+// Compares the READ, not the raw text, so a typo fix or a price tag like
+// "Under $500" never costs a classifier call.
+function handbagTextChange(
+  payload: ProductWebhookPayload,
+  meta: Record<string, unknown>,
+  storedDims: unknown,
+): string | null {
+  if (typeof payload.body_html !== "string") return null;
+  const tags = payloadTags(payload.tags);
+  const parsed = parseBagDimensions(payload.body_html);
+  const blob = [payload.title ?? "", payload.product_type ?? "", tags.join(" "), payload.body_html].join(" ");
+  const textModes = detectCarryModes(blob, parsed);
+  if (textModes.join("|") !== normalizeModes(meta.text_modes).join("|")) {
+    return "listing text changed how the bag is carried";
+  }
+  const stored = (storedDims && typeof storedDims === "object" ? storedDims : {}) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(parsed ?? {})) {
+    const was = stored[key];
+    if (typeof value === "number" && (typeof was !== "number" || Math.abs(was - value) > 0.011)) {
+      return "listing measurements changed";
+    }
+  }
+  return null;
+}
+
 export async function shouldRescanProduct(
   shopOrSlug: string,
   payload: ProductWebhookPayload,
@@ -807,7 +785,7 @@ export async function shouldRescanProduct(
 
   const { data: rows, error } = await supabaseAdmin
     .from("clothing_items")
-    .select("print_side_source, carry_source, print_scanned_at, front_image_url, back_image_url, carry_meta")
+    .select("print_side_source, carry_source, print_scanned_at, front_image_url, back_image_url, carry_meta, bag_dimensions")
     .eq("store_id", store.slug)
     .in("item_id", itemIdVariants(gid))
     .limit(1);
@@ -823,8 +801,13 @@ export async function shouldRescanProduct(
     return { kick: false, gid, reason: "merchant-set row, never rescanned" };
   }
 
-  const liveKeys = new Set((payload.images ?? []).flatMap((img) => imageKeys(img?.src)));
   const meta = (row.carry_meta ?? {}) as Record<string, unknown>;
+  if (kind === "handbag") {
+    const textChange = handbagTextChange(payload, meta, row.bag_dimensions);
+    if (textChange) return { kick: true, gid, reason: textChange };
+  }
+
+  const liveKeys = new Set((payload.images ?? []).flatMap((img) => imageKeys(img?.src)));
   const stored = [row.front_image_url, row.back_image_url, meta.strap_image_url, meta.handle_image_url]
     .map(imageKeys)
     .filter((keys) => keys.length > 0);
